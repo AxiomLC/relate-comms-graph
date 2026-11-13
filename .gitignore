@@ -1,0 +1,26 @@
+# Secrets and personal data — never commit
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+token.json
+*client_secret*
+
+# User exports / message archives (contain unencrypted personal history)
+exports/
+spool/
+*.zip
+*.result.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
