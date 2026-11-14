@@ -424,9 +424,19 @@ a parser more than a hundred plain texts. `--check` parses both fixtures back th
 
 ## 10. Handover — 2026-11-14, after stage 2
 
-**Status:** Stage 2 complete. Canonical `Message`, Telegram adapter (both export shapes), Relate
-writer with `verify_present`, owner identity, tool layer scaffold, `app/` scaffold, `pyproject.toml`.
-**10 tests passing**, including ingest-twice-identical-counts and bulk-vs-single agreement.
+**Status:** Stage 2 complete and pushed (`d6a8768`). Canonical `Message`, Telegram adapter (both
+export shapes), Relate writer with `verify_present`, owner identity, tool layer scaffold, `app/`
+scaffold, `pyproject.toml`.
+
+**Verify before touching anything:**
+
+```bash
+python -m pytest tests -q          # expect 10 passed (4 skip if no real export in spool)
+python tools/create_dummies.py --check   # regenerates + round-trips both fixtures
+```
+
+Real exports live **outside the repo** at `~/relate-comms/spool/` (`RELATE_DATA_ROOT`). If that
+is empty, the four real-data tests skip and that is expected, not a failure.
 
 ### What stage 2 actually taught us (beyond the spec)
 
@@ -462,3 +472,8 @@ Real exports from this account were read, not just documented. Findings that cha
   `plain` entities, `--check` round-trip). Still open for any future `fixtures/real/`: none exists
   today and none is planned.
 - `Person` nodes do not exist until stage 4, so person-centric UI tools have nothing to read yet.
+- **Fixtures keep real timestamps.** Names, bodies and chat ids are scrubbed two passes, but
+  dates are unchanged — the fixture still encodes *when* the original conversation happened.
+  If that matters, add a per-export date offset to `create_dummies.py` (preserves relative spacing).
+- **`tools/create_dummies.py` still lives in `tools/`.** It is shippable functionality per §5.3 and
+  must move into `relate_comms/sample_data/`. Listed as step 2 below, not yet done.
