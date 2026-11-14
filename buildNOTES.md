@@ -208,7 +208,7 @@ relate_comms/            library — importable with no web server
   schema.py  writer.py  identity.py
   ingest.py  cli.py      (planned) the shipped pipeline + `python -m relate_comms`
 tests/fixtures/          pinned inputs; committed; never regenerated in place
-tools/                   dev-only: bench_ollama, create_dummies (moving out)
+tools/                   dev-only: bench_ollama, bench_queries.json
 ```
 
 The UI is a **consumer** of the library. `app -> relate_comms`, never back, so
@@ -409,8 +409,8 @@ Real layout is in §5.1. Two things are worth repeating because they were got wr
 the generator rather than the files is what lets a developer inspect and reproduce the data
 before trusting the app with their own comms.
 
-`tools/create_dummies.py` scrubs real exports into fixtures. Two leaks were found by testing,
-both worth remembering:
+`relate_comms/sample_data/build.py` generates both sample payloads and scrubs real exports into
+fixtures. Two leaks were found by testing, both worth remembering:
 
 1. A name can appear **inside a message body**, not just in `from`. Fixed with a two-pass scrub:
    collect every real name, then replace those names inside all free text.
@@ -418,7 +418,14 @@ both worth remembering:
    "harmless" leaked the body of every media row. Scrub every entity type, `plain` included.
 
 Fixture size is capped by ranking chats on **shape diversity, not volume** — three odd rows teach
-a parser more than a hundred plain texts. `--check` parses both fixtures back through the adapter.
+a parser more than a hundred plain texts. `--check` parses both payloads back through the adapter.
+
+```bash
+python -m relate_comms sample build                  # -> sample_data/generated/ (gitignored)
+python -m relate_comms sample build --dest fixtures  # -> tests/fixtures/ (pinned)
+```
+
+Deterministic: regenerating the same source gives byte-identical output (verified by md5).
 
 ---
 
@@ -431,8 +438,8 @@ scaffold, `pyproject.toml`.
 **Verify before touching anything:**
 
 ```bash
-python -m pytest tests -q          # expect 10 passed (4 skip if no real export in spool)
-python tools/create_dummies.py --check   # regenerates + round-trips both fixtures
+python -m pytest tests -q                   # expect 10 passed
+python -m relate_comms sample build --check # regenerates samples + round-trips them
 ```
 
 Real exports live **outside the repo** at `~/relate-comms/spool/` (`RELATE_DATA_ROOT`). If that
@@ -457,12 +464,13 @@ Real exports from this account were read, not just documented. Findings that cha
 
 1. **Stage 3** — WhatsApp `.txt` (Android dialect, U+200E LTR mark before media lines). Needs a
    real file first, per §6. Then `sample_data/generators/whatsapp.py`.
-2. **Move `tools/create_dummies.py` into `relate_comms/sample_data/`** so it ships and is
-   reachable as `python -m relate_comms sample build` (§5.3).
-3. **Stage 4/5** — resolution and scrub gate. Until these land, `Person` does not exist, so
+1. **Stage 3** — WhatsApp `.txt` (Android dialect, U+200E LTR mark before media lines). Needs a
+   real file first, per §6. Then `sample_data/generators/whatsapp.py`.
+2. **Stage 4/5** — resolution and scrub gate. Until these land, `Person` does not exist, so
    the UI's person-centric tools have nothing to read.
-4. **`ingest.py` + `cli.py`** — the shipped pipeline and `--source real|sample` toggle.
-5. `tools/bench_graph.py` to run `bench_queries.json` against Relate and Neo4j Cloud.
+3. **`ingest.py`** — the shipped pipeline and `--source real|sample` toggle. `cli.py` currently
+   stubs `ingest` and returns exit 2; `sample build` works.
+4. `tools/bench_graph.py` to run `bench_queries.json` against Relate and Neo4j Cloud.
 
 ### Loose ends
 - `tools/bench_ollama.py` **stalls at `ollama.create`** — known broken, low priority (MoE already gave the speed).
@@ -474,6 +482,6 @@ Real exports from this account were read, not just documented. Findings that cha
 - `Person` nodes do not exist until stage 4, so person-centric UI tools have nothing to read yet.
 - **Fixtures keep real timestamps.** Names, bodies and chat ids are scrubbed two passes, but
   dates are unchanged — the fixture still encodes *when* the original conversation happened.
-  If that matters, add a per-export date offset to `create_dummies.py` (preserves relative spacing).
-- **`tools/create_dummies.py` still lives in `tools/`.** It is shippable functionality per §5.3 and
-  must move into `relate_comms/sample_data/`. Listed as step 2 below, not yet done.
+  If that matters, add a per-export date offset to `sample_data/build.py` (preserves spacing).
+- **`relate_comms/sample_data/build.py` is shipped functionality**, reachable as
+  `python -m relate_comms sample build`. Do not move it back to `tools/`.

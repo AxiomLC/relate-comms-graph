@@ -1,20 +1,39 @@
-"""Scrub real Telegram exports into committable test fixtures.
+"""Generate sample downloads, and scrub real exports into test fixtures.
 
-Two payloads, because Telegram has two parse paths and one fixture cannot prove both:
+WHY THIS SHIPS
+--------------
+A developer will not point this app at their own comms until they have seen it work
+on data they generated themselves. So this is a product feature, not a dev helper:
+clone, run, see a graph, then decide.
 
-  tests/fixtures/telegram_bulk/result.json    Result wrapper -> chats.list[]
-  tests/fixtures/telegram_single/result.json  bare Chat object -> messages[]
+TWO DESTINATIONS, DELIBERATELY SEPARATE
+---------------------------------------
+  sample_data/generated/     default. gitignored, reproducible, read by
+                             `ingest --source sample`.
+  tests/fixtures/            opt-in via --dest fixtures. Committed and PINNED.
+
+They must not be the same folder. If a parser change altered the fixtures, a
+failing test could be "fixed" by regenerating instead of by fixing the parser.
+Fixtures change only when someone deliberately asks.
+
+SAMPLE SHAPES
+-------------
+Two payloads, because Telegram has two parse paths and one payload cannot prove both:
+
+  telegram_bulk/result.json    Result wrapper -> chats.list[]
+  telegram_single/result.json  bare Chat object -> messages[]
 
 Both are `result.json` inside a folder, matching the shape of a real download.
 
 SCRUBBING CAVEAT: names appear in message BODIES as well as in `from`. The first
-version of this script only rewrote the structured fields and leaked "Here is
-Sergio" through a message body. The fix is a two-pass scrub: collect every real
-name first, then replace those names inside every free-text field.
+version of this script only rewrote the structured fields and leaked a real name
+through a message body. Two passes fix it: collect every real name first, then
+replace those names inside every free-text field.
 
 Run:
-    python tools/create_dummies.py            # regenerate both fixtures
-    python tools/create_dummies.py --check    # ...and parse them back
+    python -m relate_comms sample build                 # -> sample_data/generated/
+    python -m relate_comms sample build --dest fixtures # -> tests/fixtures/
+    python -m relate_comms sample build --check         # ...and parse them back
 """
 from __future__ import annotations
 
@@ -26,12 +45,34 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parent.parent
-FIXTURES = ROOT / "tests" / "fixtures"
-ARCHIVE = ROOT / "archive_docs"
+PACKAGE = Path(__file__).resolve().parent          # relate_comms/sample_data
+ROOT = PACKAGE.parent.parent                       # repo root
 
-SINGLE_EXPORT = ARCHIVE / "telegram_chatexport_2026-11-14_sergio" / "result.json"
-BULK_EXPORT = ARCHIVE / "telegram_dataexport_2026-11-14_bulk" / "result.json"
+GENERATED = PACKAGE / "generated"
+FIXTURES = ROOT / "tests" / "fixtures"
+
+# Real exports live outside the repo (§5.3). Used only as shape references when a
+# developer happens to have them; the minimal fallback works without them.
+from ..paths import spool_dir  # noqa: E402
+
+_SINGLE_CANDIDATES = [
+    spool_dir() / "ChatExport_2026-11-14 (1)" / "result.json",
+    spool_dir() / "result.json",
+]
+_BULK_CANDIDATES = [
+    spool_dir() / "DataExport_2026-11-14" / "result.json",
+]
+
+
+def _first_existing(paths):
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
+SINGLE_EXPORT = _first_existing(_SINGLE_CANDIDATES)
+BULK_EXPORT = _first_existing(_BULK_CANDIDATES)
 
 PERSONS = ["Person A", "Person B", "Person C", "Person D", "Person E", "Person F"]
 LINES = [
@@ -273,34 +314,35 @@ def _write(path: Path, document: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--dest", choices=("generated", "fixtures"), default="generated",
+                        help="generated/ is the shipped sample (default); "
+                             "fixtures/ are pinned test inputs and must not move casually")
     parser.add_argument("--check", action="store_true",
-                        help="after writing, parse both fixtures back through the adapter")
+                        help="after writing, parse both payloads back through the adapter")
     parser.add_argument("--seed", type=int, default=20261114)
     args = parser.parse_args(argv)
 
-    single, model_single = build(
-        SINGLE_EXPORT if SINGLE_EXPORT.exists() else None, args.seed
-    )
-    bulk, model_bulk = build(
-        BULK_EXPORT if BULK_EXPORT.exists() else None, args.seed
-    )
+    target_root = GENERATED if args.dest == "generated" else FIXTURES
+
+    single, model_single = build(SINGLE_EXPORT, args.seed)
+    bulk, model_bulk = build(BULK_EXPORT, args.seed)
     bulk = shrink(bulk)
 
-    single_path = FIXTURES / "telegram_single" / "result.json"
-    bulk_path = FIXTURES / "telegram_bulk" / "result.json"
+    single_path = target_root / "telegram_single" / "result.json"
+    bulk_path = target_root / "telegram_bulk" / "result.json"
     _write(single_path, single)
     _write(bulk_path, bulk)
 
+    print(f"dest:   {target_root}")
     print(f"single: {model_single} -> {len(single['messages'])} msgs "
           f"({single_path.stat().st_size:,} bytes)")
     bulk_rows = sum(len(c.get("messages") or []) for c in
                     (bulk.get("chats") or {}).get("list") or [bulk])
     print(f"bulk:   {model_bulk} -> {bulk_rows} msgs "
-          f"({bulk_path.stat().st_size:,} bytes)")
+          f"({bulk_path.stat().st_size:,} bytes) ")
 
     if args.check:
-        sys.path.insert(0, str(ROOT))
-        from relate_comms.adapters import telegram
+        from ..adapters import telegram
 
         failed = False
         for name, path in (("single", single_path), ("bulk", bulk_path)):
