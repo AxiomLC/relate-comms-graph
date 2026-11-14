@@ -136,12 +136,12 @@ hackathon entry**.
 
 | Platform | Route | Latency |
 |---|---|---|
-| Telegram | Desktop export → `result.json` (**only officially documented schema**) | minutes |
+| Telegram | Desktop export → `result.json` (only officially documented schema) | minutes |
 | WhatsApp | Per-chat `.txt` export, media off | manual |
-| Messenger | Facebook → *Download your information* → JSON | hours–day |
-| SMS | SMS Backup & Restore → XML | minutes |
-| Email | IMAP read-only, `UID FETCH` | live |
-| LinkedIn | `messages.csv` (category-scoped, minutes) + **DMA API** if EU | minutes |
+| Messenger | Facebook → *Download your information* → HTML | hours–day |
+| SMS | SMS Backup & Restore → XML *(not built)* | minutes |
+| Email | IMAP read-only (Gmail, Hostinger); Outlook via `.pst` export | live / hours |
+| LinkedIn | `messages.csv` (Basic export, category-scoped, minutes) + **DMA API** if EU | minutes |
 
 **Out — removed from the code path:**
 - **Slack** — export needs workspace admin (not available), and it's team-oriented. Would be the
@@ -349,17 +349,14 @@ are Neo4j staff and will ask.
 
 **Gate:** fixtures → redacted 100-message sample → full archive. Never a full archive first.
 
-| Platform | How | Watch out |
-|---|---|---|
-| Telegram | Settings → Advanced → Export → JSON | **Plaintext on disk.** Full export covers every chat at once — no per-chat clicking. |
-| WhatsApp | Per-chat → Export chat → `.txt`, media **off** | Manual, one chat at a time |
-| Messenger | Facebook → *Download your information* → JSON | **Slow — start it first** |
-| LinkedIn | Data privacy → *Download larger archive*, **Messages only** | Lands in minutes, not 24 h |
-| SMS | SMS Backup & Restore → XML | Per-row, no threads — group by address + date |
-| Email | IMAP read-only, `UID FETCH` | Gmail needs an **App Password** |
+**User-facing download and file-shape instructions live in
+[`MssgDownloadInstructs.md`](MssgDownloadInstructs.md).** That file is both the repo doc and
+the source text for the §9.1.3 modal. Keep platform quirks discovered from real files there;
+keep engineering consequences here.
 
-- Spool to `~/relate-comms/spool/` (`RELATE_DATA_ROOT`), not `Downloads`.
-- Delete the spool after ingest; `archive_copies: false` — parse in place, keep hashes.
+- Spool to `~/relate-comms/spool/` (`RELATE_DATA_ROOT`). The UI uses a **drop zone**; a dev
+  passes a path and `ingest.stage()` copies it in (never moves, never deletes the original).
+- `archive_copies: false` — parse in place, keep hashes.
 - **Never** demo from a live-authenticated session.
 
 ### 9.1 Ingest is button-driven, with 3-day pruning
@@ -438,30 +435,24 @@ still a `MERGE` on a stable key, and re-writing adds nothing (verified by test).
 
 ### 9.1.3 Ingest UX — one button, one modal
 
-There is **no auto-discovery**. The user brings files to a known folder, then presses a button.
+There is **no auto-discovery**. The user brings files to the app, then presses a button.
 
-The UI has a single **Ingest** button. It opens a modal:
+The UI has a single **Ingest** button opening a modal whose body **is**
+[`MssgDownloadInstructs.md`](MssgDownloadInstructs.md) — the same text as the shipped doc, so
+the two can never drift. The modal adds only:
 
-> **Download your chats to `~/Downloads`, then press INGEST.**
->
-> | Platform | Where | Notes |
-> |---|---|---|
-> | Telegram | Desktop → Settings → Advanced → *Export Telegram data* → JSON, media off | one click, every chat |
-> | WhatsApp | Per chat → ⋮ → *More* → *Export chat* | one chat at a time; for **all** chats use the advanced Python route below |
-> | Messenger | <https://accountscenter.facebook.com/info_and_permissions/dyi> → *Messages* → JSON | 4-day expiry on the link |
-> | LinkedIn | <https://www.linkedin.com/mypreferences/d/download-my-data> → choose **"Download larger data archive…"** (top radio, *not* the basic one) → *Request archive* | `messages.csv` is bundled inside; up to 24 h |
-> | Email | IMAP host + app password in settings | only genuinely automatic source |
-> | SMS | SMS Backup & Restore → XML to a local folder | Android only |
->
-> **Advanced — WhatsApp, all chats with a date range:** copy `msgstore.db.crypt15` off the phone
-> plus your 64-digit backup key, then run `wtsexporter --date "YYYY-MM-DD - YYYY-MM-DD"`.
+> **Drop your export onto this area.**
 >
 > Everything stays on this machine. Nothing is uploaded.
+>
+> *Advanced — WhatsApp, all chats with a date range:* copy `msgstore.db.crypt15` off the phone
+> plus your 64-digit backup key, then run `wtsexporter --date "YYYY-MM-DD - YYYY-MM-DD"`.
 
-The modal is the product's honesty surface: it tells the user exactly what each platform demands
-instead of pretending a magic import exists. Two link caveats — the Meta and LinkedIn URLs were
-**not verified from this machine** (both are login-walled), so each row also gives a navigation
-path to fall back on if a URL rots.
+The modal is the product's honesty surface: it states what each platform demands instead of
+pretending a magic import exists. Two link caveats — the Meta and LinkedIn URLs were **not
+verified from this machine** (both are login-walled), so that doc gives a navigation path for
+each. `MssgDownloadInstructs.md` also records the *file shape* per platform, which is what makes
+detection-by-content trustworthy.
 
 ### 9.1.4 Parallel parse, serialised write
 
@@ -535,43 +526,172 @@ Deterministic: regenerating the same source gives byte-identical output (verifie
 ---
 ---
 
-## 10. Handover — updated 2026-11-14 20:35
+## 10. Handover — updated 2026-11-14 21:20
 
-**Where we are:** stage 2 **and 2b complete** and pushed — Telegram adapter (both export shapes),
-batched Relate writer with `verify_present`, identity, tool layer, `app/` scaffold, sample
-generation. **11 tests pass.** Nothing below is already built.
+**Where we are:** stages 1, 2, 2b, 3, 4, 5/6 complete, plus a first pass at **graph write**.
 
-**Verify state before touching anything:**
+- Adapters: Telegram (both shapes), WhatsApp `.txt`/`.zip`, Messenger HTML, LinkedIn
+  `messages.csv`, email over IMAP (Gmail, Hostinger), Outlook `.pst`.
+- Pipeline: parallel parse → serialised write → verify → optional verified prune.
+- Resolution (`Person`/`Identity`) and the scrub gate (`keep`/`hide`/`block`) run inside
+  `ingest()`; resolution results are computed but **not yet persisted**.
+- `writer.write_people()` added — **written but not called from `ingest()`**, and not yet
+  covered by a test. Next session starts there.
+
+**Graph shape today:** `Message`, `Thread`, `Attachment` are written and queryable.
+`Person`, `Identity`, `MATCHED_BY`, `POSSIBLY`, `SENT` exist as Cypher but nothing runs them.
+
+**94 tests pass.** Mixed-platform spool: 11,066 messages in 3.1 s, PII withheld.
 
 ```bash
-python -m pytest tests -q                     # expect 11 passed
+python -m pytest tests -q                     # expect 94 passed
 python -m relate_comms sample build --check   # regenerates samples + round-trips
 python tools/bench_scale.py --n 5000          # ingest throughput, measured
+pip install -e ".[resolve]"                   # rapidfuzz: needed for name matching
 ```
 
 Real exports live **outside the repo** at `~/relate-comms/spool/` (`RELATE_DATA_ROOT`). If empty,
-the 4 real-data tests skip — expected, not a failure.
+the real-data tests skip — expected, not a failure.
+
+**Paste-a-path workflow (dev):**
+
+```bash
+python -m relate_comms ingest "C:/Users/me/Downloads/+1 (917) 400-4025.zip" --tz-offset -5
+```
+
+Paths are **copied** into the spool (`ingest.stage`), never moved; the UI will reach the same
+function through its drop zone. Nothing outside the spool is ever parsed or deleted.
 
 ### Next, in priority order
 
-1. **`ingest.py`** — parse → write → verify, with `--source real|sample`. Parse in parallel
-   (process pool), write serialised through one queue (§9.1.4). `cli.py` currently stubs it.
-   `writer.write()` is already batched at ~7,000 msg/s, so there is no speed blocker.
-2. **Stage 3: WhatsApp `.txt` adapter.** Android dialect, U+200E LTR mark before media lines.
-   Real file first (§6), then `sample_data/generators/whatsapp.py`.
-3. **Stage 4/5: resolution + scrub gate.** `Person`/`Identity` arrive here. Do **not** treat other
-   node types as blocked — `Message`, `Thread`, `Attachment` already work; person-shaped queries
-   just return nothing until then.
-4. **`tools/bench_graph.py`** — run `bench_queries.json` against Relate local vs Neo4j Cloud.
+1. **Finish graph write / flattening.** `writer.write_people()` exists with the Cypher for
+   `Person`, `Identity`, `MATCHED_BY`, `POSSIBLY` and `SENT`, and `resolution.sent_edges()`
+   builds the author edges. **Not yet done:** wire it into `ingest()` after `writer.write()`,
+   add the `POSSIBLY` rows (currently the Cypher is defined but nothing feeds it), write tests
+   against a temp `.rl`, and check query latency with `tools/bench_graph.py`.
+2. **Graph query surface** — `thread_arc`, `person_profile`, `who_did_i_talk_to` in
+   `tools.py`. Today `Message`/`Thread`/`Attachment` answer; person-shaped queries do not
+   because nothing reads `Person` yet.
+3. **SMS XML adapter** — payload pending.
+4. **UI** — drop zone, evidence panel from `scrub.ScrubReport`, `POSSIBLY` rendered dashed.
+
+### Email — what was built and what was not
+
+| Mailbox | Route | State |
+|---|---|---|
+| Gmail | IMAP, App Password, `[Gmail]/All Mail` | **verified live** — 250 msgs / 30-day window |
+| Hostinger / cPanel | IMAP, `INBOX` + `INBOX.Sent` | **verified live** — 221 msgs, 68 conversations |
+| Outlook | `.pst` via `libpff-python` | **written, never run on a real file** — no `.pst` on this machine |
+| Yahoo / iCloud / Fastmail / Zoho / Proton | IMAP | untested; provider table documented in `MssgDownloadInstructs.md` |
+
+- **Outlook is not live IMAP by design.** Microsoft killed basic auth (consumer 2024-09-16,
+  M365 2022-10-01), so live access needs a registered Azure app + OAuth2 consent. The export
+  button (Settings → General → Privacy and data → *Export mailbox*) produces a `.pst`, and
+  `pypff` reads it offline — same drop-zone path as every other platform.
+- **Email folder names are not standardised and several providers TRANSLATE them.** Gmail in
+  Spanish returns `[Gmail]/Todos`. The reader asks the server via RFC 6154 special-use flags
+  (`\All`, `\Sent`, `\Junk`) and only falls back to names. Verified: Gmail publishes flags,
+  Hostinger publishes none. Hardcoding `[Gmail]/All Mail` would import zero messages and
+  report success.
+- **Hostinger sent mail has no `Message-ID`** — 134 of 165 (measured). Fallback key is
+  `uid:<UIDVALIDITY>:<UID>`, which RFC 3501 guarantees identifies one immutable message.
+  Gmail-stored mail always has a `Message-ID` because Google rejects mail without one at SMTP.
+- **`UIDVALIDITY` changes silently invalidate every UID-keyed row.** It is in the key, so a
+  change is visible in the report rather than silently repointing at other messages.
+- **292 of 400 Gmail messages had attachments** (account-creation mail). Only refs are stored,
+  never bytes.
+- Research prior art: Thunderbird's ISPDB (~5,000 domains) covers host/port/auth but **not**
+  folder mapping — its own schema says special folders belong in RFC 6154, not autoconfig.
+  Do not go looking for a provider→folder table; it deliberately does not exist.
+
+### Resolution + scrub — what was decided
+
+- **Order is fixed:** parse → resolve → scrub → write (§3.2). Resolution needs real values to
+  join on; the store only ever sees verdicts.
+- **Name matching requires the family name AND a given name to agree.** `token_sort_ratio`
+  alone merged `Will Sell` into `Will Castellanos` and `Austin Johnson` into `Casey Johnson` —
+  shared first name, shared surname, different people. Both are now regression tests.
+- **A name match never exceeds `NAME_MAX = 0.8`**, including an exact name match. Only a phone,
+  email or platform id earns 1.0. That is what keeps `POSSIBLY` visually distinct from
+  `MATCHED_BY`.
+- **Phones compare on the last 10 digits.** `+1 (917) 400-4025` and `917-400-4025` are one line;
+  full digit strings said they differed (11 vs 10). No country-code parsing — a wrong E.164 guess
+  merges strangers.
+- **`You` is never a name**, and placeholder accounts (`Facebook user`, `LinkedIn Member`) become
+  one `placeholder:<platform>` pseudo-person rather than merging into a real contact.
+- **Default policy: nothing is blocked.** `phones`/`emails`/`addresses`/`cards` default to `hide`.
+  Hiding keeps the relation visible; the demo then flips `phones` to `block` and shows the same
+  graph with PII gone.
+- **The alias map is memory-only.** `PHONE-1 -> +19174004025` on disk would defeat the product.
+- **Card numbers require a Luhn check.** Without it, 13-19 digit Facebook ids inside URLs were
+  aliased, mangling `facebook.com/reel/2777889439060846` and inflating the withheld count from
+  12 to 150. Real payloads paid for that one.
+- **Over-scrubbing is a bug too.** Years, counts and order numbers must survive; a graph that
+  hides `2026` is as useless as one that leaks a phone.
+
+**Out of scope — do not build:** **Instagram DMs.** They are not messaging this app owns, the
+export states no sender, and the real payload holds 4 messages. An adapter would only invent
+`is_self` values. Revisit only if Instagram DMs become a product requirement.
 
 ### Open research questions (spawn a sub-agent)
 
 - **WhatsApp bulk export is researched but unrun.** `KnugiHK/WhatsApp-Chat-Exporter` is claimed to
-  cover all chats × date range × chat selection offline. Verify on this machine before building
-  an importer against it — `pip install`, check `wtsexporter --help`, confirm the flags.
+  cover all chats × date range × chat selection offline. **No longer needed for the demo** — the
+  user supplies per-chat exports from WhatsApp Web/Desktop, and the adapter handles those
+  (§10, verified against two real files). Revisit only if all-chats bulk becomes a requirement.
 - **Auto-extraction for the other four.** Research 2026-11-14 found no legitimate offline
   auto-extract for Messenger, Instagram, Telegram or LinkedIn. Any follow-up must prove a tool is
   maintained, offline and account-safe — or it is rejected. Do not plan an extractor until settled.
+
+### LinkedIn export realities (verified on a real Basic export, 2026-11-14)
+
+- **The Basic export contains messages.** `messages.csv` (216 KB, 292 rows, 205
+  conversations) ships in `Basic_LinkedInDataExport_*.zip`. §9.1.3's advice to request
+  the *larger* archive — and the 24-hour wait it implies — is wrong. **Fix the modal text.**
+- Sender and recipient are **named**, so `is_self` is a fact. Dates are **already UTC**
+  (`2026-11-13 13:01:58 UTC`), so the adapter deliberately does **not** accept
+  `tz_offset_hours`.
+- **`TO` can contain commas inside a name** — `Steve Mikano CIA, AIC-M, AINS, SSBB` is one
+  person. Split on `;` only; comma-splitting invents recipients.
+- `FOLDER` is `INBOX` or `ARCHIVE`; archived threads are included by default.
+- `CONVERSATION TITLE` is usually empty for 1:1 DMs, so the title falls back to the other
+  person. `LinkedIn Member` (35 rows) is a placeholder, never a chat title.
+- **Pipeline lesson:** one adapter refusing a keyword must not fail the batch. `ingest`
+  filters `tz_offset_hours` to the adapters that declare wall-clock times.
+
+### Messenger export realities (verified on a real archive, 2026-11-14)
+
+- Archive is **HTML**, one `message_1.html` per thread, under `inbox/`, `filtered_threads/`,
+  `message_requests/` and `e2ee_cutover/`. All four are ingested (§5.2: the store is whole).
+- **`<h2>` is the sender here — but the thread title in Instagram.** Same tag, different meaning.
+  Never share parsing code between the two.
+- **Metadata sections have an `<h2>` and no `<footer>`.** `Participants: …` and
+  `Group Invite Link: Off` appear as sections; a `<footer>` timestamp is the only reliable
+  message/metadata divider. 227 such sections in the real archive.
+- **Order is newest-first** and must be reversed.
+- **Owner inference must use thread breadth.** The real archive has one spam account
+  (`Facebook user`) with 8,171 messages in a single thread while the owner sent 92 across 35.
+  Counting messages elected the spammer as "me" — caught by running without `self_id`.
+- Media are real relative paths (`…/photos/x.jpg`), unlike WhatsApp's placeholders.
+- `You missed a call from X.` arrives in the *other* person's `<h2>`; kinded `call`.
+- 10,605 messages across 133 threads ingest in **2.5 s**.
+
+### WhatsApp export realities (verified on two real files, 2026-11-14)
+
+- Dialect is the **WhatsApp Web/Desktop** `[M/D/YY, h:mm:ss AM]` form. There is **no U+200E**
+  anywhere and no `<Media omitted>` (that is the Android spelling; both are accepted).
+- Date order was proven from data, not assumed: 125 header lines had a first field >12, which is
+  only possible if it is the day under D/M — so the file is month-first. Detection still handles
+  EU-style files.
+- **A message body can be a bare `[`.** One real message pasted a JSON block. A naive
+  `line.startswith("[")` parser splits it. The header must match the whole `[date, time] ` prefix.
+- **Seven bullet-identical `<image omitted>` can share one second** (a photo album). Content-only
+  keys collapse them into one row. `Message.key` therefore includes the **ordinal within the
+  timestamp**, so each survives; re-exports reproduce the same order.
+- Media are placeholders, not files: `<image omitted>`, `<video omitted>`, `<album message>`,
+  `[Forwarded] ` prefix. `AttachmentRef.path` holds only a document's stated filename.
+- Timestamps carry **no offset**. `tz_offset_hours` is declared by the caller (`--tz-offset`);
+  default 0 treats wall clock as UTC and says so in `warnings`.
 
 ### Decisions already made (do not relitigate)
 
@@ -585,6 +705,10 @@ the 4 real-data tests skip — expected, not a failure.
 | `prune` needs `confirm=true` | A model must not delete spool files on its own initiative |
 | Fixtures pinned, generated samples gitignored | Otherwise a failing test gets "fixed" by regenerating |
 | Message edits need no handling | We keep the most recent copy; re-parse overwrites |
+| **Instagram DMs are out of scope** | Not this app's messaging; export names no sender |
+| **UI is a drop zone, period** | No `~/Downloads` scanning; dev pastes a path and `stage()` copies it into the spool |
+| **Stage copies, never moves** | A failed parse must not relocate the user's only download |
+| WhatsApp key includes the same-second ordinal | Real albums send 7 identical rows in one second |
 
 ### Loose ends
 

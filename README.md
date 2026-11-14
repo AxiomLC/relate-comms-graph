@@ -2,8 +2,8 @@
 
 **Your own message archives — across platforms — as one local, privacy-scrubbed graph.**
 
-> 🚧 **Pre-build. Research and design only.** No code yet. This repo currently holds
-> the direction, the platform-by-platform reality check, and the resolved traps.
+> ✅ **Working prototype.** Five adapters, live email, identity resolution and a scrub
+> gate. See [Status](#status).
 
 ---
 
@@ -36,27 +36,39 @@ across four apps. A graph makes it visible.
 
 | Doc | What's in it |
 |---|---|
-| [`docs/direction.md`](docs/direction.md) | The full direction: per-platform reality check (with honest grades), architecture, graph schema, demo script, daily-sync model |
-| [`docs/llm-models.md`](docs/llm-models.md) | Local model & quantisation choices — and why most of this pipeline needs no LLM at all |
-| [`docs/adjacent-notes.md`](docs/adjacent-notes.md) | Reusable code from prior work, libraries worth knowing, prior art, and traps already paid for |
+| [`MssgDownloadInstructs.md`](MssgDownloadInstructs.md) | **Start here.** How to get each platform's export, what the file looks like, and how ingest reports back |
+| [`buildNOTES.md`](buildNOTES.md) | Engineering notes: schema, pipeline, per-platform traps found in real exports, decisions |
+| [`HowToRunOllama.md`](HowToRunOllama.md) | Local model setup |
 
 ## Platform reality, at a glance
 
 | Platform | Grade | Route |
 |---|---|---|
-| **Telegram** | **A** | Desktop export → `result.json` (officially documented schema), or Telethon. **Build first.** |
-| **Email** | **A** | IMAP read-only, or local `.eml`/`.msg`. Best join key (addresses). |
-| **WhatsApp** | B | `.txt` export (manual, per-chat) or Baileys via Hermes bridge. No REST history API — persist as it arrives. Ban risk is real. |
-| **LinkedIn** | **A data / F automation** | *Get a copy of your data* → archive has `messages.csv`, `Connections.csv`, `Contacts.csv` (with phones). **Export only — never automate.** |
-| **Messenger** | B/C | Facebook takeout JSON. Slow, no API. |
-| **Slack** | C | Full export needs workspace **admin**. Not viable for a normal member. |
+| **Telegram** | **A** | Desktop export → `result.json` (officially documented schema) |
+| **Email (Gmail)** | **A** | IMAP read-only, App Password. Verified live: 250 msgs in a 30-day window |
+| **Email (Hostinger / cPanel)** | **A** | IMAP read-only, `INBOX` + `INBOX.Sent`. Verified live: 221 msgs, 68 conversations |
+| **Email (Outlook)** | **A file / F live** | Basic auth is dead, so live IMAP needs an Azure app. **Use the `.pst` export button** — the app reads the file |
+| **WhatsApp** | B | `.txt`/`.zip` per-chat export. No all-chats export; media placeholders only |
+| **LinkedIn** | **A data / F automation** | *Basic* archive → `messages.csv`. **Export only — never automate** |
+| **Messenger** | B/C | `Download your information` → HTML archive. Slow, no API |
+| **Slack** | C | Full export needs workspace **admin**. Not viable for a normal member |
+| **Instagram** | — | **Out of scope.** Not this app's messaging; the export names no sender |
 
-Full reasoning, including why LinkedIn is "the killer you named is the one that kills
-you," is in [`docs/direction.md`](docs/direction.md#4-per-platform-reality-check).
+**Other email providers** (Yahoo, iCloud, Fastmail, Zoho, Proton, any IMAP host) work
+through the same read-only IMAP reader: it asks the server which folder is "sent" or
+"all mail" using the standard mailbox flags (RFC 6154), and falls back to common names
+(`Sent`, `INBOX.Sent`, `Sent Items`, `Bulk Mail`). Only Gmail and Hostinger are proven
+against live mailboxes on this machine; the rest are untested. Per-provider servers and
+quirks are listed in [`MssgDownloadInstructs.md`](MssgDownloadInstructs.md).
+
+Why a graph tool should not hardcode email folders: they are **not standardised** and
+several providers *translate* them (Gmail in Spanish returns `[Gmail]/Todos`). Asking the
+server avoids a silent zero-message import.
 
 ## What the demo looks like
 
 1. Drop three archives in a folder: Telegram JSON, WhatsApp `.txt`, LinkedIn zip.
+   (Email is the fourth source and reads live instead of from a file.)
 2. Ingest — show the refusal log and what was scrubbed.
 3. Query: *"Who did I talk to about [topic] on more than one platform, and when did it stop?"*
 4. One `Person` node, edges into three platforms, a timeline, a cluster that goes quiet.
@@ -75,9 +87,18 @@ Step 3 is the shock moment. Step 5 is what no existing tool does.
 
 ## Status
 
-Nothing is built. Next step, per [`docs/adjacent-notes.md`](docs/adjacent-notes.md#7-suggested-first-build-order):
-a canonical `Message` schema plus a Telegram `result.json` adapter — no LLM, no
-credentials beyond your own export.
+Five adapters ingest real data into a local Relate store: **Telegram, WhatsApp, Messenger,
+LinkedIn** (from exported files) and **email** (Gmail + any IMAP mailbox live, Outlook from
+a `.pst`). Resolution merges the same person across platforms; a scrub gate withholds
+phones, emails, addresses and card numbers before anything is written.
+
+11,066 mixed messages ingest in ~3 s. `pytest tests -q` → 94 passed.
+
+Not built yet: SMS, the UI, and persisting `Person`/`Identity` into the store.
+See [`buildNOTES.md` §10](buildNOTES.md) for the handover.
+
+**Email setup:** copy `.env.example` to `.env` and fill in your mailbox credentials.
+`.env` is gitignored and never committed.
 
 ## Scope note
 

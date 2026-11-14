@@ -1,6 +1,8 @@
 # Secrets and personal data — never commit
 .env
 .env.*
+# ...except the committed template, which holds no secrets
+!.env.example
 *.key
 *.pem
 secrets.json

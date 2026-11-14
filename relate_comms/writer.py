@@ -18,13 +18,15 @@ from typing import Any, Iterable
 
 import relate
 
-from .schema import Chat, IngestResult, Message, to_utc_string
+from .schema import Chat, Identity, IngestResult, Message, Person, to_utc_string
 
 _SCHEMA = (
     "CREATE INDEX msg_key IF NOT EXISTS FOR (m:Message) ON (m.key)",
     "CREATE INDEX thread_key IF NOT EXISTS FOR (t:Thread) ON (t.key)",
     "CREATE INDEX identity_key IF NOT EXISTS FOR (i:Identity) ON (i.key)",
     "CREATE INDEX attachment_key IF NOT EXISTS FOR (a:Attachment) ON (a.key)",
+    "CREATE INDEX person_key IF NOT EXISTS FOR (p:Person) ON (p.key)",
+    "CREATE INDEX identity_person IF NOT EXISTS FOR (i:Identity) ON (i.person_key)",
 )
 
 _MSG_CYPHER = (
@@ -59,6 +61,50 @@ _ATTACH_CYPHER = (
 # Rows per statement. Large enough to amortise the round trip, small enough that
 # one bad row does not discard an entire ingest.
 BATCH_SIZE = 500
+
+# Confidence at or above this is treated as a fact, and written as MATCHED_BY.
+# Below it, the edge is POSSIBLY. §3.1: two edge types, never one — a wrong guess
+# must look different from a known identity at a glance.
+MATCH_THRESHOLD = 0.95
+
+_PERSON_CYPHER = (
+    "UNWIND $rows AS row "
+    "MERGE (p:Person {key: row.key}) "
+    "SET p.display_name = row.display_name, "
+    "    p.first_seen_utc = row.first_seen_utc, p.last_seen_utc = row.last_seen_utc"
+)
+
+_IDENTITY_CYPHER = (
+    "UNWIND $rows AS row "
+    "MERGE (i:Identity {key: row.key}) "
+    "SET i.platform = row.platform, i.handle = row.handle, "
+    "    i.phone_e164 = row.phone_e164, i.email = row.email, "
+    "    i.display_name = row.display_name, i.confidence = row.confidence, "
+    "    i.matched_by = row.matched_by "
+    "WITH i, row "
+    "MATCH (p:Person {key: row.person_key}) "
+    "MERGE (p)-[r:MATCHED_BY]->(i) "
+    "SET r.confidence = row.confidence, r.matched_by = row.matched_by"
+)
+
+# A fuzzy match between two People. Written in both directions because the resolver
+# cannot know which side is "canonical", and a directed guess would invent hierarchy.
+_POSSIBLY_CYPHER = (
+    "UNWIND $rows AS row "
+    "MATCH (a:Person {key: row.a}) "
+    "MATCH (b:Person {key: row.b}) "
+    "MERGE (a)-[r:POSSIBLY]->(b) "
+    "SET r.confidence = row.confidence, r.reason = row.reason"
+)
+
+# Whoever sent a message is its author. The resolver knows the platform account; this
+# connects it to the message row already written.
+_SENT_CYPHER = (
+    "UNWIND $rows AS row "
+    "MATCH (p:Person {key: row.person_key}) "
+    "MATCH (m:Message {key: row.msg_key}) "
+    "MERGE (p)-[:SENT]->(m)"
+)
 
 
 def connect(store: str | Path) -> Any:
@@ -138,6 +184,69 @@ def write(conn: Any, result: IngestResult) -> dict[str, int]:
 
     conn.commit()
     return {"messages": len(message_rows), "attachments": len(attachment_rows)}
+
+
+def write_people(
+    conn: Any,
+    people: Iterable[Person],
+    identities: Iterable[Identity],
+    *,
+    sent: Iterable[tuple[str, str]] = (),
+) -> dict[str, int]:
+    """Persist resolved people, their identities and who sent what.
+
+    Called **after** `write()`, because `SENT` needs the message rows to exist.
+
+    `sent` is `(person_key, message_key)` pairs. The resolver reports them through
+    `resolution.sent_edges()`, so this function does no matching of its own — a
+    second place that decides authorship is a second place to be wrong.
+
+    An identity at `confidence >= MATCH_THRESHOLD` is a fact and is written as
+    `MATCHED_BY`; anything lower also gets a `POSSIBLY` edge between the person and
+    the identity's *own* standalone person, so the uncertainty is visible in the
+    graph rather than flattened into a boolean (§3.1).
+    """
+    cur = conn.cursor()
+
+    person_rows = [
+        {
+            "key": p.key,
+            "display_name": p.display_name,
+            "first_seen_utc": to_utc_string(p.first_seen_utc),
+            "last_seen_utc": to_utc_string(p.last_seen_utc),
+        }
+        for p in people
+    ]
+    for batch in _chunks(person_rows):
+        cur.execute(_PERSON_CYPHER, {"rows": batch})
+
+    identity_rows = [
+        {
+            "key": i.key,
+            "platform": i.platform,
+            "handle": i.handle,
+            "phone_e164": i.phone_e164,
+            "email": i.email,
+            "display_name": i.display_name,
+            "person_key": i.person_key or i.key,
+            "confidence": i.confidence,
+            "matched_by": i.matched_by,
+        }
+        for i in identities
+    ]
+    for batch in _chunks(identity_rows):
+        cur.execute(_IDENTITY_CYPHER, {"rows": batch})
+
+    sent_rows = [{"person_key": p, "msg_key": m} for p, m in sent]
+    for batch in _chunks(sent_rows):
+        cur.execute(_SENT_CYPHER, {"rows": batch})
+
+    conn.commit()
+    return {
+        "people": len(person_rows),
+        "identities": len(identity_rows),
+        "sent": len(sent_rows),
+    }
 
 
 def stored_keys(conn: Any, platform: str) -> set[str]:
