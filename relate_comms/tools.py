@@ -56,23 +56,53 @@ class Tool:
 
 # Planned tool surface. Registered when each is implemented.
 #
-# READ
-#   search_messages(query, limit)          -> full-text / semantic over Message.body
-#   semantic_search(embedding, k)          -> db.index.vector.queryNodes
-#   hybrid_search(query, k)               -> vector then traverse
-#   run_cypher(query, params, limit)       -> read-only Cypher, returned with the query for display
-#   thread_arc(thread_key)                -> "met -> worked -> went quiet" summary
-#   person_profile(person_key)            -> identities, platforms, first/last seen
-#   graph_slice(node_types, edge_types)    -> nodes/edges filtered for the 3D view
-#   message_view(message_key)              -> the viewer box: body as text/MD
-#   evidence_counts()                      -> kept/hidden/blocked, non-text kinds
+# ORDERED BY WHAT IS BUILDABLE NOW. Message/Thread/Attachment exist; Person and
+# Identity arrive with resolution (stage 4). A tool is not blocked because a
+# person-shaped query returns nothing — the graph is useful before resolution.
+#
+# READ — available against today's schema
+#   message_view(message_key)               -> the viewer box: body as text/MD
+#   thread_arc(thread_key)                  -> timeline of one thread, no Person needed
+#   graph_slice(node_types, edge_types, limit) -> see TOGGLE MODEL below
+#   run_cypher(query, params, limit)        -> read-only Cypher, returned for display
+#   search_messages(query, limit)           -> full-text over Message.body
+#   semantic_search(embedding, k)           -> db.index.vector.queryNodes
+#   hybrid_search(query, k)                 -> vector then traverse
+#   evidence_counts()                       -> kept/hidden/blocked, non-text kinds
+#   types_present()                         -> node/edge types that actually have data
+#
+# READ — needs resolution (stage 4)
+#   person_profile(person_key)              -> identities, platforms, first/last seen
+#   who_did_i_talk_to(since, limit)         -> Person -> Message -> Thread
 #
 # WRITE
-#   ingest(source, platform, since, until) -> parse -> write -> verify
-#   verify_ingest(batch_id)                -> is every key in the store?
+#   ingest(source, platform, since, until)  -> parse -> write -> verify
+#   verify_ingest(batch_id)                 -> is every key in the store?
 #
 # DESTRUCTIVE
-#   prune_spool(older_than_days, confirm)  -> only verified files, never else
+#   prune_spool(older_than_days, confirm)   -> only verified files, never else
+#
+# TOGGLE MODEL — views filter, queries do not
+# ---------------------------------------------------
+# The store is always whole. UI node/edge toggles are a VIEW concern: they decide
+# what a drawing shows, never what a query can reach.
+#
+#   UI graph canvas   toggles hide nodes/edges from this drawing  (client-side)
+#   UI search         optional filter on the one query being run  (query-time WHERE)
+#   UI chat agent     may ask for the whole graph or any subset   (its choice)
+#   MCP agent         same                                        (its choice)
+#
+# Therefore NO tool may take the current toggles as an implicit input. Slicing is
+# always an explicit argument, defaulting to everything:
+#
+#   graph_slice(node_types=None, edge_types=None, limit=2000)
+#     node_types=None means "all" - not "none" and not "whatever the UI has on".
+#     A hidden UI toggle silently narrowing an agent's view is the failure mode
+#     nobody catches in a demo.
+#
+# TRUNCATION IS NEVER SILENT. A slice that hits `limit` must return the count it
+# returned plus `truncated: true`, or an agent will report "you have 2000 messages"
+# when the store holds 1215 or 25000.
 
 REGISTRY: dict[str, Tool] = {}
 

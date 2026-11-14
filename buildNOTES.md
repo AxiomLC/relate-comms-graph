@@ -329,7 +329,9 @@ are Neo4j staff and will ask.
 |---|---|---|---|
 | 0 | ~~Install Relate~~ | ✅ done | done |
 | 1 | **Real payload capture** — one small export per platform, redacted → `fixtures/real/` | Files on disk + field notes | 1 |
-| 2 | **Canonical schema + Telegram adapter + Relate writer** | Ingest twice → identical counts | 2 |
+| 2 | ~~Canonical schema + Telegram adapter + Relate writer~~ | ✅ done | done |
+| 2b | **UNWIND batching in writer** — per-row MERGE is 64–133 msg/s | Batched at least 10× faster, idempotency test still green | 0.5 |
+| 2c | **`ingest.py`** — parallel parse, serialised write, `--source real\|sample` | Same graph from sample and real | 1 |
 | 3 | WhatsApp `.txt` adapter | Same person in both platforms | 1.5 |
 | 4 | Resolution — E.164, lowercased email, `rapidfuzz` | One Person on 2+ platforms | 1.5 |
 | 5 | Scrub gate + refusal log | Flip `phones: block` → same shape, PII gone | 2 |
@@ -382,6 +384,62 @@ and logs a visible refusal — same policy as the scrub gate (§3.2).
 Telegram Desktop has no scheduler, so the export is the one manual step; everything after the
 file lands is unattended.
 
+### 9.1.1 Delta, not re-parse — and what is actually automatable
+
+**First ingest** is expensive: full parse, full flatten, full write. **Every ingest after that**
+should only apply what is new. `Message.key = platform:chat_id:message_id` makes that possible —
+a row whose key is already in the store is skipped before its body is touched.
+
+| Platform | True delta available? | Method |
+|---|---|---|
+| Email | **yes** | IMAP `UID FETCH` since last UID |
+| SMS | **yes** | SMS Backup & Restore writes a *scheduled* local XML; watch the folder |
+| WhatsApp | **yes, via key** | `msgstore.db.crypt15` + the user's own key, decrypted offline |
+| Telegram | no — full archive every time | re-parse, delta *write* (cheap) |
+| Messenger | no | full takeout, delta write |
+| LinkedIn | no | full `messages.csv`, delta write |
+
+**Correction to an earlier assumption (research 2026-11-14):** "WhatsApp is manual export only"
+was wrong. The official *Request account info* export genuinely contains **no messages** — but a
+local `msgstore.db.crypt14/15` plus the user's own 64-hex key decrypts entirely offline. No
+root needed if the key comes from an E2E-backup screenshot the user already has; no session, no
+account contact, no ban risk. `wa-crypt-tools` is maintained (tested against 2.26.34.7) and
+`WhatsApp-Chat-Exporter` parses the result. **Build a key-and-file importer, not a bot.**
+
+Other corrections worth keeping: **SMS is the best automation case**, not the worst — scheduled
+local XML, plain unencrypted SQLite, zero ToS surface. **Telegram `tdata` is a dead end** —
+official maintainers state it holds no messages, only media/settings cache. **Messenger,
+Instagram, LinkedIn and Telegram have no legitimate offline auto-extract**; they are manual
+import only, and automating their endpoints would need a live session, which is forbidden (§9).
+
+Each parser should accept *either* a raw official export *or* a decrypted DB as first-class
+input. That decouples ingestion from extraction and keeps every demo offline.
+
+### 9.1.2 Parallel parse, serialised write
+
+The pipeline shape is fixed by one constraint: **`.rl` is a single file with one writer.**
+
+```
+  export A ─┐
+  export B ─┼─► parse in parallel (process pool) ─► one write queue ─► .rl store
+  export C ─┘         I/O + CPU bound                serialised
+```
+
+- **Parsing parallelises cleanly.** Six JSON/XML files are independent; nothing is shared.
+- **Writing must not parallelise** against the same store. Concurrent writers to one `.rl`
+  file is a corruption, not a speed-up.
+- So: parse → `IngestResult` objects → a single writer consumes them in order.
+
+**Known bottleneck, measured:** per-row `MERGE` runs at ~133 msg/s at 1k rows and ~64 msg/s at
+10k (`tools/bench_scale.py`) — it degrades superlinearly. `UNWIND $rows AS row` batching is
+required before this scales, not an optional optimisation. A 500k-message corpus would take
+hours at the current rate.
+
+**Deletions:** a key that vanishes from a *later* full export means the message was deleted on
+the platform. Cheap to detect (set difference on keys) and cheap to act on. Not required for the
+demo; do it only if it stays cheap. **Message edits need no handling** — we keep the most recent
+copy, which is what a re-parse naturally overwrites.
+
 ### 9.2 Who is "me" — `relate_comms/identity.py`
 
 `is_self` must not depend on which file was opened. Deriving the owner per-file made the
@@ -428,60 +486,66 @@ python -m relate_comms sample build --dest fixtures  # -> tests/fixtures/ (pinne
 Deterministic: regenerating the same source gives byte-identical output (verified by md5).
 
 ---
+---
 
-## 10. Handover — 2026-11-14, after stage 2
+## 10. Handover — updated 2026-11-14 19:40
 
-**Status:** Stage 2 complete and pushed (`d6a8768`). Canonical `Message`, Telegram adapter (both
-export shapes), Relate writer with `verify_present`, owner identity, tool layer scaffold, `app/`
-scaffold, `pyproject.toml`.
+**Where we are:** stage 2 done and pushed (`8e9b2ad`) — Telegram adapter (both export shapes),
+Relate writer with `verify_present`, identity, tool layer, `app/` scaffold, sample generation.
+10 tests pass. **Nothing below is already built.**
 
-**Verify before touching anything:**
+**Verify state before touching anything:**
 
 ```bash
-python -m pytest tests -q                   # expect 10 passed
-python -m relate_comms sample build --check # regenerates samples + round-trips them
+python -m pytest tests -q                     # expect 10 passed
+python -m relate_comms sample build --check   # regenerates samples + round-trips
 ```
 
-Real exports live **outside the repo** at `~/relate-comms/spool/` (`RELATE_DATA_ROOT`). If that
-is empty, the four real-data tests skip and that is expected, not a failure.
+Real exports live **outside the repo** at `~/relate-comms/spool/` (`RELATE_DATA_ROOT`). If empty,
+the 4 real-data tests skip — expected, not a failure.
 
-### What stage 2 actually taught us (beyond the spec)
+### Next, in priority order
 
-Real exports from this account were read, not just documented. Findings that changed the design:
+1. **`UNWIND` batching in `writer.write()`.** Measured per-row `MERGE` at ~133 msg/s (1k rows)
+   degrading to ~64 msg/s (10k). Batched, this is the difference between minutes and hours on a
+   large corpus. Must stay idempotent — `MERGE` on `Message.key`.
+2. **`ingest.py`** — parse → write → verify, with `--source real|sample`. Parse in parallel
+   (process pool), write serialised through one queue (§9.1.2). `cli.py` currently stubs it.
+3. **Stage 3: WhatsApp `.txt` adapter.** Android dialect, U+200E LTR mark before media lines.
+   Real file first (§6), then `sample_data/generators/whatsapp.py`.
+4. **Stage 4/5: resolution + scrub gate.** `Person`/`Identity` arrive here. Do **not** treat other
+   node types as blocked — `Message`, `Thread`, `Attachment` already work; person-shaped queries
+   just return nothing until then.
+5. **`tools/bench_graph.py`** — run `bench_queries.json` against Relate local vs Neo4j Cloud.
 
-| Finding | Consequence |
+### Open research questions (spawn a sub-agent)
+
+- **Auto-extraction beyond the manual export.** Research 2026-11-14 established a working split:
+  WhatsApp is automatable *offline via key* (`msgstore.db.crypt15` + the user's own 64-hex key →
+  `wa-crypt-tools` → `WhatsApp-Chat-Exporter`), and SMS is automatable via scheduled local XML.
+  Messenger, Instagram, Telegram and LinkedIn have **no legitimate offline auto-extract**.
+  - **Still open:** are there any community tools that automate these four *without* a live
+    session? Prior research says no and that `tdata` holds no messages, but that was one pass.
+    Any follow-up must prove the tool is maintained, offline, and account-safe — or it is
+    rejected. Do not plan any extractor into the build until that is settled.
+
+### Decisions already made (do not relitigate)
+
+| Decision | Why |
 |---|---|
-| `personal_information: null`, no Saved Messages | Owner must be **inferred and persisted**. See §9.2 |
-| Inferring the owner per-file made `is_self` flip between exports | Caught by a failing test. Fixed by `identity.py` + `.profile/` |
-| `text_entities` present on all 1215 rows, incl. `plain` wrapping whole bodies | Body comes from `text`; entities are a signal, never the source |
-| Service rows carry `actor`/`actor_id`, never `from` (344/1215) | Sender falls back to actor |
-| Entity types include `cashtag`, `mention_name`, `plain` — undocumented | Handler must not KeyError on unknown types |
-| `date_unixtime` missing from one export, present in another | Both paths required; `date` is local with no offset |
-| Single-chat export is a byte-identical subset of the bulk one | One bulk download replaces a per-chat loop — §9.1 |
-| `db.index.vector.queryNodes` works natively | Semantic search needs no sidecar — §5.4 |
-
-### Then, in order
-
-1. **Stage 3** — WhatsApp `.txt` (Android dialect, U+200E LTR mark before media lines). Needs a
-   real file first, per §6. Then `sample_data/generators/whatsapp.py`.
-1. **Stage 3** — WhatsApp `.txt` (Android dialect, U+200E LTR mark before media lines). Needs a
-   real file first, per §6. Then `sample_data/generators/whatsapp.py`.
-2. **Stage 4/5** — resolution and scrub gate. Until these land, `Person` does not exist, so
-   the UI's person-centric tools have nothing to read.
-3. **`ingest.py`** — the shipped pipeline and `--source real|sample` toggle. `cli.py` currently
-   stubs `ingest` and returns exit 2; `sample build` works.
-4. `tools/bench_graph.py` to run `bench_queries.json` against Relate and Neo4j Cloud.
+| One bulk export, no per-chat clicking | Single-chat export is a byte-identical subset |
+| Store is always whole; toggles are view-only | A hidden UI toggle must never narrow an agent's query (§5.2) |
+| Write access is a per-surface toggle | UI, chat and MCP each decide independently |
+| `prune` needs `confirm=true` | A model must not delete spool files on its own initiative |
+| Fixtures pinned, generated samples gitignored | Otherwise a failing test gets "fixed" by regenerating |
+| Message edits need no handling | We keep the most recent copy; re-parse overwrites |
 
 ### Loose ends
-- `tools/bench_ollama.py` **stalls at `ollama.create`** — known broken, low priority (MoE already gave the speed).
-- `num_thread` unmeasured. Theory says 6 on 4P+8E. Not blocking.
-- Verified tok/s came from 8 easy messages; re-test on ~50 real redacted ones before trusting it.
-- **Redaction policy for a public repo — settled for fixtures** (see §9.3: two-pass scrub, scrub
-  `plain` entities, `--check` round-trip). Still open for any future `fixtures/real/`: none exists
-  today and none is planned.
-- `Person` nodes do not exist until stage 4, so person-centric UI tools have nothing to read yet.
-- **Fixtures keep real timestamps.** Names, bodies and chat ids are scrubbed two passes, but
-  dates are unchanged — the fixture still encodes *when* the original conversation happened.
-  If that matters, add a per-export date offset to `sample_data/build.py` (preserves spacing).
-- **`relate_comms/sample_data/build.py` is shipped functionality**, reachable as
-  `python -m relate_comms sample build`. Do not move it back to `tools/`.
+
+- `tools/bench_ollama.py` stalls at `ollama.create` — known broken, low priority.
+- `num_thread` unmeasured; theory says 6 on 4P+8E. Not blocking.
+- tok/s came from 8 easy messages; re-test on ~50 real redacted ones before trusting it.
+- **Fixtures keep real timestamps.** Names/bodies/ids are scrubbed, dates are not. Add a
+  per-export date offset if that matters.
+- **Relate is embedded with a `.rl` file on disk, not RAM-only.** ~740–800 bytes/msg; 10k msgs =
+  7.4 MB. The speed pitch is "no server, no network round trip", not "in memory".
