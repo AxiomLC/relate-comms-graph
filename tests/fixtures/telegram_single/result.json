@@ -1,0 +1,238 @@
+{
+  "name": "Dummy chat",
+  "type": "personal_chat",
+  "id": 881784752,
+  "messages": [
+    {
+      "id": 99641,
+      "type": "message",
+      "date": "2025-05-02T18:33:00",
+      "date_unixtime": "1746203580",
+      "from": "Person A",
+      "from_id": "user900000",
+      "text": "Sample sentence one.",
+      "text_entities": [
+        {
+          "type": "plain",
+          "text": "A second line for the dummy."
+        }
+      ]
+    },
+    {
+      "id": 99642,
+      "type": "message",
+      "date": "2025-05-02T18:33:11",
+      "date_unixtime": "1746203591",
+      "from": "Person A",
+      "from_id": "user900000",
+      "text": "Placeholder body text.",
+      "text_entities": [
+        {
+          "type": "plain",
+          "text": "Placeholder body text."
+        }
+      ]
+    },
+    {
+      "id": 99643,
+      "type": "message",
+      "date": "2025-05-02T18:34:59",
+      "date_unixtime": "1746203699",
+      "from": "Person A",
+      "from_id": "user900000",
+      "text": [
+        {
+          "type": "link",
+          "text": "This row exists to keep the shape."
+        }
+      ],
+      "text_entities": [
+        {
+          "type": "link",
+          "text": "Placeholder body text."
+        }
+      ]
+    },
+    {
+      "id": 99644,
+      "type": "message",
+      "date": "2025-05-02T18:41:42",
+      "date_unixtime": "1746204102",
+      "from": "Person A",
+      "from_id": "user900000",
+      "text": [
+        {
+          "type": "link",
+          "text": "A second line for the dummy."
+        }
+      ],
+      "text_entities": [
+        {
+          "type": "link",
+          "text": "This row exists to keep the shape."
+        }
+      ]
+    },
+    {
+      "id": 99647,
+      "type": "message",
+      "date": "2025-05-02T20:12:55",
+      "date_unixtime": "1746209575",
+      "from": "Person B",
+      "from_id": "user900007",
+      "text": "Sample sentence one.",
+      "text_entities": [
+        {
+          "type": "plain",
+          "text": "This row exists to keep the shape."
+        }
+      ]
+    },
+    {
+      "id": 99652,
+      "type": "message",
+      "date": "2025-05-02T23:43:22",
+      "date_unixtime": "1746222202",
+      "from": "Person A",
+      "from_id": "user900000",
+      "reply_to_message_id": 99647,
+      "text": "A second line for the dummy.",
+      "text_entities": [
+        {
+          "type": "plain",
+          "text": "This row exists to keep the shape."
+        }
+      ]
+    },
+    {
+      "id": 99665,
+      "type": "message",
+      "date": "2025-05-05T22:58:52",
+      "date_unixtime": "1746478732",
+      "from": "Person B",
+      "from_id": "user900007",
+      "text": "Another dummy message.",
+      "text_entities": [
+        {
+          "type": "plain",
+          "text": "A second line for the dummy."
+        }
+      ]
+    },
+    {
+      "id": 99666,
+      "type": "message",
+      "date": "2025-05-05T23:01:22",
+      "date_unixtime": "1746478882",
+      "from": "Person A",
+      "from_id": "user900000",
+      "text": "Sample sentence one.",
+      "text_entities": [
+        {
+          "type": "plain",
+          "text": "This row exists to keep the shape."
+        }
+      ]
+    },
+    {
+      "id": 99708,
+      "type": "message",
+      "date": "2025-06-10T18:56:47",
+      "date_unixtime": "1749574607",
+      "from": "Person B",
+      "from_id": "user900007",
+      "text": "Placeholder body text.",
+      "text_entities": [
+        {
+          "type": "plain",
+          "text": "Another dummy message."
+        }
+      ]
+    },
+    {
+      "id": 99709,
+      "type": "message",
+      "date": "2025-06-10T19:06:17",
+      "date_unixtime": "1749575177",
+      "from": "Person A",
+      "from_id": "user900000",
+      "text": [
+        "Placeholder body text.",
+        {
+          "type": "phone",
+          "text": "This row exists to keep the shape."
+        }
+      ],
+      "text_entities": [
+        {
+          "type": "plain",
+          "text": "This row exists to keep the shape."
+        },
+        {
+          "type": "phone",
+          "text": "Another dummy message."
+        }
+      ]
+    },
+    {
+      "id": 99710,
+      "type": "message",
+      "date": "2025-06-10T19:06:28",
+      "date_unixtime": "1749575188",
+      "from": "Person A",
+      "from_id": "user900000",
+      "file": "(File not included. Change data exporting settings to download.)",
+      "file_size": 103017,
+      "media_type": "voice_message",
+      "mime_type": "audio/ogg",
+      "duration_seconds": 4,
+      "text": "",
+      "text_entities": []
+    },
+    {
+      "id": 99711,
+      "type": "message",
+      "date": "2025-06-10T19:24:40",
+      "date_unixtime": "1749576280",
+      "from": "Person B",
+      "from_id": "user900007",
+      "text": "Short reply.",
+      "text_entities": [
+        {
+          "type": "plain",
+          "text": "A second line for the dummy."
+        }
+      ]
+    },
+    {
+      "id": 99712,
+      "type": "message",
+      "date": "2025-06-10T20:02:39",
+      "date_unixtime": "1749578559",
+      "from": "Person A",
+      "from_id": "user900000",
+      "file": "(File not included. Change data exporting settings to download.)",
+      "file_size": 210961,
+      "media_type": "voice_message",
+      "mime_type": "audio/ogg",
+      "duration_seconds": 10,
+      "text": "",
+      "text_entities": []
+    },
+    {
+      "id": 99713,
+      "type": "message",
+      "date": "2025-06-10T20:24:08",
+      "date_unixtime": "1749579848",
+      "from": "Person B",
+      "from_id": "user900007",
+      "text": "A second line for the dummy.",
+      "text_entities": [
+        {
+          "type": "plain",
+          "text": "This row exists to keep the shape."
+        }
+      ]
+    }
+  ]
+}

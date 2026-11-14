@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "relate-comms"
+version = "0.2.0"
+description = "Your comms as a local graph: parse platform exports into Relate, query them with Cypher, optionally with a local model."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "TBD" }
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
+    "Private :: Do Not Upload",
+]
+
+# Library deps only. `relate` is the engine and is required; nothing here may
+# depend on a network service.
+dependencies = [
+    "relate",
+]
+
+[project.optional-dependencies]
+# Everything the UI needs. Absent for library-only use, which is the point:
+# importing relate_comms must not pull in a web server.
+app = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "mcp",
+]
+dev = [
+    "pytest>=8",
+]
+
+[project.scripts]
+relate-comms = "relate_comms.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["relate_comms*", "app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

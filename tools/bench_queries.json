@@ -1,0 +1,92 @@
+{
+  "$comment": [
+    "Benchmark queries: same Cypher, two engines (Relate local .rl vs Neo4j Cloud).",
+    "Every query is written to run unmodified on both, so the only variable is the engine.",
+    "Params use $name syntax, identical in Relate and Neo4j drivers.",
+    "`tier` groups queries by shape: lookup, traversal, aggregate, vector.",
+    "A benchmark that only measures one tier will flatter whichever engine wins that tier."
+  ],
+  "schema_note": {
+    "nodes": ["Person", "Identity", "Thread", "Message", "Attachment"],
+    "edges": ["SENT", "MATCHED_BY", "POSSIBLY", "IN", "REPLY_TO", "MENTIONS", "HAS_ATTACHMENT"]
+  },
+  "queries": [
+    {
+      "id": "lookup_message_key",
+      "tier": "lookup",
+      "why": "Indexed point lookup. The floor: both engines should be fast, so a bad result here means a missing index, not a slow engine.",
+      "cypher": "MATCH (m:Message {key: $key}) RETURN m.key, m.ts_utc, m.body",
+      "params": {"key": "telegram:1617561215:99641"}
+    },
+    {
+      "id": "lookup_thread_window",
+      "tier": "lookup",
+      "why": "Range scan on time within one thread. Tests whether ts_utc is indexed usefully.",
+      "cypher": "MATCH (m:Message)-[:IN]->(t:Thread {key: $thread}) WHERE m.ts_utc >= $since AND m.ts_utc < $until RETURN m.key, m.ts_utc ORDER BY m.ts_utc",
+      "params": {"thread": "telegram:1617561215", "since": "2025-01-01T00:00:00Z", "until": "2026-01-01T00:00:00Z"}
+    },
+    {
+      "id": "traversal_reply_chain",
+      "tier": "traversal",
+      "why": "1-2 hops over REPLY_TO. If Relate is a real graph engine this is where local wins hardest, because there is no network round trip per hop.",
+      "cypher": "MATCH (m:Message {key: $key})-[:REPLY_TO*1..3]->(r:Message) RETURN r.key, r.body ORDER BY r.ts_utc",
+      "params": {"key": "telegram:1617561215:99652"}
+    },
+    {
+      "id": "traversal_who_i_talked_to",
+      "tier": "traversal",
+      "why": "Person -> Message -> Thread, bounded by date. The query the UI's relation buttons will run.",
+      "cypher": "MATCH (p:Person)-[:SENT]->(m:Message)-[:IN]->(t:Thread) WHERE m.ts_utc >= $since RETURN p.display_name AS who, t.key AS thread, count(m) AS n ORDER BY n DESC LIMIT $limit",
+      "params": {"since": "2024-01-01T00:00:00Z", "limit": 20}
+    },
+    {
+      "id": "traversal_shared_threads",
+      "tier": "traversal",
+      "why": "Two people, shared threads. A join, which is where a graph engine should beat a relational plan.",
+      "cypher": "MATCH (a:Person {key: $a})-[:SENT]->(:Message)-[:IN]->(t:Thread)<-[:IN]-(:Message)<-[:SENT]-(b:Person {key: $b}) RETURN DISTINCT t.key",
+      "params": {"a": "person:demo", "b": "person:other"}
+    },
+    {
+      "id": "aggregate_message_counts",
+      "tier": "aggregate",
+      "why": "Group-by over the whole store. This is usually where cloud wins, so including it keeps the comparison honest.",
+      "cypher": "MATCH (m:Message) RETURN m.platform AS platform, count(m) AS n ORDER BY n DESC",
+      "params": {}
+    },
+    {
+      "id": "aggregate_kind_breakdown",
+      "tier": "aggregate",
+      "why": "Feeds the evidence panel: how many non-text rows were kept rather than dropped.",
+      "cypher": "MATCH (m:Message) WHERE m.raw_kind <> 'text' RETURN m.raw_kind AS kind, count(m) AS n ORDER BY n DESC",
+      "params": {}
+    },
+    {
+      "id": "vector_semantic_search",
+      "tier": "vector",
+      "why": "Native in Relate (db.index.vector.queryNodes, verified 2026-11-14). Same call exists in Neo4j, so this measures index build + query, not API shape.",
+      "cypher": "CALL db.index.vector.queryNodes($index, $k, $embedding) YIELD node, score RETURN node.key AS key, score ORDER BY score DESC",
+      "params": {"index": "message_embeddings", "k": 10, "embedding": "<dimension-length float list>"}
+    },
+    {
+      "id": "hybrid_vector_then_traverse",
+      "tier": "vector",
+      "why": "The interesting one: nearest 10 messages, then expand to their threads and senders. Pure Cypher, so it runs unchanged on both engines.",
+      "cypher": "CALL db.index.vector.queryNodes($index, $k, $embedding) YIELD node, score MATCH (node)-[:IN]->(t:Thread) OPTIONAL MATCH (p:Person)-[:SENT]->(node) RETURN node.key AS msg, score, t.key AS thread, p.display_name AS who ORDER BY score DESC",
+      "params": {"index": "message_embeddings", "k": 10, "embedding": "<dimension-length float list>"}
+    },
+    {
+      "id": "write_burst_ingest",
+      "tier": "write",
+      "why": "Daily re-ingest cost. Relate is embedded, so the comparison is file I/O vs network; Neo4j Cloud will look slow here and that is a legitimate finding, not a trick.",
+      "cypher": "UNWIND $rows AS row MERGE (m:Message {key: row.key}) SET m.platform = row.platform, m.ts_utc = row.ts_utc, m.body = row.body RETURN count(m) AS written",
+      "params": {"rows": "<array from tests/fixtures or sample_data>"}
+    }
+  ],
+  "method": [
+    "Warm up with 3 runs, then measure 20. Report median and p95, not mean — one GC pause ruins a mean.",
+    "Run both engines on the same machine from the same process where possible, so client overhead is constant.",
+    "Record: query id, tier, engine, median_ms, p95_ms, rows_returned, store_size_bytes.",
+    "A result is only valid if rows_returned matches between engines. Different answers are a correctness bug, not a speed result.",
+    "Publish the .json output next to the README. 'Fast' without a reproducible artifact is a claim, not a finding."
+  ]
+}
