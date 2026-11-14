@@ -358,20 +358,20 @@ are Neo4j staff and will ask.
 | SMS | SMS Backup & Restore → XML | Per-row, no threads — group by address + date |
 | Email | IMAP read-only, `UID FETCH` | Gmail needs an **App Password** |
 
-- Spool to `C:/Users/q1fre/relate-spool/`, not `Downloads`.
+- Spool to `~/relate-comms/spool/` (`RELATE_DATA_ROOT`), not `Downloads`.
 - Delete the spool after ingest; `archive_copies: false` — parse in place, keep hashes.
 - **Never** demo from a live-authenticated session.
 
-### 9.1 Ingest is unattended — daily, with 3-day pruning
+### 9.1 Ingest is button-driven, with 3-day pruning
 
-**The download is one bulk export (all chats).** No per-chat point-and-click. Asking a real
-Telegram user to export 500 chats by hand is not a product; the whole-account `result.json`
-is one click and contains every chat (verified 2026-11-14: a single-chat export is a
-message-for-message subset of the bulk file, same `Message.key`, byte-identical rows).
+**The download is one bulk export (all chats) for Telegram.** No per-chat point-and-click there;
+the whole-account `result.json` is one click and contains every chat (verified 2026-11-14: a
+single-chat export is a message-for-message subset of the bulk file, same `Message.key`,
+byte-identical rows). Other platforms differ — see §9.1.3.
 
-This runs on a schedule, not in a session:
+Pipeline and housekeeping:
 
-1. **Daily** — drop an export in `C:/Users/q1fre/relate-spool/`, ingest it, merge into the store.
+1. **Ingest** — user drops exports in `~/relate-comms/spool/` and presses Ingest (or `ingest.py`).
    Re-ingest is safe: `Message.key = platform:chat_id:message_id` makes it idempotent.
 2. **Verify, then prune at 3 days** — a spool file is deleted only after its key set is
    confirmed present in the store (`writer.verify_present`), not merely "the job exited 0".
@@ -379,12 +379,17 @@ This runs on a schedule, not in a session:
    and the store holds one row per message key, never a copy per ingest.
 
 Unverified spool files are **never** pruned. A failed verify leaves the file for inspection
-and logs a visible refusal — same policy as the scrub gate (§3.2).
+and logs a visible refusal — same policy as the scrub gate (§3.2) and §9.1.1's demotion of cron.
 
-Telegram Desktop has no scheduler, so the export is the one manual step; everything after the
-file lands is unattended.
+### 9.1.1 Auto-ingest — demoted
 
-### 9.1.1 Delta, not re-parse — and what is actually automatable
+Auto-ingest on cron exists but is **not the shipped path**. Only email is genuinely frictionless
+(IMAP `UID FETCH` with an app password); everything else needs a manual export, so a scheduler
+buys nothing but new failure modes. **Email auto-ingest is a one-liner; the rest is button-driven.**
+
+That is not a limitation to hide — it is the shape of the platforms, and the UI owns it below.
+
+### 9.1.2 Delta, not re-parse
 
 **First ingest** is expensive: full parse, full flatten, full write. **Every ingest after that**
 should only apply what is new. `Message.key = platform:chat_id:message_id` makes that possible —
@@ -392,30 +397,64 @@ a row whose key is already in the store is skipped before its body is touched.
 
 | Platform | True delta available? | Method |
 |---|---|---|
-| Email | **yes** | IMAP `UID FETCH` since last UID |
-| SMS | **yes** | SMS Backup & Restore writes a *scheduled* local XML; watch the folder |
-| WhatsApp | **yes, via key** | `msgstore.db.crypt15` + the user's own key, decrypted offline |
+| Email | **yes** | IMAP `UID FETCH` since last UID — the one cron job |
+| SMS | yes | SMS Backup & Restore writes a *scheduled* local XML; watch the folder |
+| WhatsApp | yes, via key | `msgstore.db.crypt15` + the user's own key, decrypted offline |
 | Telegram | no — full archive every time | re-parse, delta *write* (cheap) |
-| Messenger | no | full takeout, delta write |
-| LinkedIn | no | full `messages.csv`, delta write |
+| Messenger / LinkedIn | no | full export, delta write |
 
 **Correction to an earlier assumption (research 2026-11-14):** "WhatsApp is manual export only"
 was wrong. The official *Request account info* export genuinely contains **no messages** — but a
 local `msgstore.db.crypt14/15` plus the user's own 64-hex key decrypts entirely offline. No
-root needed if the key comes from an E2E-backup screenshot the user already has; no session, no
-account contact, no ban risk. `wa-crypt-tools` is maintained (tested against 2.26.34.7) and
-`WhatsApp-Chat-Exporter` parses the result. **Build a key-and-file importer, not a bot.**
+root needed; no session, no account contact, no ban risk.
 
-Other corrections worth keeping: **SMS is the best automation case**, not the worst — scheduled
-local XML, plain unencrypted SQLite, zero ToS surface. **Telegram `tdata` is a dead end** —
-official maintainers state it holds no messages, only media/settings cache. **Messenger,
-Instagram, LinkedIn and Telegram have no legitimate offline auto-extract**; they are manual
-import only, and automating their endpoints would need a live session, which is forbidden (§9).
+**WhatsApp bulk export, verified by research 2026-11-14:** `KnugiHK/WhatsApp-Chat-Exporter`
+(desktop Python CLI, MIT, active) is the only tool covering *all chats* × *date range* × *chat
+selection*, offline. `--date "A - B"`, `--include`/`--exclude`. **Not yet run on this machine** —
+flags come from the repo, not from testing. The 64-digit key is a single point of failure: lose it
+and `.crypt15` is unreadable forever.
 
-Each parser should accept *either* a raw official export *or* a decrypted DB as first-class
-input. That decouples ingestion from extraction and keeps every demo offline.
+Other corrections worth keeping: **SMS is the best automation case** — scheduled local XML, plain
+SQLite, zero ToS surface. **Telegram `tdata` is a dead end** — official maintainers state it holds
+no messages, only media/settings cache. **Messenger, Instagram, LinkedIn and Telegram have no
+legitimate offline auto-extract**; automating their endpoints needs a live session, which §4
+rejects.
 
-### 9.1.2 Parallel parse, serialised write
+Each parser accepts *either* a raw official export *or* a decrypted DB as first-class input.
+That decouples ingestion from extraction and keeps every demo offline.
+
+**Measured cost** (`tools/bench_scale.py`): ~740–800 bytes/message in the store; per-row `MERGE`
+runs at 133 msg/s (1k) degrading to 64 msg/s (10k). 60k messages ≈ 25 min unbatched. Hence stage
+2b (`UNWIND`) before any real WhatsApp work.
+
+### 9.1.3 Ingest UX — one button, one modal
+
+There is **no auto-discovery**. The user brings files to a known folder, then presses a button.
+
+The UI has a single **Ingest** button. It opens a modal:
+
+> **Download your chats to `~/Downloads`, then press INGEST.**
+>
+> | Platform | Where | Notes |
+> |---|---|---|
+> | Telegram | Desktop → Settings → Advanced → *Export Telegram data* → JSON, media off | one click, every chat |
+> | WhatsApp | Per chat → ⋮ → *More* → *Export chat* | one chat at a time; for **all** chats use the advanced Python route below |
+> | Messenger | <https://accountscenter.facebook.com/info_and_permissions/dyi> → *Messages* → JSON | 4-day expiry on the link |
+> | LinkedIn | <https://www.linkedin.com/mypreferences/d/download-my-data> → choose **"Download larger data archive…"** (top radio, *not* the basic one) → *Request archive* | `messages.csv` is bundled inside; up to 24 h |
+> | Email | IMAP host + app password in settings | only genuinely automatic source |
+> | SMS | SMS Backup & Restore → XML to a local folder | Android only |
+>
+> **Advanced — WhatsApp, all chats with a date range:** copy `msgstore.db.crypt15` off the phone
+> plus your 64-digit backup key, then run `wtsexporter --date "YYYY-MM-DD - YYYY-MM-DD"`.
+>
+> Everything stays on this machine. Nothing is uploaded.
+
+The modal is the product's honesty surface: it tells the user exactly what each platform demands
+instead of pretending a magic import exists. Two link caveats — the Meta and LinkedIn URLs were
+**not verified from this machine** (both are login-walled), so each row also gives a navigation
+path to fall back on if a URL rots.
+
+### 9.1.4 Parallel parse, serialised write
 
 The pipeline shape is fixed by one constraint: **`.rl` is a single file with one writer.**
 
@@ -488,7 +527,7 @@ Deterministic: regenerating the same source gives byte-identical output (verifie
 ---
 ---
 
-## 10. Handover — updated 2026-11-14 19:40
+## 10. Handover — updated 2026-11-14 20:05
 
 **Where we are:** stage 2 done and pushed (`8e9b2ad`) — Telegram adapter (both export shapes),
 Relate writer with `verify_present`, identity, tool layer, `app/` scaffold, sample generation.
@@ -520,20 +559,20 @@ the 4 real-data tests skip — expected, not a failure.
 
 ### Open research questions (spawn a sub-agent)
 
-- **Auto-extraction beyond the manual export.** Research 2026-11-14 established a working split:
-  WhatsApp is automatable *offline via key* (`msgstore.db.crypt15` + the user's own 64-hex key →
-  `wa-crypt-tools` → `WhatsApp-Chat-Exporter`), and SMS is automatable via scheduled local XML.
-  Messenger, Instagram, Telegram and LinkedIn have **no legitimate offline auto-extract**.
-  - **Still open:** are there any community tools that automate these four *without* a live
-    session? Prior research says no and that `tdata` holds no messages, but that was one pass.
-    Any follow-up must prove the tool is maintained, offline, and account-safe — or it is
-    rejected. Do not plan any extractor into the build until that is settled.
+- **WhatsApp bulk export is researched but unrun.** `KnugiHK/WhatsApp-Chat-Exporter` is claimed to
+  cover all chats × date range × chat selection offline. Verify on this machine before building
+  an importer against it — `pip install`, check `wtsexporter --help`, confirm the flags.
+- **Auto-extraction for the other four.** Research 2026-11-14 found no legitimate offline
+  auto-extract for Messenger, Instagram, Telegram or LinkedIn. Any follow-up must prove a tool is
+  maintained, offline and account-safe — or it is rejected. Do not plan an extractor until settled.
 
 ### Decisions already made (do not relitigate)
 
 | Decision | Why |
 |---|---|
 | One bulk export, no per-chat clicking | Single-chat export is a byte-identical subset |
+| **Auto-ingest demoted to email only** | Only email is frictionless; cron elsewhere adds failure modes |
+| **Ingest is one button + one modal** | The modal states each platform's real requirement (§9.1.3) |
 | Store is always whole; toggles are view-only | A hidden UI toggle must never narrow an agent's query (§5.2) |
 | Write access is a per-surface toggle | UI, chat and MCP each decide independently |
 | `prune` needs `confirm=true` | A model must not delete spool files on its own initiative |
