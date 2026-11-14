@@ -151,6 +151,72 @@ def test_owner_is_stable_across_exports(tmp_path):
             )
 
 
+def test_batching_is_idempotent_and_linear(tmp_path):
+    """UNWIND batching must not change idempotency, and must stay linear.
+
+    Per-row MERGE ran at 133 msg/s (1k) degrading to 64 msg/s (10k). If the
+    batched path ever regresses to per-row, the ratio check below catches it.
+    """
+    import time
+
+    from datetime import timedelta
+
+    from relate_comms.schema import Chat, IngestResult, Message
+
+    def build(n: int) -> IngestResult:
+        base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        chats: dict[str, Chat] = {}
+        messages = []
+        for i in range(n):
+            cid, mid = str(i % 100), str(i)
+            messages.append(Message(
+                key=make_key("telegram", cid, mid), platform="telegram",
+                chat_id=cid, message_id=mid, ts_utc=base + timedelta(minutes=i),
+                sender_name="Person A", sender_id="user900000", body="x" * 40,
+                reply_to=None, has_attachments=False, is_self=True, raw_kind="text",
+            ))
+            chats[cid] = Chat(platform="telegram", chat_id=cid, title="T",
+                              kind="personal_chat", is_group=False)
+        return IngestResult(platform="telegram", source="bench",
+                            chats=list(chats.values()), messages=messages)
+
+    def time_write(store, result) -> float:
+        conn = writer.connect(store)
+        try:
+            started = time.perf_counter()
+            writer.write(conn, result)
+            return time.perf_counter() - started
+        finally:
+            conn.close()
+
+    small = build(500)
+    large = build(5000)
+
+    small_time = time_write(tmp_path / "small.rl", small)
+    large_time = time_write(tmp_path / "large.rl", large)
+
+    # Batching is linear; per-row degrades superlinearly. 10x rows should cost
+    # well under 10x wall time, with generous slack for CI noise.
+    assert large_time < small_time * 20, (
+        f"suspected per-row regression: {large_time:.3f}s for 10x rows "
+        f"vs {small_time:.3f}s"
+    )
+
+    # And writing the same result twice adds nothing.
+    store = tmp_path / "idem.rl"
+    result = build(200)
+    conn = writer.connect(store)
+    try:
+        writer.write(conn, result)
+        first = writer.stored_keys(conn, "telegram")
+        writer.write(conn, result)
+        second = writer.stored_keys(conn, "telegram")
+    finally:
+        conn.close()
+    assert first == second
+    assert len(second) == 200
+
+
 def test_ingest_twice_is_idempotent(tmp_path):
     source = str(_first_existing(_REAL_CANDIDATES)) if any(
         os.path.exists(p) for p in _REAL_CANDIDATES

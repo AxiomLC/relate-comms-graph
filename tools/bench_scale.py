@@ -1,19 +1,34 @@
-"""How does Relate scale on this box? Measured, not assumed.
+"""How fast is ingest, really? Measured through the real writer, not raw Cypher.
 
-Writes N synthetic messages and reports wall time, file size, and query latency.
-Run with a small N first — this is the same shape the daily ingest produces.
+Stage 2b replaced per-row MERGE with UNWIND batching. These are the numbers that
+matter for a daily ingest, so they are measured by calling writer.write() rather
+than re-implementing the Cypher here.
 
-    python tools/bench_scale.py --n 5000
+Measured 2026-11-14 on this box (i5-12500H, CPU only):
+
+      msgs   per-row MERGE     UNWIND batched
+     1,000    7.5 s (133/s)    0.13 s (7,971/s)
+    10,000    156 s  (64/s)    1.33 s (7,520/s)
+
+Per-row degraded superlinearly; batched is linear. Entry size ~740-800 bytes/msg.
+
+    python tools/bench_scale.py --n 10000
 """
 from __future__ import annotations
 
 import argparse
 import os
-import shutil
+import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-import relate
+# Run as a script from the repo, without requiring `pip install -e`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from relate_comms import writer  # noqa: E402
+from relate_comms.schema import Chat, IngestResult, Message  # noqa: E402
 
 BODY = (
     "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor "
@@ -21,58 +36,77 @@ BODY = (
 )
 
 
-def run(n: int) -> None:
-    path = os.path.join(tempfile.gettempdir(), f"rel_scale_{n}.rl")
-    if os.path.exists(path):
-        os.remove(path)
+def build(n: int, chats: int = 500) -> IngestResult:
+    base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    seen: dict[str, Chat] = {}
+    messages: list[Message] = []
+    for i in range(n):
+        cid, mid = str(i % chats), str(i)
+        messages.append(Message(
+            key=f"bench:{cid}:{mid}",
+            platform="bench",
+            chat_id=cid,
+            message_id=mid,
+            ts_utc=base + timedelta(minutes=i),
+            sender_name="Person A",
+            sender_id="user900000",
+            body=BODY,
+            reply_to=None,
+            has_attachments=False,
+            is_self=(i % 2 == 0),
+            raw_kind="text",
+        ))
+        seen[cid] = Chat(platform="bench", chat_id=cid, title="Bench",
+                         kind="personal_chat", is_group=False)
+    return IngestResult(platform="bench", source="bench",
+                        chats=list(seen.values()), messages=messages)
 
-    conn = relate.connect(path)
+
+def run(n: int) -> None:
+    store = os.path.join(tempfile.gettempdir(), f"rel_bench_{n}.rl")
+    if os.path.exists(store):
+        os.remove(store)
+
+    result = build(n)
+    conn = writer.connect(store)
     cur = conn.cursor()
 
-    t0 = time.time()
-    for i in range(n):
-        cur.execute(
-            "MERGE (m:Message {key:$k}) SET m.platform='telegram', m.body=$b, "
-            "m.ts_utc=$t, m.raw_kind='text' "
-            "WITH m MERGE (t:Thread {key:$tk}) MERGE (m)-[:IN]->(t)",
-            {
-                "k": f"telegram:{i % 500}:{i}",
-                "b": BODY,
-                "t": f"2025-{(i % 12) + 1:02d}-01T00:00:00Z",
-                "tk": f"telegram:{i % 500}",
-            },
-        )
-        if i and i % 500 == 0:
-            conn.commit()
-            print(f"  {i:,} written, {time.time() - t0:.1f}s", flush=True)
-    conn.commit()
-    write_s = time.time() - t0
-    size_mb = os.path.getsize(path) / 1_000_000
+    started = time.perf_counter()
+    counts = writer.write(conn, result)
+    first = time.perf_counter() - started
 
-    print(f"\nmessages  : {n:,}")
-    print(f"write     : {write_s:.1f}s ({n / write_s:,.0f} msg/s)")
-    print(f"file      : {size_mb:.1f} MB ({size_mb * 1e6 / n:,.0f} bytes/msg)")
+    started = time.perf_counter()
+    writer.write(conn, result)
+    second = time.perf_counter() - started
+
+    cur.execute("MATCH (m:Message) RETURN count(m) AS n")
+    rows = cur.fetchall()[0]["n"]
+    size_mb = os.path.getsize(store) / 1_000_000
 
     def timed(label: str, cypher: str, params: dict | None = None) -> None:
-        t = time.time()
+        t = time.perf_counter()
         cur.execute(cypher, params or {})
-        rows = cur.fetchall()
-        print(f"{label:26} {(time.time() - t) * 1000:7.1f} ms  ({len(rows):,} rows)")
+        got = cur.fetchall()
+        print(f"  {label:24} {(time.perf_counter() - t) * 1000:7.1f} ms  ({len(got):,} rows)")
 
+    print(f"\nmessages   : {n:,} (written {counts['messages']:,})")
+    print(f"first write: {first:.2f}s ({n / first:,.0f} msg/s)")
+    print(f"re-write   : {second:.2f}s (idempotent, adds nothing)")
+    print(f"store rows : {rows:,}")
+    print(f"file       : {size_mb:.1f} MB ({size_mb * 1e6 / max(n, 1):,.0f} bytes/msg)")
+    print("\nquery latency:")
     timed("count all", "MATCH (m:Message) RETURN count(m) AS n")
-    timed("point lookup", "MATCH (m:Message {key:$k}) RETURN m.body",
-          {"k": "telegram:1:1"})
+    timed("point lookup", "MATCH (m:Message {key:$k}) RETURN m.body", {"k": "bench:1:1"})
     timed("thread traversal", "MATCH (m:Message)-[:IN]->(t:Thread {key:$tk}) "
-                              "RETURN m.key LIMIT 100", {"tk": "telegram:1"})
+                              "RETURN m.key LIMIT 100", {"tk": "bench:1"})
     timed("time window", "MATCH (m:Message) WHERE m.ts_utc >= $s RETURN count(m) AS n",
           {"s": "2025-06-01T00:00:00Z"})
-    timed("group by raw_kind", "MATCH (m:Message) RETURN m.raw_kind, count(m)")
 
     conn.close()
-    shutil.rmtree(path, ignore_errors=True)
+    os.remove(store)
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--n", type=int, default=2000)
-    run(ap.parse_args().n)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n", type=int, default=2000)
+    run(parser.parse_args().n)

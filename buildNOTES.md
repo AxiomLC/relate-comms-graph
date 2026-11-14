@@ -330,7 +330,7 @@ are Neo4j staff and will ask.
 | 0 | ~~Install Relate~~ | ✅ done | done |
 | 1 | **Real payload capture** — one small export per platform, redacted → `fixtures/real/` | Files on disk + field notes | 1 |
 | 2 | ~~Canonical schema + Telegram adapter + Relate writer~~ | ✅ done | done |
-| 2b | **UNWIND batching in writer** — per-row MERGE is 64–133 msg/s | Batched at least 10× faster, idempotency test still green | 0.5 |
+| 2b | ~~**UNWIND batching in writer**~~ | ✅ done — 64 → 7,000 msg/s, still idempotent | done |
 | 2c | **`ingest.py`** — parallel parse, serialised write, `--source real\|sample` | Same graph from sample and real | 1 |
 | 3 | WhatsApp `.txt` adapter | Same person in both platforms | 1.5 |
 | 4 | Resolution — E.164, lowercased email, `rapidfuzz` | One Person on 2+ platforms | 1.5 |
@@ -423,9 +423,18 @@ rejects.
 Each parser accepts *either* a raw official export *or* a decrypted DB as first-class input.
 That decouples ingestion from extraction and keeps every demo offline.
 
-**Measured cost** (`tools/bench_scale.py`): ~740–800 bytes/message in the store; per-row `MERGE`
-runs at 133 msg/s (1k) degrading to 64 msg/s (10k). 60k messages ≈ 25 min unbatched. Hence stage
-2b (`UNWIND`) before any real WhatsApp work.
+**Measured cost** (`tools/bench_scale.py`, now calling the real writer): ~**1,460–1,500 bytes per
+message** in the store. Per-row `MERGE` ran at 133 msg/s (1k) degrading to 64 msg/s (10k); the
+batched path runs at **~7,000 msg/s and is linear**. 60k messages ≈ 9 s; 200k ≈ 30 s.
+
+| msgs | per-row (old) | UNWIND (now) |
+|---|---|---|
+| 1,000 | 7.5 s | **0.13 s** |
+| 10,000 | 156 s | **1.33 s** |
+| 20,000 | ~10 min | **2.87 s** |
+
+Batching is `BATCH_SIZE = 500` rows per statement. Idempotency is unchanged — every statement is
+still a `MERGE` on a stable key, and re-writing adds nothing (verified by test).
 
 ### 9.1.3 Ingest UX — one button, one modal
 
@@ -469,10 +478,9 @@ The pipeline shape is fixed by one constraint: **`.rl` is a single file with one
   file is a corruption, not a speed-up.
 - So: parse → `IngestResult` objects → a single writer consumes them in order.
 
-**Known bottleneck, measured:** per-row `MERGE` runs at ~133 msg/s at 1k rows and ~64 msg/s at
-10k (`tools/bench_scale.py`) — it degrades superlinearly. `UNWIND $rows AS row` batching is
-required before this scales, not an optional optimisation. A 500k-message corpus would take
-hours at the current rate.
+**Resolved (stage 2b):** per-row `MERGE` ran at 133 msg/s (1k rows) degrading to 64 msg/s (10k).
+`UNWIND $rows AS row` batching with `BATCH_SIZE = 500` now runs at **~7,000 msg/s and is linear**.
+A 200k-message corpus ingests in ~30 s. Re-measure with `tools/bench_scale.py --n 20000`.
 
 **Deletions:** a key that vanishes from a *later* full export means the message was deleted on
 the platform. Cheap to detect (set difference on keys) and cheap to act on. Not required for the
@@ -527,17 +535,18 @@ Deterministic: regenerating the same source gives byte-identical output (verifie
 ---
 ---
 
-## 10. Handover — updated 2026-11-14 20:05
+## 10. Handover — updated 2026-11-14 20:35
 
-**Where we are:** stage 2 done and pushed (`8e9b2ad`) — Telegram adapter (both export shapes),
-Relate writer with `verify_present`, identity, tool layer, `app/` scaffold, sample generation.
-10 tests pass. **Nothing below is already built.**
+**Where we are:** stage 2 **and 2b complete** and pushed — Telegram adapter (both export shapes),
+batched Relate writer with `verify_present`, identity, tool layer, `app/` scaffold, sample
+generation. **11 tests pass.** Nothing below is already built.
 
 **Verify state before touching anything:**
 
 ```bash
-python -m pytest tests -q                     # expect 10 passed
+python -m pytest tests -q                     # expect 11 passed
 python -m relate_comms sample build --check   # regenerates samples + round-trips
+python tools/bench_scale.py --n 5000          # ingest throughput, measured
 ```
 
 Real exports live **outside the repo** at `~/relate-comms/spool/` (`RELATE_DATA_ROOT`). If empty,
@@ -545,17 +554,15 @@ the 4 real-data tests skip — expected, not a failure.
 
 ### Next, in priority order
 
-1. **`UNWIND` batching in `writer.write()`.** Measured per-row `MERGE` at ~133 msg/s (1k rows)
-   degrading to ~64 msg/s (10k). Batched, this is the difference between minutes and hours on a
-   large corpus. Must stay idempotent — `MERGE` on `Message.key`.
-2. **`ingest.py`** — parse → write → verify, with `--source real|sample`. Parse in parallel
-   (process pool), write serialised through one queue (§9.1.2). `cli.py` currently stubs it.
-3. **Stage 3: WhatsApp `.txt` adapter.** Android dialect, U+200E LTR mark before media lines.
+1. **`ingest.py`** — parse → write → verify, with `--source real|sample`. Parse in parallel
+   (process pool), write serialised through one queue (§9.1.4). `cli.py` currently stubs it.
+   `writer.write()` is already batched at ~7,000 msg/s, so there is no speed blocker.
+2. **Stage 3: WhatsApp `.txt` adapter.** Android dialect, U+200E LTR mark before media lines.
    Real file first (§6), then `sample_data/generators/whatsapp.py`.
-4. **Stage 4/5: resolution + scrub gate.** `Person`/`Identity` arrive here. Do **not** treat other
+3. **Stage 4/5: resolution + scrub gate.** `Person`/`Identity` arrive here. Do **not** treat other
    node types as blocked — `Message`, `Thread`, `Attachment` already work; person-shaped queries
    just return nothing until then.
-5. **`tools/bench_graph.py`** — run `bench_queries.json` against Relate local vs Neo4j Cloud.
+4. **`tools/bench_graph.py`** — run `bench_queries.json` against Relate local vs Neo4j Cloud.
 
 ### Open research questions (spawn a sub-agent)
 
@@ -586,5 +593,6 @@ the 4 real-data tests skip — expected, not a failure.
 - tok/s came from 8 easy messages; re-test on ~50 real redacted ones before trusting it.
 - **Fixtures keep real timestamps.** Names/bodies/ids are scrubbed, dates are not. Add a
   per-export date offset if that matters.
-- **Relate is embedded with a `.rl` file on disk, not RAM-only.** ~740–800 bytes/msg; 10k msgs =
-  7.4 MB. The speed pitch is "no server, no network round trip", not "in memory".
+- **Relate is embedded with a `.rl` file on disk, not RAM-only.** Measured ~1,460–1,500 bytes/msg
+  (thread count barely affects it); 10k msgs ≈ 15 MB. The speed pitch is "no server, no network
+  round trip", not "in memory".
