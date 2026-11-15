@@ -41,8 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument("paths", nargs="*",
                         help="export files to copy into the spool before ingesting")
     ingest.add_argument("--root", help="directory to read instead of the default spool")
-    ingest.add_argument("--tz-offset", type=float, default=0,
-                        help="hours the export's local times were written in, e.g. -5")
+    ingest.add_argument("--tz-offset", type=float, default=None,
+                        help="hours the export's local times were written in, e.g. -5. "
+                             "Omit to reuse the offset this account was last parsed with")
     ingest.add_argument("--store", help="override the .rl store path")
     ingest.add_argument("--since", type=_utc, help="ISO-8601, inclusive")
     ingest.add_argument("--until", type=_utc, help="ISO-8601, inclusive")

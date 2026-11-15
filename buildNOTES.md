@@ -786,13 +786,14 @@ Deterministic: regenerating the same source gives byte-identical output (verifie
 | Email (Hostinger) | 221 | 169 |
 | WhatsApp | 169 | 99 |
 
-**92 tests pass, 2 skip** (the 2 skip when `spool/real/` is empty).
+**137 tests pass, 2 skip** (the 2 skip when `spool/real/` is empty).
 
 ```bash
 python -m pytest tests -q
 python -m relate_comms ingest --source real --email hostinger --tz-offset -5
 python -m relate_comms sample build --check
-pip install -e ".[resolve]"          # rapidfuzz: needed for name matching
+python -m app                        # the UI server, 127.0.0.1:8000
+pip install -e ".[resolve,app]"      # rapidfuzz + fastapi/uvicorn
 ```
 
 ### Bugs fixed in this session (all were silent)
@@ -808,30 +809,76 @@ pip install -e ".[resolve]"          # rapidfuzz: needed for name matching
 | Thread titles could be empty | **291 of 955 threads** rendered `""` | `thread_display_title()` fallback chain (§3.3) |
 | Correspondent keyed per thread | `David Sartori` ×4 | keyed per (platform, name) |
 
+### Timezone offset is part of the message key
+
+Telegram/WhatsApp/Messenger export wall-clock times with no offset, so `ts_utc` — and
+`Message.key`, which hashes the timestamp — depends on the `--tz-offset` the caller
+declared. Nothing persisted it, so `verify_ingest` re-parsed at 0 against rows written
+at -5 and reported **10,604 of 10,605 Messenger rows missing**. The store was intact;
+it was being read differently.
+
+- The offset is now stored per platform in `store/profile/identity.json` (`tz_offsets`)
+  and reused when `--tz-offset` is omitted. `0` means "UTC", `None` means "reuse".
+- `verify_ingest` and `prune_spool` re-parse with the recorded offset, per platform, so
+  one spool holding two timezones verifies in one pass.
+- Changing the offset is allowed on an **empty** store (the normal build loop: wipe
+  `graph.rl`, re-ingest) and refused on a populated one, where it would duplicate every
+  row instead of replacing it.
+- `identity.save_owner()` rewrote the whole profile file and silently dropped
+  `tz_offsets` — adapters call it during parse, so the offsets vanished on the next run.
+  It now updates in place.
+
+### Tool layer + API — done
+
+**`relate_comms/tools.py` is implemented.** 10 tools registered, each with a schema derived
+from its signature (so the UI, the chat and MCP cannot drift).
+
+| Access | Tools |
+|---|---|
+| READ | `graph_slice`, `thread_arc`, `search_messages`, `message_view`, `types_present`, `evidence_counts`, `run_cypher` |
+| WRITE | `ingest`, `verify_ingest` |
+| DESTRUCTIVE | `prune_spool` |
+
+**Not registered, deliberately:** `semantic_search` / `hybrid_search` (no vector index exists
+in the store) and `person_profile` / `who_did_i_talk_to` (`Person` / `SENT` have zero rows).
+A tool that always fails burns a model turn.
+
+Rules the layer enforces:
+
+- **Truncation is never silent.** A slice or search that hits `limit` returns `truncated: true`.
+- **`node_types=None` means everything**, never "whatever the UI has on" (§5.2).
+- **`write_enabled` is excluded from the schema** — it is the surface's toggle, not something a
+  model may set. `confirm` *is* in the schema, because `prune_spool` needs a deliberate one.
+- **One connection per tool call**, not per query: opening the 19 MB store costs ~120 ms, and a
+  connection per query made `graph_slice` take 1.2 s.
+
+Measured on the real store: `graph_slice` 295 ms, `thread_arc` 162 ms, `search_messages` 158 ms.
+
+**FastAPI (`app/`) is implemented** — `/api/health`, `/stats`, `/types`, `/graph`,
+`/thread/{key}`, `/message/{key}`, `/search`, `/chat`, `/ingest`. Loopback only, `ToolError`
+becomes a 400 with a readable message. `app/static/index.html` is a throwaway placeholder.
+
+**Chat leg verified against real Ollama** (`lfm2.5:8b`, tool-capable). Two bugs found:
+
+- **`think: false` is not honoured.** The model writes `<think​>…</think​>` into `content`
+  anyway (note the zero-width space). The server strips it.
+- **Tool results were fed back whole** — a 1,546-node slice blew the context and the model
+  answered a different question. Now capped at 4,000 chars with an explicit truncation note,
+  and `graph_slice` is not offered to the chat at all.
+
 ### Next, in priority order
 
-**The UI brief is a separate document: [`buildUI.md`](buildUI.md).** Read it before writing UI code.
-It holds the layout, palette, library choice, Viewer states and the Ollama wiring.
+**The UI brief is a separate document: [`buildUI.md`](buildUI.md).** Read it before writing UI
+code. It holds the layout, palette, library choice, Viewer states and the Ollama wiring.
 
-1. **`relate_comms/tools.py` — the tool layer. This gates everything else.**
-   The file is currently **comments only: zero implementations.** It declares the intended
-   surface (`message_view`, `thread_arc`, `graph_slice`, `run_cypher`, `search_messages`,
-   `semantic_search`, `hybrid_search`, `evidence_counts`, `types_present`, `person_profile`,
-   `who_did_i_talk_to`, `ingest`, `verify_ingest`, `prune_spool`) plus the `Access` /
-   `ToolError` / `register` / `require` scaffold — and nothing more.
-
-   Minimum viable for a demo: **`graph_slice`** (draws the canvas) + **`thread_arc`** (feeds the
-   Viewer) + **`search_messages`** (feeds the search bar). Everything else can wait.
-
-   Why it is first: the UI, the local chat and MCP all bind these same functions (§5.2). Build
-   the UI against a real tool layer or you will write the queries three times and let them drift.
-2. **FastAPI app + viewer** — `app/` holds five empty stubs. Serve `store/graph.rl` read-only,
-   thread-first canvas per §5.5, then the Viewer. Details in `buildUI.md` §10.
-3. **`Person` / `SENT` wiring** — `write_people()` exists and `sent_edges()` exists; neither is
+1. **The UI** — `app/ui/` does not exist yet. React + esbuild, **Cytoscape.js + fcose**
+   (not sigma — see `buildUI.md` §4.2), three columns AI → Graph → Viewer.
+   Build order in `buildUI.md` §10: scaffold → canvas → Viewer → search → chat → modals.
+2. **`Person` / `SENT` wiring** — `write_people()` exists and `sent_edges()` exists; neither is
    called from `ingest()`. Needed for cross-platform identity, invisible in the viewer.
-4. **Place/Company/Product** — blocked on a candidate generator (§3.2). Do not start
+3. **Place/Company/Product** — blocked on a candidate generator (§3.2). Do not start
    before the viewer exists, or there is no way to see whether it is right.
-5. **SMS adapter** — payload pending.
+4. **SMS adapter** — payload pending.
 
 ### Known cosmetic problems in the real store
 

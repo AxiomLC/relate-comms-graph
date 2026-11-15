@@ -40,7 +40,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import paths, resolution, scrub, writer
+from . import identity, paths, resolution, scrub, writer
 from .adapters import email_imap, linkedin, messenger, outlook_pst, telegram, whatsapp
 from .schema import IngestResult
 
@@ -146,6 +146,10 @@ class Report:
     workers: int = 1
     owner_note: str = ""
     keys: set[str] = field(default_factory=set)
+    # platform -> offset actually used. Wall-clock platforms only; a run that fell
+    # back to the persisted value says so here rather than looking like a default.
+    tz_offsets: dict[str, float] = field(default_factory=dict)
+    tz_note: str = ""
 
     @property
     def written(self) -> int:
@@ -183,6 +187,8 @@ class Report:
             "ok": self.ok,
             "batches": [b.to_dict() for b in self.batches],
             "unrecognised": self.unrecognised,
+            "tz_offsets": self.tz_offsets,
+            "tz_note": self.tz_note,
         }
 
 
@@ -311,8 +317,14 @@ def _kwargs_for(platform: str, parse_kwargs: dict[str, Any]) -> dict[str, Any]:
     if owner_platform is not None and platform != owner_platform:
         trimmed.pop("self_id", None)
 
+    # A spool can hold platforms that were exported in different timezones, and the
+    # offset is part of every wall-clock key. `tz_offsets` is the per-platform map;
+    # it is resolved here so no adapter ever sees it.
+    offsets = trimmed.pop("tz_offsets", None)
     if platform not in _TZ_AWARE_PLATFORMS:
         trimmed.pop("tz_offset_hours", None)
+    elif isinstance(offsets, dict) and platform in offsets:
+        trimmed["tz_offset_hours"] = offsets[platform]
     return trimmed
 
 
@@ -379,7 +391,7 @@ def ingest(
     workers: int | None = None,
     self_id: str | None = None,
     profile_dir: str | Path | None = None,
-    tz_offset_hours: float = 0,
+    tz_offset_hours: float | None = None,
     scrub_policy: dict[str, scrub.Verdict] | None | bool = None,
     extra_results: Iterable[IngestResult] = (),
 ) -> Report:
@@ -439,8 +451,48 @@ def ingest(
     }
     if self_id:
         parse_kwargs["self_id"] = self_id
-    if tz_offset_hours:
-        parse_kwargs["tz_offset_hours"] = tz_offset_hours
+
+    # The offset is part of every key on a wall-clock platform, so it is persisted
+    # per platform and reused when the caller does not state one. Without this a
+    # later `verify_ingest` / `prune_spool` re-parses at 0 and reports every row
+    # missing — the store would look broken when it is only being read differently.
+    tz_offsets: dict[str, float] = {}
+    for platform in sorted({b.platform for b in batches if b.platform}):
+        if platform not in _TZ_AWARE_PLATFORMS:
+            continue
+        # `None` means "not stated": reuse what this account was parsed with.
+        # `0` means "these times are UTC" and is a real instruction, so it must not
+        # be confused with the default — that is how a re-ingest at 0 used to
+        # silently keep the old -5.
+        if tz_offset_hours is not None:
+            # An empty store has nothing to duplicate, so a different offset is
+            # allowed there. That is the normal case while the app is being built:
+            # wipe graph.rl, re-ingest, no complaint.
+            try:
+                identity.save_tz_offset(
+                    profile, platform, tz_offset_hours,
+                    allow_change=not _store_has_rows(store_path),
+                )
+            except ValueError as exc:
+                report.tz_note = str(exc)
+                raise ValueError(str(exc)) from exc
+            tz_offsets[platform] = float(tz_offset_hours)
+            continue
+        stored = identity.load_tz_offset(profile, platform)
+        if stored is not None:
+            tz_offsets[platform] = stored
+            report.tz_note = (
+                f"{platform}: reusing persisted tz offset {stored:g} "
+                "(pass tz_offset_hours to change it)"
+            )
+        else:
+            tz_offsets[platform] = 0.0
+
+    if tz_offsets:
+        # Per platform, not per run: `_kwargs_for` resolves the map for each batch,
+        # so a spool holding two timezones parses correctly in one pass.
+        parse_kwargs["tz_offsets"] = tz_offsets
+    report.tz_offsets = tz_offsets
 
     # Multi-file runs resolve the owner once, up front. Letting each worker infer
     # it independently would reopen the per-file `is_self` bug (§9.2) for the first
@@ -597,6 +649,25 @@ def _resolve_owner_once(
         return None, ""
     return None, ("is_self unresolved: no Telegram file states or permits inferring the "
                   "owner; all rows is_self=False. Pass --self-id to pin it.")
+
+
+def _store_has_rows(store_path: Path) -> bool:
+    """Does the store already hold messages? Used to decide if re-keying is safe."""
+    if not store_path.exists():
+        return False
+    try:
+        conn = writer.connect(store_path)
+    except Exception:  # noqa: BLE001 - cannot read it, so assume it holds data
+        return True
+    try:
+        cur = conn.cursor()
+        cur.execute("MATCH (m:Message) RETURN count(m) AS n")
+        rows = cur.fetchall()
+        return bool(rows and rows[0]["n"])
+    except Exception:  # noqa: BLE001
+        return True
+    finally:
+        conn.close()
 
 
 def _older_than(path: Path, age: timedelta) -> bool:
@@ -757,14 +828,22 @@ def prune_spool(
     if not store_path.exists():
         return []
 
+    profile = paths.profile_dir()
     removed: list[str] = []
     conn = writer.connect(store_path)
     try:
         for batch in discover(root):
             if not batch.recognised or not _older_than(batch.path, older_than):
                 continue
+            # Re-parse with the offset the store was built with. Parsing at 0 when
+            # the rows were written at -5 produces a disjoint key set, so every
+            # file would look unverified and nothing would ever be pruned.
+            kwargs: dict[str, Any] = {}
+            stored_offset = identity.load_tz_offset(profile, batch.platform or "")
+            if stored_offset is not None:
+                kwargs["tz_offset_hours"] = stored_offset
             try:
-                result = _PARSERS[batch.platform or ""](batch.path)
+                result = _PARSERS[batch.platform or ""](batch.path, **kwargs)
             except Exception:  # noqa: BLE001 - cannot verify => cannot delete
                 continue
             ok, _ = writer.verify_present(conn, result)

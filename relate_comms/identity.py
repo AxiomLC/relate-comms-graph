@@ -25,6 +25,11 @@ from typing import Any, Iterable
 
 _IDENTITY_FILE = "identity.json"
 
+# Wall-clock platforms whose export states no offset. Kept in the same profile file
+# as the owner, because both are "how to read this account's exports" and both must
+# survive a restart for the keys to stay stable.
+_TZ_KEY = "tz_offsets"
+
 
 def load_owner(profile_dir: str | Path, platform: str | None = None) -> str | None:
     """The persisted owner id, for one platform.
@@ -102,10 +107,85 @@ def save_owner(
         )
 
     owners[platform] = owner_id
-    path.write_text(
-        json.dumps({"owners": owners, "evidence": evidence}, indent=2),
-        encoding="utf-8",
-    )
+    # Update in place. Writing a fresh `{"owners", "evidence"}` dict silently
+    # dropped every other key in the file — including `tz_offsets`, which is part
+    # of the message key. Adapters call this during parse, so the offsets vanished
+    # on the next run and verification reported the whole store as missing.
+    data["owners"] = owners
+    data["evidence"] = evidence
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def load_tz_offset(profile_dir: str | Path, platform: str) -> float | None:
+    """The offset this account's exports were last parsed with, per platform.
+
+    **This is not a preference — it is part of the message key.** Telegram, WhatsApp
+    and Messenger export wall-clock times with no offset, so `ts_utc` (and therefore
+    `Message.key`, which hashes the timestamp) depends on the offset the caller
+    declared. A run that parses with `-5` and a later run that verifies with `0`
+    produce two disjoint key sets for the same file: the store holds 10,605 Messenger
+    rows and verification reports all 10,605 missing.
+
+    Persisting it is what makes `verify_ingest` and `prune_spool` able to re-derive
+    the keys the store was built with, without the caller repeating the flag.
+    """
+    path = Path(profile_dir) / _IDENTITY_FILE
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    offsets = data.get(_TZ_KEY)
+    if not isinstance(offsets, dict):
+        return None
+    value = offsets.get(platform)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def save_tz_offset(
+    profile_dir: str | Path, platform: str, hours: float, *, allow_change: bool = False,
+) -> None:
+    """Record the offset for a platform.
+
+    Changing it re-keys every message from that platform. On a store that already
+    holds rows that means a second copy of everything rather than a replacement, so
+    the change is refused unless the caller says the store is empty
+    (`allow_change=True`).
+
+    A fresh store is the normal case while the app is being built: wipe
+    `store/graph.rl`, re-ingest with whatever offset you like, and nothing is
+    duplicated because there was nothing there to duplicate.
+    """
+    path = Path(profile_dir) / _IDENTITY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    offsets = data.get(_TZ_KEY)
+    if not isinstance(offsets, dict):
+        offsets = {}
+
+    existing = offsets.get(platform)
+    if (
+        not allow_change
+        and isinstance(existing, (int, float))
+        and float(existing) != float(hours)
+    ):
+        raise ValueError(
+            f"{platform} is already stored at tz offset {existing:g}. Using {hours:g} "
+            "would duplicate every message instead of replacing it. "
+            "Delete store/graph.rl and re-ingest to change it."
+        )
+
+    offsets[platform] = float(hours)
+    data[_TZ_KEY] = offsets
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def owner_from_personal_information(document: dict[str, Any]) -> str | None:
