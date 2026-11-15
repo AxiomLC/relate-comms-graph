@@ -7,6 +7,52 @@
 
 ---
 
+## Where the data lives
+
+**One file holds everything: `store/graph.rl`**
+
+There is no CSV or database server. Exports live in `spool/real/<platform>/`, are read into
+in-memory records, and merged into that single `.rl` file. It appears while `ingest` runs
+(committed per batch) and contains every message and every person.
+
+Both folders sit inside the repo and are **gitignored** — only their `.gitkeep` files are
+committed, so a fresh clone has the shape but no data. `ingest` recreates them if deleted.
+
+```
+spool/
+  real/     telegram/  whatsapp/  messenger/  linkedin/  sms/  imap/  gmail/
+  sample/   the same seven folders, for generated demo data
+store/
+  graph.rl      the graph
+  profile/      identity.json — which account is "me", per platform
+```
+
+**Backup:** `graph.rl` is rebuildable only from `spool/`. Copy it somewhere safe before
+running anything destructive; a Backup button is planned.
+
+Relate is an **embedded** engine — no server, no port, no Bolt. That is deliberate, and it
+is also why this project uses its own Cypher writer rather than any off-the-shelf graph
+extraction library: those all require a Neo4j server to connect to.
+
+| File you drop | Parser |
+|---|---|
+| Telegram `result.json` | `relate_comms/adapters/telegram.py` |
+| WhatsApp `.txt` / `.zip` | `relate_comms/adapters/whatsapp.py` |
+| Messenger HTML archive | `relate_comms/adapters/messenger.py` |
+| LinkedIn `messages.csv` zip | `relate_comms/adapters/linkedin.py` |
+| Outlook `.pst` | `relate_comms/adapters/outlook_pst.py` |
+| Live mailbox (IMAP) | `relate_comms/adapters/email_imap.py` |
+
+The in-memory unit is a **`Message` record** (`relate_comms/schema.py:31`), not JSON:
+
+```
+{key, platform, chat_id, message_id, ts_utc, sender_name, sender_id,
+ body, reply_to, has_attachments, is_self, raw_kind,
+ forwarded_from, saved_from}
+```
+
+---
+
 ## The idea
 
 Messaging is already a graph. Every message has a sender, a recipient, a thread, a
@@ -30,7 +76,7 @@ across four apps. A graph makes it visible.
 | **Native edges** | `from`/`to`/`reply_to`/`thread` are data fields, not LLM inferences. Most "documents → graph" tools guess at structure. Here it's given. |
 | **Identity resolution** | The same person appears on 3 platforms under 3 identities. Merging them is a real, respected problem — and the demo's money shot. |
 | **Privacy by construction** | These are the most sensitive files a person owns. Everything runs locally; a scrubbing gate sits *before* ingest, not after. |
-| **Competition** | Every mature tool (Neo4j KG Builder, GraphRAG, LightRAG, CocoIndex) is documents-only. Nobody joins messaging silos into one graph with a PII gate. |
+| **Competition** | Every mature tool (Neo4j KG Builder, GraphRAG, LightRAG, CocoIndex) is documents-only *and* needs a Neo4j server — none can open a single local `.rl` file. Nobody joins messaging silos into one graph with a PII gate. |
 
 ## Docs
 
@@ -38,6 +84,7 @@ across four apps. A graph makes it visible.
 |---|---|
 | [`MssgDownloadInstructs.md`](MssgDownloadInstructs.md) | **Start here.** How to get each platform's export, what the file looks like, and how ingest reports back |
 | [`buildNOTES.md`](buildNOTES.md) | Engineering notes: schema, pipeline, per-platform traps found in real exports, decisions |
+| [`buildUI.md`](buildUI.md) | **UI build brief.** Layout, colours, 2D graph library choice, Viewer states, local Ollama wiring, handover |
 | [`HowToRunOllama.md`](HowToRunOllama.md) | Local model setup |
 
 ## Platform reality, at a glance
@@ -71,7 +118,8 @@ server avoids a silent zero-message import.
    (Email is the fourth source and reads live instead of from a file.)
 2. Ingest — show the refusal log and what was scrubbed.
 3. Query: *"Who did I talk to about [topic] on more than one platform, and when did it stop?"*
-4. One `Person` node, edges into three platforms, a timeline, a cluster that goes quiet.
+4. A `Correspondent` node per platform, edges into each thread, a timeline, a cluster that goes quiet.
+   *(When `Person` is built this becomes one node across platforms — §3.3.)*
 5. Flip `phones: block`, re-run → graph shape identical, PII gone, refusal log lists what was withheld.
 
 Step 3 is the shock moment. Step 5 is what no existing tool does.
@@ -89,16 +137,25 @@ Step 3 is the shock moment. Step 5 is what no existing tool does.
 
 Five adapters ingest real data into a local Relate store: **Telegram, WhatsApp, Messenger,
 LinkedIn** (from exported files) and **email** (Gmail + any IMAP mailbox live, Outlook from
-a `.pst`). Resolution merges the same person across platforms; a scrub gate withholds
-phones, emails, addresses and card numbers before anything is written.
+a `.pst`). A scrub gate withholds phones, emails, addresses and card numbers before anything
+is written; every thread carries a `Correspondent` node.
 
-11,066 mixed messages ingest in ~3 s. `pytest tests -q` → 94 passed.
+12,499 messages across 5 platforms in ~4 s. `pytest tests -q` → 92 passed, 2 skipped.
 
-Not built yet: SMS, the UI, and persisting `Person`/`Identity` into the store.
-See [`buildNOTES.md` §10](buildNOTES.md) for the handover.
+Not built yet: SMS, the UI, `Person`/`Identity` (cross-platform identity), and Place/Company/Product.
+Today the graph holds `Message`, `Thread`, `Attachment` and `Correspondent`.
+See [`buildNOTES.md` §3.3](buildNOTES.md) for what is deliberately absent, and §10 for the handover.
 
 **Email setup:** copy `.env.example` to `.env` and fill in your mailbox credentials.
-`.env` is gitignored and never committed.
+`.env` is gitignored and never committed. Email is read live over IMAP — it never lands in
+`spool/`, which is why `spool/real/imap/` and `spool/real/gmail/` stay empty.
+
+**Setup after a clone:** `spool/` and `store/` ship as empty folders via `.gitkeep`. Nothing
+else is required — the first `ingest` call creates any missing platform folder itself.
+
+```bash
+python -m relate_comms ingest --source real --email hostinger   # your exports + mailbox
+```
 
 ## Scope note
 

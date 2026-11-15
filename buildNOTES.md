@@ -33,6 +33,28 @@ Hackathon** entry (theme *"Context, Connected"*, closes **2026-12-11**).
 
 Storage: **single `.rl` file** — inspectable by judges, portable. `store/` is gitignored.
 
+#### THERE IS NO BOLT. THERE IS NO SERVER.
+
+Checked against the installed wheel, 2026-11-15. `relate.connect()` takes only
+`(database, namespace, read_only)` — **a file path**. `relate.Connection` exposes
+`execute, executemany, cursor, commit, rollback, close, flush, autocommit, namespace` and
+nothing else. The package description states it plainly: *"embeds a full openCypher engine
+in-process (Rust core, PyO3 extension; **no server, no subprocess**)"*.
+
+The word "Bolt" appears in the bundled docs exactly once — to say a byte-array type is
+*"Bolt-only and cannot be stored as a property"*. There is no port, no URI scheme, no
+`neo4j://` handler anywhere in the package.
+
+**Consequence, and it is now settled:** every library that writes via
+`neo4j.GraphDatabase.driver(uri)` — `neo4j-graphrag`, LangChain's `LLMGraphTransformer`,
+Neo4j KG Builder, MS GraphRAG, LightRAG, LlamaIndex `PropertyGraphIndex` — **cannot talk to
+Relate at all.** Not "needs an adapter": there is no socket to attach an adapter to. They
+could at most produce JSON that our own `writer.py` consumes. This kills that whole
+branch of research permanently; do not reopen it.
+
+"One writer process per database" is the engine's own rule, which is why §9.1.4's
+"parse in parallel, serialise the write" is not a preference but a constraint.
+
 ### 2.2 Hardware reality
 
 **i5-12500H, 4P+8E / 16 threads, 16 GB LPDDR5 (soldered, not upgradeable), Iris Xe 80 EU, no
@@ -92,30 +114,70 @@ LinkedIn csv/API    ──┘              ├─► resolve/  phones→E.164, e
 ### 3.1 Schema
 
 ```cypher
-(:Person     {key, display_name, first_seen_utc, last_seen_utc})
-(:Identity   {key, platform, handle, phone_e164, email, display_name})
-(:Thread     {key, platform, title, is_group, participant_count})
+(:Thread     {key, platform, title, is_group})
 (:Message    {key, platform, chat_id, message_id, ts_utc, body, has_attachments, is_self})
 (:Attachment {key, filename_scrubbed, mime, sha256, size})
-(:Place | :Company | :Product {key, name})
+(:Correspondent {key, display_name, platform, handle, email, phone_e164})
 
-(:Person)-[:SENT]->(:Message)
-(:Person)-[:MATCHED_BY]->(:Identity)     // exact key, confidence 1.0
-(:Person)-[:POSSIBLY]->(:Person)         // fuzzy name, 0.4–0.8
 (:Message)-[:IN]->(:Thread)
 (:Message)-[:REPLY_TO]->(:Message)
-(:Message)-[:MENTIONS]->(:Place|:Company|:Product)
+(:Message)-[:HAS_ATTACHMENT]->(:Attachment)
+(:Thread)-[:WITH]->(:Correspondent)
 ```
+
+**These four exist and are written today.** `Person`, `Identity`, `MATCHED_BY`, `POSSIBLY`,
+`SENT`, `Place`, `Company`, `Product`, `MENTIONS` and `Draft` are **not** — see §3.2.
 
 - **`Message.key = platform:chat_id:message_id`.** Never an array index or timestamp — this is
   what makes re-ingest idempotent.
-- **Two resolution edge types, never one.** A wrong guess must *look* like honest uncertainty.
 - **`ts_utc` everywhere.** Telegram and WhatsApp export local time with no offset. Convert at
   parse, or the timeline lies.
 - **Messages are atomic — do not chunk them.** One message is already one node, under 500 chars.
-  Chunking exists for documents. Topics attach via `MENTIONS`.
+  Chunking exists for documents.
+- **Every node has a `key`.** `MERGE` on it, never `CREATE`, so re-ingest cannot duplicate.
+- **Every title has a fallback, and is never empty.** See §3.3.
 
-### 3.2 Scrub gate
+### 3.2 What does not exist yet — do not build against it
+
+The following are **designed but unwritten**. Nothing in the code produces them, and a query
+against them returns zero rows:
+
+| Type | Status | Blocks |
+|---|---|---|
+| `Person`, `Identity` | `resolution.py` computes them; `writer.write_people()` exists; **`ingest()` never calls it** | cross-platform identity |
+| `MATCHED_BY`, `POSSIBLY`, `SENT` | Cypher written in `writer.py`, no rows | "who did I talk to about X" |
+| `Place`, `Company`, `Product`, `MENTIONS` | schema only; no extractor | topic traversal |
+| `Draft` | §7, future | replies |
+
+**`Correspondent` replaces the old "Person per thread" idea.** They are not the same thing:
+
+| | `Correspondent` (exists) | `Person` (does not) |
+| Scope | one platform, many threads | one human, all platforms |
+| Source | `Chat.participant_names` minus the owner | name/phone/email resolution |
+| Certainty | **fact** — the export named them | **inference**, 0.4–1.0 |
+| Answers | "who is this thread with?" | "who is this across 4 apps?" |
+
+So `David Sartori` is currently **three** Correspondent nodes — one per platform — and that is
+correct, not a bug. Merging them is `Person`'s job, when the extraction leg exists.
+
+### 3.3 Node naming and fallbacks
+
+A node is never left with a blank label. Each type has a `key` (stable, for `MERGE`) and a
+handler-facing name:
+
+| Node | Name field | Fallback order |
+|---|---|---|
+| `Thread` | `title` | stated name → other participants → `"Whatsapp thread 3f2a1c"` |
+| `Correspondent` | `display_name` | participant name → `handle` (address/phone) |
+| `Message` | `sender_name` | sender → `sender_id` → `"(no sender)"` |
+
+`writer.thread_display_title()` owns the Thread fallback, so every adapter benefits. Real case:
+Telegram omits `name` on 1:1 chats — **291 of 955 threads rendered as `""`** until this existed.
+
+A fallback is a label, not evidence. `"Whatsapp thread 3f2a1c"` claims only what the id already
+says. Never fall back to a guessed name.
+
+### 3.4 Scrub gate
 
 Runs **after** resolution (keys are needed for joins), **before** the write. Verdict per class:
 `keep` / `hide` (stable alias `PHONE-1`) / `block` (refuse + log).
@@ -239,17 +301,130 @@ session does not inherit UI choices.
 
 | What | Where | Committed |
 |---|---|---|
-| Real exports | `~/relate-comms/spool/` (`RELATE_DATA_ROOT`) | never |
-| Graph store | `~/relate-comms/store/graph.rl` | never |
-| Owner identity | `~/relate-comms/profile/identity.json` | never |
-| Generated samples | `relate_comms/sample_data/generated/` | no — reproducible |
+| Real exports | `spool/real/<platform>/` | never (`.gitkeep` only) |
+| Generated samples | `spool/sample/<platform>/` | never — reproducible |
+| Graph store | `store/graph.rl` | never |
+| Owner identity | `store/profile/identity.json` | never |
 | Test fixtures | `tests/fixtures/` | **yes** |
+
+Everything user-owned lives **inside the repo** and is gitignored. There is no
+`RELATE_DATA_ROOT` override: the app is a demo, and a power user who wants data
+elsewhere can change `paths.py`.
 
 Ingest selects a source: `--source real|sample`. Sample data ships as a
 generator (`python -m relate_comms sample build`) rather than as files, so a
 developer can inspect and reproduce it before pointing the app at their own
 comms. Test fixtures are pinned separately so a parser change cannot be "fixed"
 by regenerating.
+
+#### WHERE THE DATA ACTUALLY IS
+
+**There is no CSV. No flat file. No export between parse and write.**
+
+The rows exist only as Python objects in RAM. Three stages, three file states:
+
+| Stage | File type | Location |
+|---|---|---|
+| What you download | `.json` `.txt` `.zip` `.pst` `.eml` | `spool/real/<platform>/` |
+| Parsed rows (**no file**) | none — Python objects in memory | nowhere on disk |
+| The graph | **one `.rl` file** | `store/graph.rl` |
+
+**`spool/` and `store/` live inside the repo and are gitignored.** Each ships `.gitkeep`
+files so the shape exists on a fresh clone, and `paths.ensure_layout()` recreates the
+folders on every `ingest` — a user who deletes one gets it back rather than an error.
+
+**`store/graph.rl` is the whole product.** One file, every message and every person. Created
+the first time `ingest` runs; until then `store/` holds only `.gitkeep`. `writer.write()`
+calls `conn.commit()` per batch, so the file appears **during** the run. Not editable in
+Notepad, but queryable.
+
+> **Risk accepted:** because `store/` is gitignored, `git clean -xdf` deletes the graph. It
+> is only rebuildable from `spool/`, so if both are wiped the user re-downloads every
+> export — hours for Messenger. The planned **Backup button** (copies `graph.rl` to
+> `~/Downloads`) is the answer to this, not the folder layout.
+
+#### 5.3.1 Spool layout — one folder per platform, in both queues
+
+```
+spool/
+  real/                    the user's own exports; pruned only after verify + 3 days
+    telegram/              ChatExport_…/result.json, DataExport_…/result.json
+    whatsapp/              per-chat .zip or .txt
+    messenger/             facebook-*.zip
+    linkedin/              Basic_LinkedInDataExport_*.zip
+    sms/                   (empty — no adapter yet)
+    imap/                  (empty by design — email is live-only)
+    gmail/                 (empty by design — email is live-only)
+  sample/                  generated demo corpus (§6); regenerable, may be wiped freely
+    <the same seven folders>
+```
+
+- **Two queues, never mixed.** `--source real` reads `spool/real/`, `--source sample`
+  reads `spool/sample/`. A demo corpus must never sit beside real exports.
+- **Routing is by content, never by filename.** `stage()` runs `detect_platform()` and files
+  each export under the platform it actually is — which is why Telegram's two identically
+  named `result.json` files land in the same folder.
+- **One level of source folder is preserved.** Telegram Desktop exports a *directory*
+  containing `result.json`, never a bare file; two exports of one account share that
+  filename, so the folder is what keeps them apart. `discover()` recurses, so the nesting
+  costs nothing.
+- **`imap/` and `gmail/` are permanently empty.** Email has no file to drop — see §5.3.2.
+- **No dated sub-folders.** The spool is a *queue*, not an archive; age is handled by the
+  3-day verified prune (§9.1), not by folder names.
+
+#### 5.3.2 Parser per file type
+
+One module per platform, in `relate_comms/adapters/`. Each exposes `parse(source, **kw)
+-> IngestResult` and a `detect(path)` used by `ingest.detect_platform()` — detection is by
+**content shape, never by filename**.
+
+| File the user drops | Module | Reads |
+|---|---|---|
+| Telegram `result.json` (bulk or single-chat) | `adapters/telegram.py` | JSON; `[{chats:}]` or bare chat object |
+| WhatsApp `.txt` / `.zip` holding `_chat.txt` | `adapters/whatsapp.py` | the `[M/D/YY, h:mm:ss AM] Sender: body` header |
+| Messenger `*.zip` / folder | `adapters/messenger.py` | one `message_*.html` per thread under `inbox/` etc. |
+| LinkedIn `*.zip` | `adapters/linkedin.py` | `messages.csv` (Basic export) |
+| Outlook `.pst` / `.ost` | `adapters/outlook_pst.py` | MIME store via `libpff-python` |
+| Live mailbox | `adapters/email_imap.py` | IMAP, read-only. **Not in `_PARSERS`** |
+
+The registry is `ingest._PARSERS` (`ingest.py:61`). Adding a platform = one module + one line.
+
+**Email is the exception, and it is deliberate.** `email_imap.detect()` returns `False` with
+the note *"Email is not a file. It is never auto-discovered from the spool."* A mailbox is
+read live over IMAP and reaches the writer through `ingest(extra_results=…)`, so it takes
+exactly the same scrub → write → verify path as a file:
+
+```bash
+python -m relate_comms ingest --source real --email hostinger
+python -m relate_comms ingest --source real --email gmail --email hostinger
+```
+
+Secrets come from `.env` (`GOOGLE_EMAIL` / `GOOGLE_APP_PASSWORD`,
+`HOSTINGER_EMAIL` / `HOSTINGER_PASSWORD`), which is gitignored. A missing key names the
+key, never prints a value.
+
+Only `telegram`, `whatsapp` and `messenger` are in `_TZ_AWARE_PLATFORMS`; they accept
+`tz_offset_hours`. LinkedIn, Outlook and email do **not** — their times are already UTC and
+the signature refuses the parameter rather than being told a lie about its own data.
+
+#### 5.3.3 What we call the in-RAM object
+
+The term is **record**, not "JSON". Nothing here is a JSON file.
+
+| Thing | Proper name | Where defined |
+|---|---|---|
+| One message | **`Message` record** (a frozen dataclass) | `schema.py:31` |
+| One sender account | **`Identity` record** | `schema.py:113` |
+| One human across platforms | **`Person` record** | `schema.py:93` |
+| One file's full parse | **`IngestResult`** | `schema.py:137` |
+| One attachment reference | **`AttachmentRef`** | `schema.py:61` |
+| One chat/thread | **`Chat` record** | `schema.py:83` |
+| A row handed to Cypher | **parameter row** (a plain `dict`) | `writer.py:142` |
+| What the database returns | **`Record`** (`relate.Record`, dict **and** attribute access) | relate 1.0.1 |
+
+Say **"record"** or **"message row"**. Say `dict` only for the parameter form the writer
+builds immediately before `UNWIND`. Calling `Message` "JSON" is wrong twice over: it is not
+text, and it is not on disk.
 
 ### 5.4 Semantic search is native
 
@@ -269,7 +444,66 @@ index needed.** There is no inline `cosine_similarity()` scalar function, so
 distance is only available through the index — which is why hybrid search is
 written as "vector query, then traverse" rather than "compute similarity".
 
-### 5.5 The speed claim needs an artifact
+### 5.5 The canvas is thread-first; the viewer lazy-loads
+
+> **The UI itself has its own notes: [`buildUI.md`](buildUI.md).** Layout, palette, library
+> choice, Viewer states, local Ollama wiring and the agreed scaffolds are recorded there,
+> not here. This section covers only the canvas/viewer *data* decisions.
+
+**887 threads, 12,278 messages** in the real store — average 13.8 messages per thread, but
+badly uneven: Messenger is 86% of all messages in 15% of its threads (avg 79.7), and the
+largest single thread holds **707**. A canvas of 12,278 nodes is not drawable; a canvas of
+887 is.
+
+So the graph view renders **Thread nodes only**. Messages are not drawn. This is a
+*rendering* decision, not a storage one: the `.rl` still holds every message and §5.2 still
+holds — a hidden node must never narrow an agent's query.
+
+| Surface | Sees |
+|---|---|
+| Graph canvas | Thread nodes, and their `Correspondent`. Messages only on expansion. |
+| Thread viewer | Messages for that one thread, ordered by `ts_utc`, lazy-loaded |
+| Agent / MCP / Cypher | Everything, always |
+
+**Thread viewer behaviour (settled):**
+
+- Opens from a thread node. **Flex-scrolls**: renders roughly 1,000 characters — about 2–5
+  messages — with a visible separator between them, and loads more on scroll.
+- **Arrow / page button at the bottom** moves to the next page. No infinite spinner, no
+  "load all".
+- **Search box pinned at the top, scoped to this thread only.** It filters within the
+  opened thread, never the store.
+- The 707-message thread is therefore fine: nothing ever tries to render it in one go.
+
+Query shape, unchanged since §3.1:
+
+```cypher
+MATCH (t:Thread {key: $thread_key})<-[:IN]-(m:Message)
+RETURN m.key, m.ts_utc, m.is_self, m.sender_name, m.body
+ORDER BY m.ts_utc DESC
+SKIP $skip LIMIT $limit
+```
+
+### 5.6 Correspondent — the thread's counterparty (distinct from Person)
+
+`(:Correspondent {key, display_name, platform, handle, email, phone_e164, message_count})`
+with `(:Thread)-[:WITH]->(:Correspondent)`.
+
+**A Correspondent is not a Person, and the two must not be conflated.** Full comparison in
+§3.2; the short version:
+
+- **Correspondent = a fact.** The export named this person on this platform. It is written today.
+- **Person = an inference.** It merges one human across platforms, and does not exist yet.
+
+**One node per (platform, person), not per thread.** Keying by thread produced
+`David Sartori` four times, one per Messenger thread he appeared in. `key` is
+`<platform>:<name>` and `WITH` is `MERGE`d per thread, so a person in ten threads is one node
+with ten edges.
+
+Group threads get one Correspondent per distinct non-owner sender in `participant_names`. A
+thread with no resolvable participant gets none, and that is reported, never guessed.
+
+### 5.7 The speed claim needs an artifact
 
 `tools/bench_queries.json` holds the comparison set: same Cypher, Run against
 Relate locally and against the Neo4j Cloud app. Four tiers — lookup, traversal,
@@ -354,8 +588,8 @@ are Neo4j staff and will ask.
 the source text for the §9.1.3 modal. Keep platform quirks discovered from real files there;
 keep engineering consequences here.
 
-- Spool to `~/relate-comms/spool/` (`RELATE_DATA_ROOT`). The UI uses a **drop zone**; a dev
-  passes a path and `ingest.stage()` copies it in (never moves, never deletes the original).
+- Spool to `spool/real/` (§5.3.1). The UI uses a **drop zone**; a dev passes a path and
+  `ingest.stage()` copies it in (never moves, never deletes the original).
 - `archive_copies: false` — parse in place, keep hashes.
 - **Never** demo from a live-authenticated session.
 
@@ -368,7 +602,7 @@ byte-identical rows). Other platforms differ — see §9.1.3.
 
 Pipeline and housekeeping:
 
-1. **Ingest** — user drops exports in `~/relate-comms/spool/` and presses Ingest (or `ingest.py`).
+1. **Ingest** — user drops exports in `spool/real/<platform>/` and presses Ingest (or `ingest.py`).
    Re-ingest is safe: `Message.key = platform:chat_id:message_id` makes it idempotent.
 2. **Verify, then prune at 3 days** — a spool file is deleted only after its key set is
    confirmed present in the store (`writer.verify_present`), not merely "the job exited 0".
@@ -376,7 +610,7 @@ Pipeline and housekeeping:
    and the store holds one row per message key, never a copy per ingest.
 
 Unverified spool files are **never** pruned. A failed verify leaves the file for inspection
-and logs a visible refusal — same policy as the scrub gate (§3.2) and §9.1.1's demotion of cron.
+and logs a visible refusal — same policy as the scrub gate (§3.4) and §9.1.1's demotion of cron.
 
 ### 9.1.1 Auto-ingest — demoted
 
@@ -494,7 +728,7 @@ caught by a failing test, not by reasoning.
 Real account exports from this machine had `personal_information: null` and no Saved
 Messages, so step 4 is the first-run path. It picks the publisher's own id
 (`user1426445212`, 47 chats / 347 msgs) and persists it. `.profile/` is gitignored: it is
-re-identification material, same class as the alias map in §3.2.
+re-identification material, same class as the alias map in §3.4.
 
 ### 9.3 Dummies vs fixtures
 
@@ -526,31 +760,87 @@ Deterministic: regenerating the same source gives byte-identical output (verifie
 ---
 ---
 
-## 10. Handover — updated 2026-11-14 21:20
+## 10. Handover — updated 2026-11-15
 
-**Where we are:** stages 1, 2, 2b, 3, 4, 5/6 complete, plus a first pass at **graph write**.
+**Where we are:** the ingest pipeline is **end to end on real data**. Five platforms, one store.
 
 - Adapters: Telegram (both shapes), WhatsApp `.txt`/`.zip`, Messenger HTML, LinkedIn
   `messages.csv`, email over IMAP (Gmail, Hostinger), Outlook `.pst`.
-- Pipeline: parallel parse → serialised write → verify → optional verified prune.
-- Resolution (`Person`/`Identity`) and the scrub gate (`keep`/`hide`/`block`) run inside
-  `ingest()`; resolution results are computed but **not yet persisted**.
-- `writer.write_people()` added — **written but not called from `ingest()`**, and not yet
-  covered by a test. Next session starts there.
+- Pipeline: parallel parse → resolution → scrub → serialised write → verify → optional prune.
+- **`--email <account>` reads live IMAP** and pushes through the same write path.
 
-**Graph shape today:** `Message`, `Thread`, `Attachment` are written and queryable.
-`Person`, `Identity`, `MATCHED_BY`, `POSSIBLY`, `SENT` exist as Cypher but nothing runs them.
+**Store today — `store/graph.rl`, 18.9 MB, real data:**
 
-**94 tests pass.** Mixed-platform spool: 11,066 messages in 3.1 s, PII withheld.
+| | |
+|---|---|
+| Messages | **12,499** across 5 platforms |
+| Threads | 955 (0 with an empty title) |
+| Correspondents | 591 nodes, 975 `WITH` edges |
+| Attachments | 86 |
+
+| Platform | Messages | Owner's own |
+|---|---|---|
+| Messenger | 10,605 | 92 |
+| Telegram | 1,212 | 360 |
+| LinkedIn | 292 | 132 |
+| Email (Hostinger) | 221 | 169 |
+| WhatsApp | 169 | 99 |
+
+**92 tests pass, 2 skip** (the 2 skip when `spool/real/` is empty).
 
 ```bash
-python -m pytest tests -q                     # expect 94 passed
-python -m relate_comms sample build --check   # regenerates samples + round-trips
-python tools/bench_scale.py --n 5000          # ingest throughput, measured
-pip install -e ".[resolve]"                   # rapidfuzz: needed for name matching
+python -m pytest tests -q
+python -m relate_comms ingest --source real --email hostinger --tz-offset -5
+python -m relate_comms sample build --check
+pip install -e ".[resolve]"          # rapidfuzz: needed for name matching
 ```
 
-Real exports live **outside the repo** at `~/relate-comms/spool/` (`RELATE_DATA_ROOT`). If empty,
+### Bugs fixed in this session (all were silent)
+
+| Bug | Symptom | Fix |
+|---|---|---|
+| `telegram.parse()` refused `tz_offset_hours` | both Telegram files failed with `TypeError`, 0 messages | parameter added; wall-clock times get the offset |
+| One owner id shared by all platforms | Messenger/LinkedIn `is_self` = 0 on 10,897 rows | `identity.json` stores **per platform** |
+| `infer_owner` accepted a tie | elected a *correspondent* as the owner in single-chat exports | refuses ties, and refuses <2 chats |
+| `_resolve_owner_once` read the **first** file | the 1-chat export beat the 535-chat one | ranks by chat count, prefers `personal_information` |
+| Email `is_self` hardcoded `False` | 0 of 221 sent mail recognised | Sent-folder / own-address rule |
+| `Report.written` summed per batch | re-ingest reported double the rows | counts distinct keys |
+| Thread titles could be empty | **291 of 955 threads** rendered `""` | `thread_display_title()` fallback chain (§3.3) |
+| Correspondent keyed per thread | `David Sartori` ×4 | keyed per (platform, name) |
+
+### Next, in priority order
+
+**The UI brief is a separate document: [`buildUI.md`](buildUI.md).** Read it before writing UI code.
+It holds the layout, palette, library choice, Viewer states and the Ollama wiring.
+
+1. **`relate_comms/tools.py` — the tool layer. This gates everything else.**
+   The file is currently **comments only: zero implementations.** It declares the intended
+   surface (`message_view`, `thread_arc`, `graph_slice`, `run_cypher`, `search_messages`,
+   `semantic_search`, `hybrid_search`, `evidence_counts`, `types_present`, `person_profile`,
+   `who_did_i_talk_to`, `ingest`, `verify_ingest`, `prune_spool`) plus the `Access` /
+   `ToolError` / `register` / `require` scaffold — and nothing more.
+
+   Minimum viable for a demo: **`graph_slice`** (draws the canvas) + **`thread_arc`** (feeds the
+   Viewer) + **`search_messages`** (feeds the search bar). Everything else can wait.
+
+   Why it is first: the UI, the local chat and MCP all bind these same functions (§5.2). Build
+   the UI against a real tool layer or you will write the queries three times and let them drift.
+2. **FastAPI app + viewer** — `app/` holds five empty stubs. Serve `store/graph.rl` read-only,
+   thread-first canvas per §5.5, then the Viewer. Details in `buildUI.md` §10.
+3. **`Person` / `SENT` wiring** — `write_people()` exists and `sent_edges()` exists; neither is
+   called from `ingest()`. Needed for cross-platform identity, invisible in the viewer.
+4. **Place/Company/Product** — blocked on a candidate generator (§3.2). Do not start
+   before the viewer exists, or there is no way to see whether it is right.
+5. **SMS adapter** — payload pending.
+
+### Known cosmetic problems in the real store
+
+- `Facebook user` placeholder account spans **31 Messenger threads** — it is a pseudo-person by
+  design, but a viewer must render it as "spam account", not as a contact.
+- One thread holds **707 messages**; the viewer must paginate, never render in one go.
+- Hostinger sent mail has no `Message-ID` (133 of 221) — keyed by `uid:<UIDVALIDITY>:<UID>`.
+
+Real exports live in `spool/real/` (§5.3.1), gitignored. If empty,
 the real-data tests skip — expected, not a failure.
 
 **Paste-a-path workflow (dev):**
@@ -561,19 +851,6 @@ python -m relate_comms ingest "C:/Users/me/Downloads/+1 (917) 400-4025.zip" --tz
 
 Paths are **copied** into the spool (`ingest.stage`), never moved; the UI will reach the same
 function through its drop zone. Nothing outside the spool is ever parsed or deleted.
-
-### Next, in priority order
-
-1. **Finish graph write / flattening.** `writer.write_people()` exists with the Cypher for
-   `Person`, `Identity`, `MATCHED_BY`, `POSSIBLY` and `SENT`, and `resolution.sent_edges()`
-   builds the author edges. **Not yet done:** wire it into `ingest()` after `writer.write()`,
-   add the `POSSIBLY` rows (currently the Cypher is defined but nothing feeds it), write tests
-   against a temp `.rl`, and check query latency with `tools/bench_graph.py`.
-2. **Graph query surface** — `thread_arc`, `person_profile`, `who_did_i_talk_to` in
-   `tools.py`. Today `Message`/`Thread`/`Attachment` answer; person-shaped queries do not
-   because nothing reads `Person` yet.
-3. **SMS XML adapter** — payload pending.
-4. **UI** — drop zone, evidence panel from `scrub.ScrubReport`, `POSSIBLY` rendered dashed.
 
 ### Email — what was built and what was not
 
@@ -606,7 +883,7 @@ function through its drop zone. Nothing outside the spool is ever parsed or dele
 
 ### Resolution + scrub — what was decided
 
-- **Order is fixed:** parse → resolve → scrub → write (§3.2). Resolution needs real values to
+- **Order is fixed:** parse → resolve → scrub → write (§3.4). Resolution needs real values to
   join on; the store only ever sees verdicts.
 - **Name matching requires the family name AND a given name to agree.** `token_sort_ratio`
   alone merged `Will Sell` into `Will Castellanos` and `Austin Johnson` into `Casey Johnson` —

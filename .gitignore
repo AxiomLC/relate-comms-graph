@@ -10,8 +10,10 @@ token.json
 *client_secret*
 
 # User exports / message archives (contain unencrypted personal history)
+# The folder itself ships via .gitkeep so a fresh clone has a drop zone.
 exports/
-spool/
+spool/*
+!spool/.gitkeep
 archive_docs/
 *.zip
 *.result.json
@@ -20,12 +22,18 @@ archive_docs/
 !tests/fixtures/**/result.json
 
 # Relate stores — generated, never source
-store/
+store/*
 *.rl
+# ...but the empty folder must exist on a fresh clone
+!store/.gitkeep
 
 # Generated sample data — reproducible from `python -m relate_comms sample build`
 relate_comms/sample_data/generated/
 
+# Research scratch — npm metadata, doc dumps, library probes. VALUABLE, KEEP ON DISK,
+# never committed. Reference material for the graph-library decision (buildUI.md §4.2).
+.tmp_research/*
+!/.tmp_research/.gitkeep
 # Python
 __pycache__/
 *.py[cod]
