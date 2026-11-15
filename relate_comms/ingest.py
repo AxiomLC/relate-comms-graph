@@ -110,6 +110,7 @@ class BatchOutcome:
     withheld: str = ""
     identities: int = 0
     who_matched: int = 0
+    correspondents: int = 0
 
     @property
     def ok(self) -> bool:
@@ -144,10 +145,18 @@ class Report:
     elapsed_s: float = 0.0
     workers: int = 1
     owner_note: str = ""
+    keys: set[str] = field(default_factory=set)
 
     @property
     def written(self) -> int:
-        return sum(b.messages for b in self.batches)
+        """Distinct message keys this run touched.
+
+        Not `sum(b.messages)`: two batches can legitimately contain the same key (a
+        bulk export and a single-chat export overlap by design), and summing then
+        reports more rows than the store holds. The store merges on the key, so the
+        report must count the same thing the store does.
+        """
+        return len(self.keys)
 
     @property
     def failed(self) -> list[BatchOutcome]:
@@ -291,11 +300,19 @@ def _kwargs_for(platform: str, parse_kwargs: dict[str, Any]) -> dict[str, Any]:
 
     LinkedIn's CSV states UTC, so it does not take `tz_offset_hours`. Passing one is
     a programming error, not a data error: the file must still ingest.
+
+    `self_id` needs the same treatment for a different reason. A run resolves the
+    owner once from Telegram and puts a Telegram user id in `self_id`; passing that
+    to Messenger or LinkedIn matches nothing, so every row silently lands
+    `is_self=False`. The id is only meaningful to the platform that produced it.
     """
-    if platform in _TZ_AWARE_PLATFORMS:
-        return dict(parse_kwargs)
     trimmed = dict(parse_kwargs)
-    trimmed.pop("tz_offset_hours", None)
+    owner_platform = trimmed.pop("self_id_platform", None)
+    if owner_platform is not None and platform != owner_platform:
+        trimmed.pop("self_id", None)
+
+    if platform not in _TZ_AWARE_PLATFORMS:
+        trimmed.pop("tz_offset_hours", None)
     return trimmed
 
 
@@ -364,11 +381,12 @@ def ingest(
     profile_dir: str | Path | None = None,
     tz_offset_hours: float = 0,
     scrub_policy: dict[str, scrub.Verdict] | None | bool = None,
+    extra_results: Iterable[IngestResult] = (),
 ) -> Report:
     """Parse everything in the spool, write it, verify it, and optionally prune.
 
-    `source="sample"` reads `relate_comms/sample_data/generated/` instead of the
-    spool — the same code path, so the sample proves the ingest, not a special case.
+    `source="sample"` reads `spool/sample/` instead of `spool/real/` — the same code
+    path, so the sample proves the ingest, not a special case.
 
     `prune=False` is the default everywhere. Deleting a spool file is a user
     decision (§9.1.3: `prune` needs `confirm=true`), and the CLI gates it the same
@@ -379,8 +397,17 @@ def ingest(
     if until is not None and until.tzinfo is None:
         raise ValueError("until must be timezone-aware")
 
+    # The folder shape is part of the product: a fresh clone must have somewhere to
+    # drop a file before anything is ingested. Created here rather than at install
+    # time, so a user who deletes a folder gets it back on the next run.
+    paths.ensure_layout()
+
     if root is None:
-        root = _sample_root() if source == "sample" else paths.spool_dir()
+        # Two queues, never mixed: `spool/real/` holds the user's own exports,
+        # `spool/sample/` holds generated demo data (§6). Re-ingest is idempotent, so
+        # whichever is chosen is read whole — never "most recent only", which would
+        # silently skip a file and hide a bug.
+        root = paths.sample_dir() if source == "sample" else paths.real_dir()
     root = Path(root)
 
     store_path = Path(store) if store else paths.store_path()
@@ -399,7 +426,8 @@ def ingest(
     report.unrecognised = [str(b.path) for b in batches if not b.recognised]
     batches = [b for b in batches if b.recognised]
 
-    if not batches:
+    extra_results = list(extra_results)
+    if not batches and not extra_results:
         report.elapsed_s = time.perf_counter() - started
         return report
 
@@ -417,14 +445,27 @@ def ingest(
     # Multi-file runs resolve the owner once, up front. Letting each worker infer
     # it independently would reopen the per-file `is_self` bug (§9.2) for the first
     # run, when nothing is persisted yet.
+    #
+    # The resolved id is a *Telegram* id (`user1426445212`). Handing it to Messenger
+    # or LinkedIn makes every row is_self=False, because those platforms use display
+    # names, not Telegram user ids. Only Telegram accepts a self_id inferred this way;
+    # every other adapter resolves its own owner from its own export.
     if len(batches) > 1 and "self_id" not in parse_kwargs:
         resolved, note = _resolve_owner_once(batches, profile)
         if resolved:
             parse_kwargs["self_id"] = resolved
+            parse_kwargs["self_id_platform"] = telegram.PLATFORM
         if note:
             report.owner_note = note
 
     parsed = parse_batches(batches, parse_kwargs=parse_kwargs, workers=workers)
+
+    # Live mailboxes arrive already parsed: email is the one platform with no file to
+    # drop (§5.3.1), so it is fetched by the caller and appended here. Giving it a
+    # synthetic `Batch` keeps it in the same serialised write path as everything else.
+    for extra in extra_results:
+        parsed.append((Batch(path=Path(extra.source), platform=extra.platform),
+                       extra, ""))
 
     # One connection, one writer, in discovery order. Concurrent writers to one `.rl`
     # is corruption, not a speed-up (§9.1.4).
@@ -453,13 +494,25 @@ def ingest(
                 outcome.identities = len(merged)
 
             try:
-                written = writer.write(conn, result)
+                written = writer.write(conn, result, owner=parse_kwargs.get("self_id"))
             except Exception as exc:  # noqa: BLE001 - one bad batch must not stop the rest
                 outcome.error = f"write failed: {type(exc).__name__}: {exc}"
                 report.batches.append(outcome)
                 continue
 
+            # §5.6: the thread's counterparty, straight from the export's participant
+            # list. After `write()` because `WITH` needs the Thread row to exist. This
+            # is a fact, not the inference `write_people()` will later add.
+            try:
+                counted = writer.write_correspondents(
+                    conn, result, owner=parse_kwargs.get("self_id"))
+                outcome.correspondents = counted["correspondents"]
+            except Exception as exc:  # noqa: BLE001 - never fail the batch over this
+                outcome.warnings.append(
+                    f"correspondents not written: {type(exc).__name__}: {exc}")
+
             outcome.messages = written["messages"]
+            report.keys.update(written["keys"])
             outcome.attachments = written["attachments"]
 
             ok, verification = writer.verify_present(conn, result)
@@ -486,19 +539,26 @@ def _resolve_owner_once(
     batches: list[Batch],
     profile_dir: Path,
 ) -> tuple[str | None, str]:
-    """Persisted owner if known; otherwise infer from the first Telegram file.
+    """Persisted owner if known; otherwise infer from the Telegram file with the most evidence.
 
-    Reads `personal_information` from the first file that has it, else infers by
-    breadth across that file's chats — the same precedence as the adapter, applied
-    once instead of once per worker.
+    Reads `personal_information` from the first file that states it, else infers by
+    breadth — the same precedence as the adapter, applied once instead of once per
+    worker.
+
+    **Strongest file first, not first file.** A spool often holds both a bulk export
+    (hundreds of chats) and a single-chat export (one). Taking whichever sorted first
+    meant a one-chat file with two ids tied elected the *correspondent* as the owner,
+    and every Telegram row then landed `is_self=False`. Files are therefore ranked by
+    chat count, and a file that cannot support an inference is not consulted.
     """
     from . import identity
 
-    stored = identity.load_owner(profile_dir)
+    stored = identity.load_owner(profile_dir, telegram.PLATFORM)
     if stored:
         return stored, ""
 
     tg = telegram
+    documents: list[tuple[int, Path, dict[str, Any]]] = []
     for batch in batches:
         if batch.platform != tg.PLATFORM:
             continue
@@ -506,19 +566,37 @@ def _resolve_owner_once(
             document = json.loads(batch.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        stated = identity.owner_from_personal_information(document)
         chats, _ = tg._iter_chats(document)
-        owner = stated or identity.infer_owner(chats)[0]
+        documents.append((len(chats), batch.path, document))
+
+    # A file that states the owner outright wins regardless of size: that is a fact,
+    # not an inference. Otherwise the widest file gives the best evidence.
+    for _, path, document in documents:
+        stated = identity.owner_from_personal_information(document)
+        if stated:
+            try:
+                identity.save_owner(profile_dir, stated, evidence="personal_information",
+                                    platform=tg.PLATFORM)
+            except ValueError:
+                pass
+            return stated, ""
+
+    for chat_count, path, document in sorted(documents, key=lambda d: -d[0]):
+        chats, _ = tg._iter_chats(document)
+        owner, breadth = identity.infer_owner(chats)
         if not owner:
-            return None, "is_self unresolved: no owner stated or inferable; all rows is_self=False"
-        evidence = "personal_information" if stated else f"inferred from {batch.path.name}"
+            continue
+        evidence = f"inferred from {path.name} ({breadth} of {chat_count} chats)"
         try:
-            identity.save_owner(profile_dir, owner, evidence=evidence)
+            identity.save_owner(profile_dir, owner, evidence=evidence, platform=tg.PLATFORM)
         except ValueError:
             pass
-        note = "" if stated else f"is_self owner inferred as {owner} ({evidence})"
-        return owner, note
-    return None, ""
+        return owner, f"is_self owner inferred as {owner} ({evidence})"
+
+    if not documents:
+        return None, ""
+    return None, ("is_self unresolved: no Telegram file states or permits inferring the "
+                  "owner; all rows is_self=False. Pass --self-id to pin it.")
 
 
 def _older_than(path: Path, age: timedelta) -> bool:
@@ -544,7 +622,7 @@ def _remove_empty_parents(path: Path, root: Path) -> None:
 
 def _sample_root() -> Path:
     from .sample_data import build as build_module
-    return build_module.GENERATED
+    return build_module.SAMPLE
 
 
 def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> list[Path]:
@@ -555,11 +633,16 @@ def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> 
     is ever moved or deleted. The spool is the one custody point, so verification
     and the 3-day prune keep working unchanged (§9.1).
 
+    Files land in `spool/real/<platform>/`, chosen by **content**, not by the folder
+    the user happened to download into. One level of the source folder is kept
+    underneath, because Telegram's exporter writes a directory containing
+    `result.json` and two exports of one account share that filename.
+
     A source that is already inside the spool is returned untouched, so re-running
     with the same path is a no-op rather than a copy of a copy.
     """
-    target_root = Path(root) if root else paths.spool_dir()
-    target_root.mkdir(parents=True, exist_ok=True)
+    top = Path(root) if root else paths.real_dir()
+    top.mkdir(parents=True, exist_ok=True)
     staged: list[Path] = []
 
     for raw in paths_in:
@@ -573,9 +656,17 @@ def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> 
                        and p.suffix.lower() in _CONSIDER_SUFFIXES]
 
         for item in sources:
-            if target_root in item.parents:
+            if top in item.parents:
                 staged.append(item)
                 continue
+
+            platform = detect_platform(item)
+            if platform is None:
+                # Unrecognised: kept, not filed under a guess. The report names it.
+                platform = "unrecognised"
+            target_root = top / platform
+            target_root.mkdir(parents=True, exist_ok=True)
+
             # Keep one folder level so two chats sharing a filename never collide.
             destination = target_root / item.parent.name / item.name
             if destination.exists():

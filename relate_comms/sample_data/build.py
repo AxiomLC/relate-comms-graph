@@ -51,16 +51,21 @@ ROOT = PACKAGE.parent.parent                       # repo root
 GENERATED = PACKAGE / "generated"
 FIXTURES = ROOT / "tests" / "fixtures"
 
-# Real exports live outside the repo (§5.3). Used only as shape references when a
+# Real exports live in `spool/real/`, gitignored. Used only as shape references when a
 # developer happens to have them; the minimal fallback works without them.
-from ..paths import spool_dir  # noqa: E402
+from ..paths import real_dir  # noqa: E402
+
+# Generated demo data lands in the same queue shape as real data (§6).
+from ..paths import sample_dir  # noqa: E402
+
+SAMPLE = sample_dir()
 
 _SINGLE_CANDIDATES = [
-    spool_dir() / "ChatExport_2026-11-14 (1)" / "result.json",
-    spool_dir() / "result.json",
+    real_dir() / "ChatExport_2026-11-14 (1)" / "result.json",
+    real_dir() / "result.json",
 ]
 _BULK_CANDIDATES = [
-    spool_dir() / "DataExport_2026-11-14" / "result.json",
+    real_dir() / "DataExport_2026-11-14" / "result.json",
 ]
 
 
@@ -322,14 +327,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=20261114)
     args = parser.parse_args(argv)
 
-    target_root = GENERATED if args.dest == "generated" else FIXTURES
+    target_root = SAMPLE if args.dest == "generated" else FIXTURES
 
     single, model_single = build(SINGLE_EXPORT, args.seed)
     bulk, model_bulk = build(BULK_EXPORT, args.seed)
     bulk = shrink(bulk)
 
-    single_path = target_root / "telegram_single" / "result.json"
-    bulk_path = target_root / "telegram_bulk" / "result.json"
+    # `spool/sample/telegram/` mirrors `spool/real/telegram/`, so the two queues have
+    # the same shape and `--source sample` exercises the same discovery code path.
+    platform_root = target_root / "telegram" if args.dest == "generated" else target_root
+    single_path = platform_root / "telegram_single" / "result.json"
+    bulk_path = platform_root / "telegram_bulk" / "result.json"
     _write(single_path, single)
     _write(bulk_path, bulk)
 

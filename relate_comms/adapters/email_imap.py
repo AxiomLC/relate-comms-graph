@@ -409,7 +409,8 @@ def fetch(
                     continue
                 raw = payload[0][1]
                 _parse_raw(raw, folder, uid.decode(), uidvalidity, result,
-                           seen_keys, chats)
+                           seen_keys, chats,
+                           special_use=special, account_address=user)
 
         result.chats.extend(chats.values())
         # Never report success when nothing matched: a localised or unusual folder
@@ -436,6 +437,21 @@ def _criteria(since: datetime | None, until: datetime | None) -> list[str]:
     return parts or ["ALL"]
 
 
+def folder_is_sent(folder: str, special_use: dict[str, str] | None = None) -> bool:
+    """Was this mail read out of a sent-mail folder?
+
+    Tier 1 is the RFC 6154 `\\Sent` flag, which survives localised folder names.
+    Hostinger publishes no flags at all (verified 2026-11-14), so tier 2 is the
+    name, compared **per path segment** — `INBOX.Sent` splits to `[inbox, sent]` —
+    because comparing whole names missed every sent message.
+    """
+    if special_use:
+        sent_folder = special_use.get("\\Sent")
+        if sent_folder and folder == sent_folder:
+            return True
+    return "sent" in _segments(folder)
+
+
 def _parse_raw(
     raw: bytes,
     folder: str,
@@ -444,6 +460,9 @@ def _parse_raw(
     result: IngestResult,
     seen_keys: set[str],
     chats: dict[str, Chat],
+    *,
+    special_use: dict[str, str] | None = None,
+    account_address: str = "",
 ) -> None:
     message = email.message_from_bytes(raw)
     ts = _ts(message)
@@ -481,6 +500,14 @@ def _parse_raw(
 
     from ..schema import AttachmentRef
 
+    # Ownership is structural, not guessed from a name. A message sitting in a
+    # `\Sent`-class folder was sent by the account, and mail whose From address is
+    # the account's own address is also ours (some servers file it in INBOX).
+    # Matching display names like `David` vs `Dave` would be an inference; this is
+    # a fact (§3.1: don't guess when the data says).
+    is_self = (folder_is_sent(folder, special_use)
+               or (sender_addr and sender_addr.lower() == account_address.lower()))
+
     result.messages.append(Message(
         key=key, platform=PLATFORM, chat_id=thread,
         message_id=message_id, ts_utc=ts,
@@ -488,7 +515,7 @@ def _parse_raw(
         sender_id=sender_addr or None,
         body=body, reply_to=None,
         has_attachments=bool(attachments),
-        is_self=False,      # decided by resolution against the account owner
+        is_self=is_self,
         raw_kind=raw_kind,
         saved_from=subject or None,
     ))

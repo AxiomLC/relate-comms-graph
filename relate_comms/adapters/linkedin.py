@@ -295,13 +295,14 @@ def _resolve_owner(
     if self_id:
         if profile_dir:
             try:
-                identity.save_owner(profile_dir, self_id, evidence="caller self_id")
+                identity.save_owner(profile_dir, self_id, evidence="caller self_id",
+                                    platform=PLATFORM)
             except ValueError:
                 pass
         return self_id
 
     if profile_dir:
-        stored = identity.load_owner(profile_dir)
+        stored = identity.load_owner(profile_dir, PLATFORM)
         if stored:
             return stored
 
@@ -327,7 +328,7 @@ def _resolve_owner(
     result.warnings.append(note)
     if profile_dir:
         try:
-            identity.save_owner(profile_dir, winner, evidence=note)
+            identity.save_owner(profile_dir, winner, evidence=note, platform=PLATFORM)
         except ValueError:
             pass
     return winner

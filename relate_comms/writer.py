@@ -67,6 +67,115 @@ BATCH_SIZE = 500
 # must look different from a known identity at a glance.
 MATCH_THRESHOLD = 0.95
 
+_CORRESPONDENT_CYPHER = (
+    "UNWIND $rows AS row "
+    "MERGE (c:Correspondent {key: row.key}) "
+    "SET c.display_name = row.display_name, c.platform = row.platform, "
+    "    c.handle = row.handle, c.email = row.email, c.phone_e164 = row.phone_e164 "
+    "WITH c, row "
+    "MATCH (t:Thread {key: row.thread_key}) "
+    "MERGE (t)-[:WITH]->(c)"
+)
+
+
+def correspondent_key(platform: str, name: str) -> str:
+    """Stable per (platform, person).
+
+    **Not scoped to the thread.** Keying by thread gave `David Sartori` four separate
+    nodes — one per thread he appeared in — because Messenger's placeholder account
+    shows up in 31 different threads. The row is still attached with `WITH` per
+    thread; only the identity is shared, so a person who appears in ten threads is
+    one node with ten `WITH` edges.
+    """
+    return f"{platform}:{name.strip()}"
+
+
+def write_correspondents(
+    conn: Any,
+    result: IngestResult,
+    *,
+    owner: str | None = None,
+) -> dict[str, int]:
+    """Write one `Correspondent` per non-owner participant, attached with `WITH`.
+
+    Called **after** `write()`, because `WITH` needs the Thread row to exist.
+
+    `participant_names` is already populated by every adapter and was previously
+    dropped. A `You` placeholder or the owner's own name is skipped: a thread you
+    sent messages into alone has correspondents, not a self-edge.
+    """
+    from .resolution import is_placeholder, norm_name
+
+    thread_titles = {thread_key_for(c): c.title for c in result.chats}
+    owner_norm = norm_name(owner) if owner else ""
+
+    rows: list[dict[str, Any]] = []
+    for chat in result.chats:
+        tkey = thread_key_for(chat)
+        for name in chat.participant_names:
+            clean = (name or "").strip()
+            if not clean or is_placeholder(clean):
+                continue
+            if owner_norm and norm_name(clean) == owner_norm:
+                continue
+            # One row per (thread, person): the MERGE is on `key`, so a repeat across
+            # threads attaches a second `WITH` edge to the same node rather than
+            # minting a duplicate.
+            rows.append({
+                "key": correspondent_key(chat.platform, clean),
+                "display_name": clean,
+                "platform": chat.platform,
+                "handle": clean,
+                "email": clean if "@" in clean else None,
+                "phone_e164": None,
+                "thread_key": tkey,
+            })
+
+    cur = conn.cursor()
+    for batch in _chunks(rows):
+        cur.execute(_CORRESPONDENT_CYPHER, {"rows": batch})
+    conn.commit()
+    return {"correspondents": len(rows)}
+
+
+def thread_key_for(chat: Chat) -> str:
+    return f"{chat.platform}:{chat.chat_id}"
+
+
+def _is_owner_name(name: str, owner: str | None) -> bool:
+    from .resolution import norm_name
+    return bool(owner) and norm_name(name) == norm_name(owner)
+
+
+def thread_display_title(chat: Chat, owner: str | None = None) -> str:
+    """A human-readable title, always non-empty.
+
+    Telegram omits `name` on 1:1 chats (291 threads in the real export rendered as
+    `""`), so the title falls back through what the export *did* contain:
+
+    1. the stated name
+    2. the other participants, minus the owner — the counterparty is the chat
+    3. the platform and a short id, which is never pretty but is always true
+
+    A title is a label, not evidence. Inventing one from the counterparty is safe
+    because §5.6 already treats that person as a fact of the export.
+    """
+    if chat.title.strip():
+        return chat.title.strip()
+
+    others = [n for n in chat.participant_names
+              if n.strip() and not _is_owner_name(n, owner)]
+    if len(others) == 1:
+        return others[0]
+    if 1 < len(others) <= 3:
+        return ", ".join(others)
+    if len(others) > 3:
+        return f"{others[0]}, {others[1]} +{len(others) - 2}"
+
+    # No participants at all: name it by what identifies it, honestly.
+    return f"{chat.platform.capitalize()} thread {chat.chat_id[-6:]}"
+
+
 _PERSON_CYPHER = (
     "UNWIND $rows AS row "
     "MERGE (p:Person {key: row.key}) "
@@ -126,7 +235,7 @@ def _chunks(items: list[Any], size: int = BATCH_SIZE):
         yield items[start:start + size]
 
 
-def write(conn: Any, result: IngestResult) -> dict[str, int]:
+def write(conn: Any, result: IngestResult, *, owner: str | None = None) -> dict[str, int]:
     """Write every message and attachment, batched with UNWIND.
 
     Idempotency is unchanged: every statement is a MERGE on a stable key, so a
@@ -152,7 +261,8 @@ def write(conn: Any, result: IngestResult) -> dict[str, int]:
             "sender_name": message.sender_name,
             "sender_id": message.sender_id,
             "thread_key": thread_key(message),
-            "thread_title": chat.title if chat else "",
+            "thread_title": (thread_display_title(chat, owner) if chat
+                             else f"{message.platform.capitalize()} thread {message.chat_id[-6:]}"),
             "is_group": chat.is_group if chat else False,
         })
 
@@ -183,7 +293,8 @@ def write(conn: Any, result: IngestResult) -> dict[str, int]:
         cur.execute(_ATTACH_CYPHER, {"rows": batch})
 
     conn.commit()
-    return {"messages": len(message_rows), "attachments": len(attachment_rows)}
+    return {"messages": len(message_rows), "attachments": len(attachment_rows),
+            "keys": {m.key for m in result.messages}}
 
 
 def write_people(

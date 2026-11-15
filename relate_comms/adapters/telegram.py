@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -75,11 +75,12 @@ def _join_text(text: Any) -> str:
     return str(text)
 
 
-def _parse_ts(msg: dict[str, Any]) -> datetime | None:
+def _parse_ts(msg: dict[str, Any], tz_offset_hours: float = 0) -> datetime | None:
     """Prefer `date_unixtime` (unambiguous); fall back to local `date`.
 
-    `date` carries no offset, so we read it as UTC and flag it. Reading it as
-    local would be a lie that depends on the machine running the parse.
+    `date` carries no offset. `tz_offset_hours` is the caller's statement of which
+    wall clock the export was written in; without it we read `date` as UTC and the
+    result is wrong by however many hours the caller was from Greenwich (§3.1).
     """
     raw_unix = msg.get("date_unixtime")
     if raw_unix not in (None, ""):
@@ -94,8 +95,9 @@ def _parse_ts(msg: dict[str, Any]) -> datetime | None:
         except ValueError:
             return None
         if naive.tzinfo is None:
-            # Local-time-as-UTC. Wrong by up to a day at edges; recorded in warnings.
-            return naive.replace(tzinfo=timezone.utc)
+            # Wall clock with no offset: apply the caller's offset, or treat as UTC
+            # and say so. Silently assuming UTC is the bug §9.2 caught.
+            return (naive - timedelta(hours=tz_offset_hours)).replace(tzinfo=timezone.utc)
         return naive.astimezone(timezone.utc)
     return None
 
@@ -144,7 +146,7 @@ def _resolve_owner(
         return self_id, None
 
     if profile_dir:
-        stored = identity.load_owner(profile_dir)
+        stored = identity.load_owner(profile_dir, PLATFORM)
         if stored:
             return stored, None
 
@@ -152,7 +154,8 @@ def _resolve_owner(
     if stated:
         if profile_dir:
             try:
-                identity.save_owner(profile_dir, stated, evidence="personal_information")
+                identity.save_owner(profile_dir, stated, evidence="personal_information",
+                                    platform=PLATFORM)
             except ValueError as exc:
                 return stated, f"owner conflict: {exc}"
         return stated, None
@@ -171,7 +174,8 @@ def _resolve_owner(
     if profile_dir:
         try:
             identity.save_owner(profile_dir, inferred,
-                                evidence=f"inferred from {breadth} chats")
+                                evidence=f"inferred from {breadth} chats",
+                                platform=PLATFORM)
         except ValueError as exc:
             return inferred, f"owner conflict: {exc}"
     return inferred, note
@@ -185,6 +189,7 @@ def parse(
     self_id: str | None = None,
     include_service: bool = True,
     profile_dir: str | Path | None = None,
+    tz_offset_hours: float = 0,
 ) -> IngestResult:
     """Parse one Telegram export file (or an export directory) into Messages.
 
@@ -208,7 +213,7 @@ def parse(
         for candidate in candidates:
             part = parse(candidate, since=since, until=until,
                          self_id=self_id, include_service=include_service,
-                         profile_dir=profile_dir)
+                         profile_dir=profile_dir, tz_offset_hours=tz_offset_hours)
             merged.chats.extend(part.chats)
             merged.messages.extend(part.messages)
             merged.attachments.extend(part.attachments)
@@ -238,18 +243,19 @@ def parse(
         messages = chat.get("messages") or []
 
         participant_names = {str(m.get("from")) for m in messages if m.get("from")}
+        is_group = chat_kind not in {"personal_chat", "bot_chat", "saved_messages"}
         result.chats.append(Chat(
             platform=PLATFORM,
             chat_id=chat_id,
             title=str(chat.get("name") or ""),
             kind=chat_kind,
-            is_group=chat_kind not in {"personal_chat", "bot_chat", "saved_messages"},
+            is_group=is_group,
             participant_names=tuple(sorted(participant_names)),
         ))
 
         for msg in messages:
             _parse_message(msg, chat_id, resolved_self, result,
-                           since, until, include_service)
+                           since, until, include_service, tz_offset_hours)
 
     return result
 
@@ -262,10 +268,11 @@ def _parse_message(
     since: datetime | None,
     until: datetime | None,
     include_service: bool,
+    tz_offset_hours: float = 0,
 ) -> None:
     kind = msg.get("type") or "unknown"
     message_id = str(msg.get("id"))
-    ts = _parse_ts(msg)
+    ts = _parse_ts(msg, tz_offset_hours)
 
     if ts is None:
         # No usable timestamp: we cannot place it on a timeline. Report, don't guess.

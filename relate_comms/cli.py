@@ -55,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument("--confirm", action="store_true",
                         help="required alongside --prune; a model never passes this alone")
     ingest.add_argument("--json", action="store_true", help="machine-readable report")
+    ingest.add_argument("--email", action="append", metavar="ACCOUNT",
+                        help="also read a live mailbox over IMAP (gmail, hostinger). "
+                             "Repeatable. Email is never discovered in the spool.")
 
     args = parser.parse_args(argv)
 
@@ -80,6 +83,10 @@ def main(argv: list[str] | None = None) -> int:
             for path in staged:
                 print(f"staged: {path}", file=sys.stderr)
 
+        mail_results = []
+        if args.email:
+            mail_results = _fetch_mailboxes(args.email, args.since, args.until)
+
         report = ingest_module.ingest(
             source=args.source,
             root=args.root,
@@ -91,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
             workers=args.workers,
             self_id=args.self_id,
             tz_offset_hours=args.tz_offset,
+            extra_results=mail_results,
         )
 
         if args.json:
@@ -100,6 +108,36 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report.ok else 1
 
     return 1
+
+
+def _fetch_mailboxes(
+    accounts: list[str],
+    since: datetime | None,
+    until: datetime | None,
+) -> list:
+    """Read each named mailbox over IMAP. Returns `IngestResult` objects.
+
+    Email is the one platform with no file to drop, so it is fetched here and handed
+    to `ingest()` alongside the spool. Secrets come from `.env` /
+    the environment; nothing is logged.
+    """
+    from .adapters import email_imap
+
+    results = []
+    for name in accounts:
+        try:
+            creds = email_imap.account_from_env(name)
+        except ValueError as exc:
+            print(f"email {name}: {exc}", file=sys.stderr)
+            continue
+        print(f"email {name}: reading {creds['user']} …", file=sys.stderr)
+        try:
+            results.append(email_imap.fetch(
+                creds["host"], creds["user"], creds["password"],
+                port=int(creds["port"]), since=since, until=until))
+        except Exception as exc:  # noqa: BLE001 - one mailbox must not stop the run
+            print(f"email {name}: failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+    return results
 
 
 if __name__ == "__main__":
