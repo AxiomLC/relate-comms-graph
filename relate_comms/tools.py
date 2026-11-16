@@ -151,20 +151,28 @@ def store_path() -> Path:
 
 # ------------------------------------------------------------- source filter
 
-# The platforms the UI can toggle. A source is a platform, not a node type: hiding
-# `telegram` must remove Telegram threads, their correspondents AND their messages,
-# which a node-type filter cannot express.
-KNOWN_SOURCES: tuple[str, ...] = (
-    "messenger", "telegram", "linkedin", "email", "whatsapp", "sms",
+# The platforms the UI can toggle. A platform is not a node type: hiding `telegram`
+# must remove Telegram threads, their correspondents AND their messages, which a
+# node-type filter cannot express.
+#
+# This is the declared set, not the observed set. A platform with no adapter yet
+# (`sms`) stays listed so the UI can show it as "not built" rather than silently
+# omitting it — and so adding the adapter needs no change here.
+KNOWN_PLATFORMS: tuple[str, ...] = (
+    "messenger", "telegram", "linkedin", "email", "outlook", "whatsapp", "sms",
 )
 
-# `None` means "no filter" — every source. An empty list means "nothing", which is
-# a legitimate state (the user unticked everything) and must not silently become
+# Platforms with no adapter yet. Listed in the UI as "not built", never offered as
+# something to ingest. Adding the adapter means deleting the entry here.
+PLANNED_PLATFORMS: tuple[str, ...] = ("sms",)
+
+# `None` means "no filter" — every platform. An empty list means "nothing", which
+# is a legitimate state (the user unticked everything) and must not silently become
 # "everything".
-_SOURCES: list[str] | None = None
+_PLATFORMS: list[str] | None = None
 
 
-def configure_sources(sources: Sequence[str] | None) -> None:
+def configure_platforms(platforms: Sequence[str] | None) -> None:
     """Restrict every read tool to these platforms. `None` clears the filter.
 
     This is a **surface** setting, like `write_enabled`: the UI sets it from its
@@ -173,33 +181,34 @@ def configure_sources(sources: Sequence[str] | None) -> None:
     model must not be able to widen or narrow what the user is looking at.
 
     Note this contradicts `TECHREADME.md` §5 ("UI state must never narrow an
-    agent's query"). The author overrode that for sources on 2026-11-16: the graph
-    and the search must agree, or a hit appears for a node that is not drawn.
+    agent's query"). The author overrode that for the platform filter on
+    2026-11-16: the graph and the search must agree, or a hit appears for a node
+    that is not drawn.
     """
-    global _SOURCES
-    if sources is None:
-        _SOURCES = None
+    global _PLATFORMS
+    if platforms is None:
+        _PLATFORMS = None
         return
-    cleaned = [str(s).strip().lower() for s in sources if str(s).strip()]
-    _SOURCES = cleaned
+    cleaned = [str(p).strip().lower() for p in platforms if str(p).strip()]
+    _PLATFORMS = cleaned
 
 
-def active_sources() -> list[str] | None:
+def active_platforms() -> list[str] | None:
     """The current filter, or `None` for unfiltered."""
-    return list(_SOURCES) if _SOURCES is not None else None
+    return list(_PLATFORMS) if _PLATFORMS is not None else None
 
 
-def _source_clause(alias: str, params: dict[str, Any]) -> str:
-    """A Cypher predicate for the active source filter, or `""`.
+def _platform_clause(alias: str, params: dict[str, Any]) -> str:
+    """A Cypher predicate for the active platform filter, or `""`.
 
     `alias` is the variable the platform property lives on. The parameter is always
-    named `$sources`, so a caller can add the clause to any MATCH without inventing
-    a name.
+    named `$platforms`, so a caller can add the clause to any MATCH without
+    inventing a name.
     """
-    if _SOURCES is None:
+    if _PLATFORMS is None:
         return ""
-    params["sources"] = list(_SOURCES)
-    return f"{alias}.platform IN $sources"
+    params["platforms"] = list(_PLATFORMS)
+    return f"{alias}.platform IN $platforms"
 
 
 def _connect(*, read_only: bool = True) -> Any:
@@ -258,7 +267,7 @@ def _scalar(conn: Any, cypher: str, params: dict[str, Any] | None = None) -> Any
 # Never shown to a model: the surface's own toggles, not model-settable arguments.
 # `sources` is here for the same reason as `write_enabled` — it is the UI's state,
 # and a model that could set it would be able to answer from data the user hid.
-_HIDDEN_PARAMS = frozenset({"write_enabled", "sources"})
+_HIDDEN_PARAMS = frozenset({"write_enabled", "platforms"})
 
 
 def _json_type(annotation: Any) -> dict[str, Any]:
@@ -429,7 +438,7 @@ _EDGE_QUERIES: dict[str, str] = {
 }
 
 # Which variable each query's platform predicate applies to.
-_EDGE_SOURCE_ALIAS: dict[str, str] = {
+_EDGE_PLATFORM_ALIAS: dict[str, str] = {
     "WITH": "t",
     "IN": "m",
     "REPLY_TO": "m",
@@ -449,10 +458,10 @@ def _node_where(node_type: str, params: dict[str, Any]) -> str:
     owns them — the only attribution the store can honestly support.
     """
     if node_type == "Attachment":
-        clause = _source_clause("m", params)
+        clause = _platform_clause("m", params)
         return f"WHERE {clause} " if clause else ""
     alias = "m" if node_type == "Message" else ("c" if node_type == "Correspondent" else "t")
-    clause = _source_clause(alias, params)
+    clause = _platform_clause(alias, params)
     return f"WHERE {clause} " if clause else ""
 
 
@@ -523,7 +532,7 @@ def graph_slice(
         drawn = {node["id"] for node in nodes}
         for edge_type in wanted_edges:
             params = {}
-            clause = _source_clause(_EDGE_SOURCE_ALIAS[edge_type], params)
+            clause = _platform_clause(_EDGE_PLATFORM_ALIAS[edge_type], params)
             where = f"WHERE {clause} " if clause else ""
             for row in _fetch(
                 conn, _EDGE_QUERIES[edge_type].format(where=where), params,
@@ -572,11 +581,11 @@ def thread_arc(
     if query and str(query).strip():
         clauses.append("toLower(m.body) CONTAINS toLower($q)")
         params["q"] = str(query).strip()
-    # A thread from a hidden source is not readable: the Viewer must not show
+    # A thread on a hidden platform is not readable: the Viewer must not show
     # messages the canvas has removed.
-    source = _source_clause("m", params)
-    if source:
-        clauses.append(source)
+    platform_clause = _platform_clause("m", params)
+    if platform_clause:
+        clauses.append(platform_clause)
     where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
 
     with _session() as conn:
@@ -590,7 +599,7 @@ def thread_arc(
         )
         if not meta:
             raise ToolError(f"no thread with key {key!r}")
-        if _SOURCES is not None and meta[0].get("platform") not in _SOURCES:
+        if _PLATFORMS is not None and meta[0].get("platform") not in _PLATFORMS:
             raise ToolError(
                 f"thread {key!r} is from {meta[0].get('platform')!r}, "
                 "which is hidden by the source filter"
@@ -696,9 +705,9 @@ def search_messages(
     if thread_key and str(thread_key).strip():
         clauses.append("m.chat_id = $chat_id")
         params["chat_id"] = _chat_id_from_thread_key(str(thread_key).strip())
-    source = _source_clause("m", params)
-    if source:
-        clauses.append(source)
+    platform_clause = _platform_clause("m", params)
+    if platform_clause:
+        clauses.append(platform_clause)
 
     with _session() as conn:
         rows = _fetch(
@@ -769,7 +778,7 @@ def message_view(message_key: str) -> dict[str, Any]:
         )
         if not rows:
             raise ToolError(f"no message with key {key!r}")
-        if _SOURCES is not None and rows[0].get("platform") not in _SOURCES:
+        if _PLATFORMS is not None and rows[0].get("platform") not in _PLATFORMS:
             raise ToolError(
                 f"message {key!r} is from {rows[0].get('platform')!r}, "
                 "which is hidden by the source filter"
@@ -956,24 +965,30 @@ def run_cypher(
 # -------------------------------------------------------------- write tools
 
 def ingest(
-    source: str = "real",
+    which: str = "real",
     *,
     paths_in: Sequence[str] | None = None,
     email: Sequence[str] | None = None,
     since: str | None = None,
     until: str | None = None,
     tz_offset_hours: float | None = None,
+    exclude_spam_groups: bool = False,
     prune: bool = False,
     write_enabled: bool = False,
 ) -> dict[str, Any]:
     """Parse exports into the store: stage, parse, resolve, scrub, write, verify.
 
-    `source` is `"real"` (the user's own exports) or `"sample"` (generated demo
-    data). `paths_in` copies files into the spool first — the same call the drop
-    zone makes; nothing outside the spool is ever parsed or deleted.
+    `which` is `"real"` (the user's own exports) or `"sample"` (generated demo
+    data) — it selects one of the two spool queues. `paths_in` copies files into the
+    spool first — the same call the drop zone makes; nothing outside the spool is
+    ever parsed or deleted.
 
     `email` reads live mailboxes over IMAP (`gmail`, `hostinger`). Email is the
     one platform with no file to drop.
+
+    `exclude_spam_groups` applies to Facebook Messenger only: a group thread whose
+    rows are mostly housekeeping (`sent a link`, `added X to the group`) is dropped
+    rather than written. Off by default — the store is whole unless asked otherwise.
 
     `prune` deletes spool files older than 3 days **only after verification**.
     It is off by default and is not the same thing as `prune_spool`.
@@ -995,9 +1010,10 @@ def ingest(
         extra_results = _fetch_mailboxes(list(email), _iso(since), _iso(until))
 
     report = ingest_module.ingest(
-        source=str(source),
+        which=str(which),
         since=_iso(since),
         until=_iso(until),
+        exclude_spam_groups=bool(exclude_spam_groups),
         prune=bool(prune),
         tz_offset_hours=None if tz_offset_hours is None else float(tz_offset_hours),
         extra_results=extra_results,
@@ -1008,7 +1024,7 @@ def ingest(
     return payload
 
 
-def verify_ingest(source: str = "real") -> dict[str, Any]:
+def verify_ingest(which: str = "real") -> dict[str, Any]:
     """Re-parse the spool and report, per file, how many keys are missing.
 
     The question this answers is "did everything land?", not "did the job exit 0".
@@ -1018,11 +1034,11 @@ def verify_ingest(source: str = "real") -> dict[str, Any]:
     from . import ingest as ingest_module
 
     batches = [b for b in ingest_module.discover(
-        paths.sample_dir() if source == "sample" else paths.real_dir()
+        paths.sample_dir() if which == "sample" else paths.real_dir()
     ) if b.recognised]
 
     if not batches:
-        return {"source": source, "files": [], "ok": True, "missing": 0,
+        return {"which": which, "files": [], "ok": True, "missing": 0,
                 "note": "no recognised exports in the spool"}
 
     # Re-parse with the offset the store was built with. A wall-clock platform's
@@ -1061,7 +1077,7 @@ def verify_ingest(source: str = "real") -> dict[str, Any]:
             pass
 
     return {
-        "source": source,
+        "which": which,
         "files": files,
         "missing": total_missing,
         "ok": total_missing == 0 and not any("error" in f for f in files),

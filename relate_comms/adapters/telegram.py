@@ -182,7 +182,7 @@ def _resolve_owner(
 
 
 def parse(
-    source: str | Path,
+    export_path: str | Path,
     *,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -202,14 +202,14 @@ def parse(
     `profile_dir` was given). Passing `self_id` or reusing a profile keeps
     `is_self` identical across exports of the same account.
     """
-    path = Path(source)
+    path = Path(export_path)
     if path.is_dir():
         candidates = sorted(path.glob("result.json"))
         if not candidates:
             candidates = sorted(path.rglob("result.json"))
         if not candidates:
             raise FileNotFoundError(f"no result.json under {path}")
-        merged = IngestResult(platform=PLATFORM, source=str(path))
+        merged = IngestResult(platform=PLATFORM, export_path=str(path))
         for candidate in candidates:
             part = parse(candidate, since=since, until=until,
                          self_id=self_id, include_service=include_service,
@@ -229,7 +229,7 @@ def parse(
             raise ValueError(f"{label} must be timezone-aware")
 
     document = json.loads(path.read_text(encoding="utf-8"))
-    result = IngestResult(platform=PLATFORM, source=str(path))
+    result = IngestResult(platform=PLATFORM, export_path=str(path))
     chats, chat_warnings = _iter_chats(document)
     result.warnings.extend(chat_warnings)
 
@@ -242,6 +242,22 @@ def parse(
         chat_kind = chat.get("type") or "unknown"
         messages = chat.get("messages") or []
 
+        # Parse the messages FIRST, then decide whether the chat is a thread at all.
+        #
+        # A Telegram chat whose every row is a service row is not a conversation:
+        # it is "X joined Telegram", "A contact added Y to the group", "history
+        # cleared". 328 of the 470 correspondent-less threads in the real store were
+        # exactly that, and they drew as a grid of orphan nodes on the canvas.
+        # A chat with no surviving message has nothing to be a thread about, so no
+        # `Chat` is emitted and no `Thread` node is written.
+        before = len(result.messages)
+        for msg in messages:
+            _parse_message(msg, chat_id, resolved_self, result,
+                           since, until, include_service, tz_offset_hours)
+        if len(result.messages) == before:
+            result.note_skip("chat with no non-service messages")
+            continue
+
         participant_names = {str(m.get("from")) for m in messages if m.get("from")}
         is_group = chat_kind not in {"personal_chat", "bot_chat", "saved_messages"}
         result.chats.append(Chat(
@@ -252,10 +268,6 @@ def parse(
             is_group=is_group,
             participant_names=tuple(sorted(participant_names)),
         ))
-
-        for msg in messages:
-            _parse_message(msg, chat_id, resolved_self, result,
-                           since, until, include_service, tz_offset_hours)
 
     return result
 

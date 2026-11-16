@@ -81,7 +81,7 @@ _WA_HEADER = re.compile(r"^\[?\d{1,2}/\d{1,2}/\d{2,4},\s*\d{1,2}:\d{2}", re.MULT
 
 @dataclass
 class Batch:
-    """One source file, before it is parsed."""
+    """One export file, before it is parsed."""
 
     path: Path
     platform: str | None       # None => unrecognised
@@ -317,6 +317,11 @@ def _kwargs_for(platform: str, parse_kwargs: dict[str, Any]) -> dict[str, Any]:
     if owner_platform is not None and platform != owner_platform:
         trimmed.pop("self_id", None)
 
+    # `exclude_spam_groups` is Messenger-only. It is popped here rather than passed
+    # to every adapter, so adding a platform never means adding a no-op argument.
+    if platform != messenger.PLATFORM:
+        trimmed.pop("exclude_spam_groups", None)
+
     # A spool can hold platforms that were exported in different timezones, and the
     # offset is part of every wall-clock key. `tz_offsets` is the per-platform map;
     # it is resolved here so no adapter ever sees it.
@@ -380,12 +385,13 @@ def parse_batches(
 
 def ingest(
     *,
-    source: str = "real",
     root: str | Path | None = None,
+    which: str = "real",
     store: str | Path | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
     include_service: bool = True,
+    exclude_spam_groups: bool = False,
     prune: bool = False,
     prune_after: timedelta = PRUNE_AFTER,
     workers: int | None = None,
@@ -397,8 +403,9 @@ def ingest(
 ) -> Report:
     """Parse everything in the spool, write it, verify it, and optionally prune.
 
-    `source="sample"` reads `spool/sample/` instead of `spool/real/` — the same code
-    path, so the sample proves the ingest, not a special case.
+    `root` is the directory to read; if omitted, `which` picks one of the two
+    standard queues (`"real"` or `"sample"`). Both go through the same code path, so
+    the sample proves the ingest rather than being a special case.
 
     `prune=False` is the default everywhere. Deleting a spool file is a user
     decision (§9.1.3: `prune` needs `confirm=true`), and the CLI gates it the same
@@ -419,7 +426,7 @@ def ingest(
         # `spool/sample/` holds generated demo data (§6). Re-ingest is idempotent, so
         # whichever is chosen is read whole — never "most recent only", which would
         # silently skip a file and hide a bug.
-        root = paths.sample_dir() if source == "sample" else paths.real_dir()
+        root = paths.sample_dir() if which == "sample" else paths.real_dir()
     root = Path(root)
 
     store_path = Path(store) if store else paths.store_path()
@@ -510,13 +517,17 @@ def ingest(
         if note:
             report.owner_note = note
 
+    # Messenger-only, and dropped for every other platform by `_kwargs_for`.
+    if exclude_spam_groups:
+        parse_kwargs["exclude_spam_groups"] = True
+
     parsed = parse_batches(batches, parse_kwargs=parse_kwargs, workers=workers)
 
     # Live mailboxes arrive already parsed: email is the one platform with no file to
     # drop (§5.3.1), so it is fetched by the caller and appended here. Giving it a
     # synthetic `Batch` keeps it in the same serialised write path as everything else.
     for extra in extra_results:
-        parsed.append((Batch(path=Path(extra.source), platform=extra.platform),
+        parsed.append((Batch(path=Path(extra.export_path), platform=extra.platform),
                        extra, ""))
 
     # One connection, one writer, in discovery order. Concurrent writers to one `.rl`
@@ -705,11 +716,11 @@ def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> 
     and the 3-day prune keep working unchanged (§9.1).
 
     Files land in `spool/real/<platform>/`, chosen by **content**, not by the folder
-    the user happened to download into. One level of the source folder is kept
+    the user happened to download into. One level of the original folder is kept
     underneath, because Telegram's exporter writes a directory containing
     `result.json` and two exports of one account share that filename.
 
-    A source that is already inside the spool is returned untouched, so re-running
+    A path that is already inside the spool is returned untouched, so re-running
     with the same path is a no-op rather than a copy of a copy.
     """
     top = Path(root) if root else paths.real_dir()
@@ -717,16 +728,16 @@ def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> 
     staged: list[Path] = []
 
     for raw in paths_in:
-        source = Path(raw).expanduser()
-        if not source.exists():
-            raise FileNotFoundError(f"no such export: {source}")
+        given = Path(raw).expanduser()
+        if not given.exists():
+            raise FileNotFoundError(f"no such export: {given}")
 
-        sources = [source]
-        if source.is_dir():
-            sources = [p for p in sorted(source.rglob("*")) if p.is_file()
-                       and p.suffix.lower() in _CONSIDER_SUFFIXES]
+        candidates = [given]
+        if given.is_dir():
+            candidates = [p for p in sorted(given.rglob("*")) if p.is_file()
+                          and p.suffix.lower() in _CONSIDER_SUFFIXES]
 
-        for item in sources:
+        for item in candidates:
             if top in item.parents:
                 staged.append(item)
                 continue

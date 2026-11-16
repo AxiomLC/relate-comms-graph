@@ -94,13 +94,13 @@ def _decode(data: bytes) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def read_export(source: str | Path) -> tuple[str, str]:
+def read_export(export_path: str | Path) -> tuple[str, str]:
     """Return (text, chat_title) for a `.zip` export or a bare `.txt`/`.md`.
 
     The zip holds `chat.txt` plus a markdown twin; the txt is the one we parse. The
     filename is the chat title: WhatsApp names the archive after the contact/group.
     """
-    path = Path(source)
+    path = Path(export_path)
     if path.is_dir():
         for name in ("chat.txt", "_chat.txt"):
             candidate = path / name
@@ -273,7 +273,7 @@ def _clean_name(name: str) -> str:
 
 
 def parse(
-    source: str | Path,
+    export_path: str | Path,
     *,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -299,10 +299,10 @@ def parse(
         if bound is not None and bound.tzinfo is None:
             raise ValueError(f"{label} must be timezone-aware")
 
-    path = Path(source)
+    path = Path(export_path)
     text, title = read_export(path)
 
-    result = IngestResult(platform=PLATFORM, source=str(path))
+    result = IngestResult(platform=PLATFORM, export_path=str(path))
     chat_id = _chat_id(title)
     lines = text.split("\n")
 

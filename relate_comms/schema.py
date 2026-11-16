@@ -139,7 +139,10 @@ class IngestResult:
     """What one file yielded. Counts exist so nothing is silently skipped."""
 
     platform: str
-    source: str
+    # The file or directory this result was parsed from. NOT the platform (that is
+    # `platform`) and NOT the user's original download (that is theirs, untouched).
+    # `export_path` is the copy inside the spool, or the IMAP URL for live email.
+    export_path: str
     chats: list[Chat] = field(default_factory=list)
     messages: list[Message] = field(default_factory=list)
     attachments: list[AttachmentRef] = field(default_factory=list)

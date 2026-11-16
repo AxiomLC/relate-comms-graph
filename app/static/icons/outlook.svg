@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- email — recoloured from email-svgrepo-com.svg (svgrepo, CC0).
+     Source viewBox was 1920x1920; normalised to 24x24 so it draws at the same
+     weight as the other platform glyphs. The fill is baked in, because a Cytoscape
+     background-image cannot be tinted. -->
+<svg width="24" height="24" viewBox="0 0 1920 1920" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path fill="#8b5cf6" fill-rule="evenodd" d="M1920 428.266v1189.54l-464.16-580.146-88.203 70.585 468.679 585.904H83.684l468.679-585.904-88.202-70.585L0 1617.805V428.265l959.944 832.441L1920 428.266ZM1919.932 226v52.627l-959.943 832.44L.045 278.628V226h1919.887Z"/>
+</svg>

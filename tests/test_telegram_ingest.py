@@ -177,7 +177,7 @@ def test_batching_is_idempotent_and_linear(tmp_path):
             ))
             chats[cid] = Chat(platform="telegram", chat_id=cid, title="T",
                               kind="personal_chat", is_group=False)
-        return IngestResult(platform="telegram", source="bench",
+        return IngestResult(platform="telegram", export_path="bench",
                             chats=list(chats.values()), messages=messages)
 
     def time_write(store, result) -> float:

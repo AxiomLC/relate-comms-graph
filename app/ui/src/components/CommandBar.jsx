@@ -28,9 +28,9 @@ export default function CommandBar({
   onOpenModal,
   storeOk,
   stats,
-  sourcesFiltered,
-  activeSources,
-  totalSources,
+  platformsFiltered,
+  activePlatforms,
+  totalPlatforms,
   nodeIcons,
   onToggleNodeIcons,
 }) {
@@ -124,12 +124,12 @@ export default function CommandBar({
       {/* Icon only, by request: the title bar is already dense, and this control
           is used far less often than the ones beside it. */}
       <button
-        className={`ghost icon${sourcesFiltered ? " active" : ""}`}
+        className={`ghost icon${platformsFiltered ? " active" : ""}`}
         onClick={() => onOpenModal("utilities")}
         title={
-          sourcesFiltered
-            ? `Sources filtered — ${activeSources} of ${totalSources} on`
-            : "Utilities — choose which sources are shown"
+          platformsFiltered
+            ? `Platforms filtered — ${activePlatforms} of ${totalPlatforms} on`
+            : "Utilities — choose which platforms are shown"
         }
         aria-label="Utilities"
       >

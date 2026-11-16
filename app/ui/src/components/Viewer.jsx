@@ -398,6 +398,7 @@ function ThreadView({ entry, onOpen }) {
       <div className="viewer-head">
         <h1 className="viewer-title">{thread.title || entry.label}</h1>
         <div className="viewer-sub">
+          <span className="pill kind">Thread</span>
           <span className="pill platform" style={{ color: platformColor(thread.platform) }}>
             {platformLabel(thread.platform)}
           </span>
@@ -632,10 +633,10 @@ function CorrespondentView({ entry, onOpen }) {
       <div className="viewer-head">
         <h1 className="viewer-title">{entry.label}</h1>
         <div className="viewer-sub">
+          <span className="pill kind">Correspondent</span>
           <span className="pill platform" style={{ color: platformColor(entry.platform) }}>
             {platformLabel(entry.platform)}
           </span>
-          <span>correspondent</span>
           {isPlaceholder(entry.label) && <span className="pill">placeholder account</span>}
         </div>
         <div className="arc">
@@ -705,6 +706,7 @@ function MessageView({ entry, onOpen }) {
         <div className="viewer-sub">
           {message && (
             <>
+              <span className="pill kind">Message</span>
               <span className="pill platform" style={{ color: platformColor(message.platform) }}>
                 {platformLabel(message.platform)}
               </span>

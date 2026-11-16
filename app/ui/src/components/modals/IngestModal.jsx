@@ -25,6 +25,7 @@ export default function IngestModal({ onClose, onIngested }) {
   const [tzOffset, setTzOffset] = useState("");
   const [writeEnabled, setWriteEnabled] = useState(false);
   const [prune, setPrune] = useState(false);
+  const [noSpamGroups, setNoSpamGroups] = useState(false);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState(null);
   const [error, setError] = useState(null);
@@ -37,7 +38,7 @@ export default function IngestModal({ onClose, onIngested }) {
     setReport(null);
     try {
       const result = await api.ingest({
-        source: "real",
+        which: "real",
         paths: paths
           .split(/\r?\n/)
           .map((line) => line.trim())
@@ -47,6 +48,7 @@ export default function IngestModal({ onClose, onIngested }) {
           .map((value) => value.trim())
           .filter(Boolean),
         tz_offset_hours: tzOffset === "" ? null : Number(tzOffset),
+        exclude_spam_groups: noSpamGroups,
         prune,
         write_enabled: writeEnabled,
       });
@@ -152,7 +154,7 @@ export default function IngestModal({ onClose, onIngested }) {
               </li>
             </ul>
 
-            <h3>Messenger</h3>
+            <h3>Fcbk Mssgr</h3>
             <ul>
               <li>
                 Facebook → Settings → <em>Your Facebook information</em> →{" "}
@@ -160,6 +162,18 @@ export default function IngestModal({ onClose, onIngested }) {
                 media low.
               </li>
               <li>Takes hours to a day. It is a lump, not a sync.</li>
+            </ul>
+
+            <h3>SMS</h3>
+            <ul>
+              <li>
+                <strong>Not built yet.</strong> The adapter is pending; nothing breaks if
+                you have no SMS export.
+              </li>
+              <li>
+                When it lands it will read <em>SMS Backup &amp; Restore</em> XML, which is
+                the only route off an Android phone without root.
+              </li>
             </ul>
 
             <h3>LinkedIn</h3>
@@ -192,7 +206,7 @@ export default function IngestModal({ onClose, onIngested }) {
             <h3>Timezone</h3>
             <ul>
               <li>
-                Telegram, WhatsApp and Messenger export <strong>wall-clock times with no
+                Telegram, WhatsApp and Fcbk Mssgr export <strong>wall-clock times with no
                 offset</strong>. Declare the offset the export was written in, or the
                 timeline lies.
               </li>
@@ -228,6 +242,12 @@ export default function IngestModal({ onClose, onIngested }) {
             onChange={setTzOffset}
             placeholder="leave blank to reuse the recorded offset"
             hint="e.g. -5 for US Eastern. Only Telegram, WhatsApp and Messenger accept it."
+          />
+          <Check
+            label="Skip spam group threads (Facebook Messenger)"
+            checked={noSpamGroups}
+            onChange={setNoSpamGroups}
+            hint="Drops group threads that are mostly link-spam and join-events — the 700-message groups nobody actually talks in. Real group chats are kept."
           />
           <Check
             label="Prune verified spool files older than 3 days"

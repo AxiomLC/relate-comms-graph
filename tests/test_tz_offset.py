@@ -127,7 +127,7 @@ def _wall_clock_result(offset_hours: float) -> IngestResult:
         ts_utc=ts, sender_name="Ada", sender_id=None, body="hello",
         reply_to=None, has_attachments=False, is_self=False, raw_kind="text",
     )
-    return IngestResult(platform="whatsapp", source="fixture", chats=[chat],
+    return IngestResult(platform="whatsapp", export_path="fixture", chats=[chat],
                         messages=[message])
 
 

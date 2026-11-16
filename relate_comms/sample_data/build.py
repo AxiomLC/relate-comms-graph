@@ -9,7 +9,7 @@ clone, run, see a graph, then decide.
 TWO DESTINATIONS, DELIBERATELY SEPARATE
 ---------------------------------------
   sample_data/generated/     default. gitignored, reproducible, read by
-                             `ingest --source sample`.
+                             `ingest --which sample`.
   tests/fixtures/            opt-in via --dest fixtures. Committed and PINNED.
 
 They must not be the same folder. If a parser change altered the fixtures, a

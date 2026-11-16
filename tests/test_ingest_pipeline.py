@@ -173,7 +173,7 @@ def test_prune_spool_helper_deletes_nothing_without_a_store(spool, tmp_path, mon
 def test_cli_refuses_prune_without_confirm():
     from relate_comms import cli
 
-    code = cli.main(["ingest", "--source", "real", "--prune"])
+    code = cli.main(["ingest", "--which", "real", "--prune"])
     assert code == 2
 
 
@@ -181,7 +181,7 @@ def test_cli_json_report_is_serialisable(spool, tmp_path):
     from relate_comms import cli
 
     code = cli.main([
-        "ingest", "--source", "real", "--root", str(spool),
+        "ingest", "--which", "real", "--root", str(spool),
         "--store", str(tmp_path / "cli.rl"), "--self-id", "user900000", "--json",
     ])
     assert code == 0

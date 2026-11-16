@@ -8,9 +8,12 @@ import {
 } from "react";
 
 import {
+  PERSON_ICONS,
   PLATFORM_ICONS,
+  personIcon,
   platformColor,
   platformIcon,
+  platformLabel,
   truncateLabel,
 } from "../config/nodeTypes.js";
 
@@ -34,6 +37,12 @@ import {
  *     class batches, not a per-frame animation.
  */
 
+// The platforms the legend lists, in reading order. `email` stands for all four
+// email keys, because they share one label and one colour.
+const LEGEND_PLATFORMS = [
+  "messenger", "telegram", "whatsapp", "linkedin", "email", "outlook",
+];
+
 const GraphCanvas = forwardRef(function GraphCanvas(
   { data, theme, onNodeClick, onBackgroundClick, onLayoutDone },
   ref,
@@ -52,49 +61,76 @@ const GraphCanvas = forwardRef(function GraphCanvas(
 
   /* ------------------------------------------------------------------ elements */
 
-  // Depends on `data` and `theme`: a tier edit changes sizes, which are element data,
-  // so the elements are rebuilt. The layout is NOT re-run by that — only the explicit
-  // "Re-run layout" button does that, because a graph that keeps bobbing looks like a
-  // physics toy (UI-Cytoscape.md §11).
+  // Depends on `data` and the SIZE TABLE only — deliberately not on the whole theme.
+  //
+  // Every element carries its own `size` and `fontSize` as data, so a size edit has
+  // to rebuild them. But rebuilding also re-adds every element and re-runs fcose,
+  // and depending on `theme` meant that dragging ANY slider (glow, haze, edge
+  // lighten) threw away the layout and re-ran 2500 iterations. That is why the
+  // sliders felt broken. `themeRef` is read for the rest, so the values are still
+  // current without being a dependency.
+  const sizeKey = JSON.stringify(theme.tiers.sizes);
   const elements = useMemo(() => {
+    const theme = themeRef.current; // eslint-disable-line no-shadow
     if (!data) return [];
 
-    // One shared ladder of six rungs. A thread is matched on message count, a
-    // correspondent on thread count — the two quantities are not comparable, so each
-    // rung carries a threshold for both.
-    const threadTiers = new Map();
-    for (const node of data.nodes || []) {
-      if (node.type === "Thread") {
-        threadTiers.set(
-          node.id,
-          rungFor(theme.tiers.ladder, "threadMin", node.message_count || 0),
-        );
-      }
-    }
+    // Size letters are computed PER SOURCE, because the platforms are not on the
+    // same scale (theme.js §tiers). Threads may only be A/C/E and correspondents
+    // B/D/F, so the two ladders interleave and a thread always outranks the
+    // correspondent of the same band.
+    const allNodes = data.nodes || [];
+    const threadLetters = assignBands(
+      allNodes.filter((node) => node.type === "Thread"),
+      "message_count",
+      ["A", "C", "E"],
+      theme.tiers.bands,
+    );
+    const correspondentLetters = assignBands(
+      allNodes.filter((node) => node.type === "Correspondent"),
+      "thread_count",
+      ["B", "D", "F"],
+      theme.tiers.bands,
+    );
 
-    const nodes = (data.nodes || []).map((node) => {
+    // Message count per thread, for the edge tiers (a `WITH` edge carries no weight).
+    const threadCounts = new Map(
+      allNodes
+        .filter((node) => node.type === "Thread")
+        .map((node) => [node.id, node.message_count || 0]),
+    );
+
+    const nodes = allNodes.map((node) => {
       const isThread = node.type === "Thread";
-      const tier = isThread
-        ? threadTiers.get(node.id)
-        : rungFor(theme.tiers.ladder, "correspondentMin", node.thread_count || 0);
+      const letter = isThread
+        ? threadLetters.get(node.id)
+        : correspondentLetters.get(node.id);
+      const tier = theme.tiers.sizes[letter] || theme.tiers.sizes.F;
 
       const base = platformColor(node.platform);
-      // Threads only, and only when the toggle is on. The icon is a flat platform
-      // colour, so an icon node drops its shaded circle — otherwise the two fight.
-      const icon = isThread && theme.visual.nodeIcons ? platformIcon(node.platform) : null;
+      // The icon is a flat platform colour, so an icon node drops its shaded circle —
+      // otherwise the two fight. Threads use the source glyph, correspondents the
+      // person glyph; each has its own toggle.
+      const icon = isThread
+        ? theme.visual.nodeIcons
+          ? platformIcon(node.platform)
+          : null
+        : theme.visual.correspondentIcons
+          ? personIcon(node.platform)
+          : null;
 
       return {
         group: "nodes",
         // A CLASS, not a data field. Cytoscape's `[key]` selector tests whether the
         // field EXISTS, so `image: null` matched every node and stripped the fill
         // from the whole graph. A class is unambiguous.
-        classes: icon ? "icon" : "",
+        classes: icon ? (isThread ? "icon" : "icon person") : "",
         data: {
           id: node.id,
-          // Two lines for a thread: SOURCE above, title below. Cytoscape allows one
-          // label and one style, so the hierarchy is uppercasing + ordering.
+          // One line, same as every other node. The source is already carried by
+          // the node's colour and, when on, its icon — a SOURCE line above the
+          // title was redundant.
           label: isThread
-            ? threadLabel(node, theme)
+            ? truncateLabel(node.label || node.id, 34)
             : truncateLabel(node.label || node.id, 28),
           rawLabel: node.label || node.id,
           type: node.type,
@@ -123,7 +159,7 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       .filter((edge) => ids.has(edge.source) && ids.has(edge.target))
       .map((edge) => {
         // Edge weight comes from the source thread's size — `WITH` stores no count.
-        const tier = rungFor(theme.tiers.edge, "min", threadTiers.get(edge.source)?.count ?? 0);
+        const tier = rungFor(theme.tiers.edge, "min", threadCounts.get(edge.source) ?? 0);
         const platform = nodes.find((n) => n.data.id === edge.source)?.data.platform || "";
         return {
           group: "edges",
@@ -132,7 +168,9 @@ const GraphCanvas = forwardRef(function GraphCanvas(
             source: edge.source,
             target: edge.target,
             type: edge.type,
-            color: platformColor(platform),
+            // Lightened, because a raw platform colour as a 1px line on black is
+            // invisible (theme.js §visual.edgeLighten).
+            color: lighten(platformColor(platform), theme.visual.edgeLighten),
             width: tier.width,
             opacity: tier.opacity,
           },
@@ -140,7 +178,8 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       });
 
     return [...nodes, ...edges];
-  }, [data, theme]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, sizeKey]);
 
   /* ------------------------------------------------------------------- create */
 
@@ -166,7 +205,11 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       minZoom: 0.05,
       maxZoom: 6,
       textureOnViewport: false,
-      hideEdgesOnViewport: true,
+      // MUST stay false. `true` hides every edge while panning or zooming, which
+      // reads as "the edges are dim" — they are not dim, they are absent until the
+      // view settles. It is a performance flag for huge graphs; at 975 edges there
+      // is nothing to save.
+      hideEdgesOnViewport: false,
       pixelRatio: "auto",
     });
 
@@ -309,27 +352,19 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       }}
     >
       <div id="cy" ref={hostRef} />
+      {/* Derived from the config, never hardcoded: the legend drifted out of sync
+          with PLATFORM_COLORS once already, and a legend that lies is worse than
+          none. One row per distinct label, so the four email keys collapse. */}
       <div className="canvas-legend">
-        <div className="legend-row">
-          <span className="legend-swatch" style={{ background: "#5c8fd6" }} />
-          messenger
-        </div>
-        <div className="legend-row">
-          <span className="legend-swatch" style={{ background: "#4fb3a5" }} />
-          telegram
-        </div>
-        <div className="legend-row">
-          <span className="legend-swatch" style={{ background: "#5fa86b" }} />
-          whatsapp
-        </div>
-        <div className="legend-row">
-          <span className="legend-swatch" style={{ background: "#7f8fd0" }} />
-          linkedin
-        </div>
-        <div className="legend-row">
-          <span className="legend-swatch" style={{ background: "#c08a4a" }} />
-          email
-        </div>
+        {LEGEND_PLATFORMS.map((platform) => (
+          <div className="legend-row" key={platform}>
+            <span
+              className="legend-swatch"
+              style={{ background: platformColor(platform) }}
+            />
+            {platformLabel(platform)}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -390,24 +425,51 @@ function buildStylesheet(theme) {
     // One static rule per platform, so the URL is a literal rather than a data map.
     // `background-image: data(x)` throws inside Cytoscape when a node's value is an
     // empty string, and it would also defeat the renderer's image cache.
+    //
+    // `node.icon` (threads) and `node.icon.person` (correspondents) are separate
+    // selectors, so a platform's two glyphs never collide.
     ...Object.entries(PLATFORM_ICONS).map(([platform, url]) => ({
       selector: `node.icon[platform = "${platform}"]`,
       style: { "background-image": `url("${url}")` },
     })),
+    ...Object.entries(PERSON_ICONS).map(([platform, url]) => ({
+      selector: `node.icon.person[platform = "${platform}"]`,
+      style: {
+        "background-image": `url("${url}")`,
+        "background-width": `${Math.round(visual.correspondentIconScale * 100)}%`,
+        "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`,
+      },
+    })),
     {
       // Selector grammar needs spaces around the operator: `[type = "x"]`.
-      // Correspondents glow permanently, in their own source colour, so they read as
-      // a different class of thing against the threads.
+      // Correspondents are circles with a border and glow in their OWN source
+      // colour — the glow is the whole point, so it is strong and the border matches
+      // the fill rather than the generic blue outline. With the person glyph on, the
+      // fill goes away and the glow carries the class distinction instead.
       selector: 'node[type = "Correspondent"]',
       style: {
-        shape: "round-rectangle",
+        shape: "ellipse",
         color: labels.correspondentColor,
-        "background-opacity": 0.8,
+        "background-opacity": 1,
+        "border-width": 1.5,
+        "border-color": "data(color)",
+        "border-opacity": 1,
         "shadow-blur": visual.correspondentGlow,
         "shadow-color": "data(color)",
         "shadow-opacity": visual.correspondentGlowOpacity,
         "shadow-offset-x": 0,
         "shadow-offset-y": 0,
+      },
+    },
+    {
+      // The glyph replaces the fill, but the glow and border stay: a correspondent
+      // must still read as a different class of thing from a thread.
+      selector: 'node[type = "Correspondent"].icon',
+      style: {
+        "background-opacity": 0,
+        "border-width": 0,
+        "background-image-opacity": 1,
+        "background-clip": "none",
       },
     },
     {
@@ -449,11 +511,99 @@ function buildStylesheet(theme) {
 }
 
 /**
+ * Assign a size letter to every node of one kind, cutting bands INSIDE each source.
+ *
+ * `letters` is ordered biggest-first and has exactly three entries — big, mid,
+ * small. `bands` gives the share of that source's nodes in the first two bands; the
+ * remainder is the small letter.
+ *
+ * The cut is by rank, not by value: sort the source's nodes descending and take the
+ * top `top` share, then the next `mid` share. A value-based cut (mean ± stddev, or
+ * percentiles of the value) collapses on this data, where 565 of 591 correspondents
+ * have exactly one thread and the largest thread holds 707 messages.
+ *
+ * At least one node lands in each of the first two bands, so a source with two
+ * threads still gets an A and a C rather than two identical dots.
+ *
+ * Returns `Map<nodeId, letter>`.
+ */
+function assignBands(nodes, countKey, letters, bands) {
+  const result = new Map();
+  if (!nodes.length) return result;
+
+  const [big, mid, small] = letters;
+  const top = bands?.top ?? 0.2;
+  const middle = bands?.mid ?? 0.3;
+
+  // Group by platform, then rank inside each group.
+  const byPlatform = new Map();
+  for (const node of nodes) {
+    const platform = String(node.platform || "").toLowerCase();
+    if (!byPlatform.has(platform)) byPlatform.set(platform, []);
+    byPlatform.get(platform).push(node);
+  }
+
+  for (const group of byPlatform.values()) {
+    const ranked = [...group].sort(
+      (a, b) => (Number(b[countKey]) || 0) - (Number(a[countKey]) || 0),
+    );
+    const total = ranked.length;
+    // Rounded up so a small platform still splits; clamped so the small band keeps
+    // at least one node whenever there are three or more to go round.
+    let bigCount = Math.max(1, Math.round(total * top));
+    let midCount = Math.max(1, Math.round(total * middle));
+    if (total >= 3 && bigCount + midCount > total - 1) {
+      midCount = Math.max(1, total - bigCount - 1);
+    }
+    if (bigCount + midCount > total) {
+      midCount = Math.max(0, total - bigCount);
+    }
+
+    // Never split a run of equal values across a boundary — the whole run drops
+    // into the smaller band. This is what stops Telegram's "big" band from being
+    // 109 threads of which 104 hold one message: the 1-message run is one group,
+    // so it lands entirely in the small band and A means genuinely big.
+    bigCount = snapToRunEnd(ranked, bigCount, countKey);
+    midCount = snapToRunEnd(ranked, bigCount + midCount, countKey) - bigCount;
+
+    // ...unless snapping empties the mid band. Telegram is 486 one-message threads
+    // out of 547, so after snapping, A is the 61 threads with more than one message
+    // and everything else is one giant tie run. Keep that honest A — it is the whole
+    // point of the letter — and split the leftover run between mid and small so the
+    // ladder still has three visible rungs.
+    if (midCount === 0 && total - bigCount > 1) {
+      midCount = Math.max(1, Math.round((total - bigCount) * middle));
+    }
+
+    ranked.forEach((node, index) => {
+      const letter = index < bigCount ? big : index < bigCount + midCount ? mid : small;
+      result.set(node.id, letter);
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Move a band boundary back to the start of the run of equal values it would split.
+ *
+ * `ranked` is sorted descending, so a boundary at `index` splits a run when
+ * `ranked[index - 1]` and `ranked[index]` hold the same count. Walking back to the
+ * first index of that run keeps every equal node in the same band.
+ */
+function snapToRunEnd(ranked, index, countKey) {
+  if (index <= 0 || index >= ranked.length) return index;
+  const value = Number(ranked[index][countKey]) || 0;
+  let cursor = index;
+  while (cursor > 0 && (Number(ranked[cursor - 1][countKey]) || 0) === value) {
+    cursor -= 1;
+  }
+  return cursor;
+}
+
+/**
  * The first rung whose threshold is met. Rungs are ordered largest-first, so the
  * last one (`min: 0`) is the catch-all and always matches.
- *
- * `key` names the threshold field, because the shared ladder carries one per kind
- * (`threadMin`, `correspondentMin`) while the edge table carries a single `min`.
  *
  * Returns the rung plus the value it matched on, because the edge tiers are keyed on
  * the source thread's message count and need that number back.
@@ -466,20 +616,6 @@ function rungFor(table, key, value) {
   return { ...table[table.length - 1], count };
 }
 
-/**
- * A thread's two-line label: SOURCE above, title below.
- *
- * The title is whatever the adapter derived — `writer.thread_display_title()`
- * already guarantees it is never empty (TECHREADME.md §5), so this does not
- * invent a fallback. Truncation happens here, upstream of the canvas, so the graph
- * and the Viewer agree on the string.
- */
-function threadLabel(node, theme) {
-  const title = truncateLabel(node.label || node.id, 34);
-  if (!theme.labels.showSourceLine) return title;
-  const source = String(node.platform || "").toUpperCase();
-  return source ? `${source}\n${title}` : title;
-}
 
 /**
  * A deterministic shade of a platform colour.
@@ -506,6 +642,14 @@ function shade(hex, id, jitter) {
     Math.round(g + (mix - g) * amount),
     Math.round(b + (mix - b) * amount),
   );
+}
+
+/** Mix a hex colour toward white. `amount` 0 = unchanged, 1 = white. */
+function lighten(hex, amount) {
+  if (!amount) return hex;
+  const [r, g, b] = hexToRgb(hex);
+  const mix = (value) => Math.round(value + (255 - value) * amount);
+  return rgbToHex(mix(r), mix(g), mix(b));
 }
 
 function hexToRgb(hex) {

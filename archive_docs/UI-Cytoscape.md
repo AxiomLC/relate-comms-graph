@@ -284,4 +284,5 @@ its sane range. The Graph Style modal writes to it and it persists to `localStor
 - Cytoscape has **no per-node gravity**. Big threads can only be approximated as anchors via
   lower `nodeRepulsion`.
 - **No cross-platform edges exist** in the store, so cross-cluster connections cannot be
-  drawn until `Person` / `MATCHED_BY` is wired.
+  drawn until cross-platform identity is wired (`MATCHED_BY`). `Person` is not the term
+  for the result — see `TECHREADME.md` §0.

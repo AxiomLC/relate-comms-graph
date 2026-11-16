@@ -45,9 +45,9 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [storeOk, setStoreOk] = useState(true);
   const [searchBusy, setSearchBusy] = useState(false);
-  // Source filter, mirrored from the server so the title bar can show it. The
+  // Platform filter, mirrored from the server so the title bar can show it. The
   // server is the source of truth: it is what the tools actually read.
-  const [sources, setSources] = useState({ active: null, total: 0 });
+  const [platforms, setPlatforms] = useState({ active: null, total: 0 });
 
   const canvasRef = useRef(null);
   const viewer = useViewerStack();
@@ -92,14 +92,14 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.health(), api.stats(), api.sources()])
-      .then(([health, counts, sourceData]) => {
+    Promise.all([api.health(), api.stats(), api.platforms()])
+      .then(([health, counts, platformData]) => {
         if (cancelled) return;
         setStoreOk(!!health.store_exists);
         setStats(counts);
-        setSources({
-          active: sourceData.active,
-          total: (sourceData.sources || []).length,
+        setPlatforms({
+          active: platformData.active,
+          total: (platformData.platforms || []).length,
         });
       })
       .catch(() => {
@@ -222,12 +222,12 @@ export default function App() {
    * only work here is to re-read what it now returns: the canvas, the counts, and
    * the badge. Search and chat need no wiring — they go through the same tools.
    */
-  const onSourcesChanged = useCallback(
+  const onPlatformsChanged = useCallback(
     (data) => {
-      setSources({ active: data.active, total: (data.sources || []).length });
+      setPlatforms({ active: data.active, total: (data.platforms || []).length });
       loadGraph(theme.filter.nodeTypes);
       api.stats().then(setStats).catch(() => {});
-      // A thread from a now-hidden source must not stay on screen.
+      // A thread on a now-hidden platform must not stay on screen.
       const entry = viewer.current;
       if (entry?.kind === "node" && entry.nodeType === "Thread") {
         const platform = String(entry.id).split(":")[0];
@@ -263,9 +263,9 @@ export default function App() {
         onOpenModal={setModal}
         storeOk={storeOk}
         stats={stats}
-        sourcesFiltered={sources.active !== null}
-        activeSources={sources.active?.length ?? sources.total}
-        totalSources={sources.total}
+        platformsFiltered={platforms.active !== null}
+        activePlatforms={platforms.active?.length ?? platforms.total}
+        totalPlatforms={platforms.total}
         nodeIcons={theme.visual.nodeIcons}
         onToggleNodeIcons={() =>
           updateTheme({
@@ -355,7 +355,7 @@ export default function App() {
         />
       )}
       {modal === "utilities" && (
-        <UtilitiesModal onClose={() => setModal(null)} onChanged={onSourcesChanged} />
+        <UtilitiesModal onClose={() => setModal(null)} onChanged={onPlatformsChanged} />
       )}
     </div>
   );

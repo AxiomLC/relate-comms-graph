@@ -146,7 +146,7 @@ def test_owner_accounts_merge_across_platforms():
 # ----------------------------------------------------------------------- scrub gate
 
 def _result(bodies: list[str]) -> IngestResult:
-    result = IngestResult(platform="whatsapp", source="test")
+    result = IngestResult(platform="whatsapp", export_path="test")
     result.chats.append(Chat(platform="whatsapp", chat_id="c1", title="T",
                              kind="personal_chat", is_group=False))
     for i, body in enumerate(bodies):

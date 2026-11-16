@@ -89,6 +89,30 @@ _METADATA_PREFIXES = ("participants:", "group invite link:", "you are", "nicknam
 _CALL = re.compile(r"^(?:You (?:missed|placed|answered) a (?:video )?call|"
                    r".{1,80}? (?:called you|missed your call))", re.I)
 
+# Rows that are group *housekeeping*, not conversation. A spam group is almost
+# entirely these: someone adds strangers, the strangers post a link, someone leaves.
+# Measured on the real archive: the six largest group threads are 60-70% "sent a
+# link" and 30-45% "added ... to the group".
+_GROUP_NOISE = (
+    re.compile(r"\bsent a link\b", re.I),
+    re.compile(r"\badded .{0,80} to the group\b", re.I),
+    re.compile(r"\bleft the group\b", re.I),
+    re.compile(r"\bjoined the group\b", re.I),
+    re.compile(r"\bchanged the group (?:name|photo)\b", re.I),
+    re.compile(r"\bnamed the group\b", re.I),
+    re.compile(r"\bcreated a poll\b", re.I),
+)
+
+# A group thread is spam when at least this share of its rows is housekeeping.
+# 0.5 separates the six spam giants (0.60-0.70) from real group chats, which sit
+# far below it — a real conversation has actual sentences in it.
+SPAM_NOISE_RATIO = 0.5
+
+
+def is_noise_row(body: str) -> bool:
+    """True when a row is group housekeeping rather than something a person said."""
+    return any(pattern.search(body or "") for pattern in _GROUP_NOISE)
+
 
 def _text(fragment: str) -> str:
     """HTML -> text. Block-level `<div>`s become newlines; tags are stripped."""
@@ -163,7 +187,7 @@ def _section_parts(section: str) -> tuple[str | None, str, str | None]:
 
 
 def parse(
-    source: str | Path,
+    export_path: str | Path,
     *,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -172,12 +196,19 @@ def parse(
     profile_dir: str | Path | None = None,
     tz_offset_hours: float = 0,
     include_filtered: bool = True,
+    exclude_spam_groups: bool = False,
 ) -> IngestResult:
     """Parse a Messenger archive directory or `.zip` into Messages.
 
     `include_filtered=False` drops `message_requests/` and `filtered_threads/`, which
     are usually spam. They are included by default: the store is whole, and a
     hidden toggle must not narrow an agent's view (§5.2).
+
+    `exclude_spam_groups=True` drops group threads whose rows are mostly
+    housekeeping (`sent a link`, `added X to the group`, `left the group`) — see
+    `is_noise_row` and `SPAM_NOISE_RATIO`. Off by default for the same reason: the
+    store is whole unless the user asks otherwise. A dropped thread is counted in
+    `skipped`, never silently lost.
 
     `self_id` is the owner's **display name** for Messenger (the export names senders,
     it does not give ids). `profile_dir` keeps it stable across platforms.
@@ -186,8 +217,8 @@ def parse(
         if bound is not None and bound.tzinfo is None:
             raise ValueError(f"{label} must be timezone-aware")
 
-    path = Path(source)
-    result = IngestResult(platform=PLATFORM, source=str(path))
+    path = Path(export_path)
+    result = IngestResult(platform=PLATFORM, export_path=str(path))
     if tz_offset_hours == 0:
         result.warnings.append(
             "timestamps read as UTC: the export states no offset (pass tz_offset_hours=)")
@@ -282,16 +313,27 @@ def parse(
             result.note_skip("empty thread")
             continue
 
+        others = sorted(s for s in senders if s != owner and not s.lower().startswith("participants:"))
+        is_group = len(others) > 1
+
+        # Spam-group gate. Decided BEFORE the rows are committed, so a dropped
+        # thread leaves no orphan messages behind — the same ordering that fixed
+        # Telegram's service-only chats.
+        if exclude_spam_groups and is_group:
+            noise = sum(1 for row in rows if is_noise_row(row.body))
+            if noise / len(rows) >= SPAM_NOISE_RATIO:
+                result.note_skip("spam group thread")
+                continue
+
         # The export writes newest-first; a thread must read forward in time.
         rows.reverse()
         result.messages.extend(rows)
 
-        others = sorted(s for s in senders if s != owner and not s.lower().startswith("participants:"))
         display = next((s for s in others if s), title or thread_id)
         chats[thread_id] = Chat(
             platform=PLATFORM, chat_id=thread_id, title=display,
-            kind="group_chat" if len(others) > 1 else "personal_chat",
-            is_group=len(others) > 1,
+            kind="group_chat" if is_group else "personal_chat",
+            is_group=is_group,
             participant_names=tuple(sorted(senders)),
         )
 

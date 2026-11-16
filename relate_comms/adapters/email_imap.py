@@ -368,7 +368,7 @@ def fetch(
     conn = imaplib.IMAP4_SSL(host, port, ssl_context=ssl.create_default_context(),
                              timeout=timeout)
     conn.login(user, password)
-    result = IngestResult(platform=PLATFORM, source=f"imap://{host}")
+    result = IngestResult(platform=PLATFORM, export_path=f"imap://{host}")
 
     try:
         available = _folders(conn)
@@ -537,7 +537,7 @@ def _parse_raw(
 
 
 def parse(
-    source: str | Path,
+    export_path: str | Path,
     *,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -549,10 +549,12 @@ def parse(
 ) -> IngestResult:
     """Adapter entry point, so `ingest.ingest()` can treat email like the others.
 
-    `source` is a config name: `"gmail"` or `"hostinger"`, resolved from `.env` by
-    `account_from_env`. It is never a file path — email is the one live source.
+    `export_path` is a provider name here (`"gmail"`, `"zoho"`, …), resolved from
+    `.env` by `account_from_env`. It is never a file path — email is the one platform
+    with no export file to read. For a provider not in the table, call `fetch()`
+    directly with `account_from_parts()`.
     """
-    account = account_from_env(str(source))
+    account = account_from_env(str(export_path))
     return fetch(
         account["host"], account["user"], account["password"],
         port=int(account.get("port", 993)),
@@ -560,27 +562,53 @@ def parse(
     )
 
 
-ENV_ACCOUNTS = {
+# Known IMAP providers. This is a CONVENIENCE TABLE, not a whitelist: a provider
+# that is not here works by passing host/port/user/password directly. Nothing in the
+# adapter branches on a provider name — folder selection is by RFC 6154 special-use
+# flags first and name hints second, so a new provider needs no code at all.
+#
+# `host` may be a template: `{domain}` is filled from the mailbox address, which is
+# how the cPanel-style providers work (the mail host is the domain itself).
+ENV_ACCOUNTS: dict[str, tuple[str, str, str, int]] = {
     "gmail": ("imap.gmail.com", "GOOGLE_EMAIL", "GOOGLE_APP_PASSWORD", 993),
     "hostinger": ("imap.hostinger.com", "HOSTINGER_EMAIL", "HOSTINGER_PASSWORD", 993),
+    "outlook": ("outlook.office365.com", "OUTLOOK_EMAIL", "OUTLOOK_PASSWORD", 993),
+    "yahoo": ("imap.mail.yahoo.com", "YAHOO_EMAIL", "YAHOO_APP_PASSWORD", 993),
+    "icloud": ("imap.mail.me.com", "ICLOUD_EMAIL", "ICLOUD_APP_PASSWORD", 993),
+    "zoho": ("imap.zoho.com", "ZOHO_EMAIL", "ZOHO_PASSWORD", 993),
+    "fastmail": ("imap.fastmail.com", "FASTMAIL_EMAIL", "FASTMAIL_APP_PASSWORD", 993),
+    "gmx": ("imap.gmx.com", "GMX_EMAIL", "GMX_PASSWORD", 993),
+    "yandex": ("imap.yandex.com", "YANDEX_EMAIL", "YANDEX_APP_PASSWORD", 993),
+    "aol": ("imap.aol.com", "AOL_EMAIL", "AOL_APP_PASSWORD", 993),
+    # cPanel / generic hosting: the mail host is the domain in the address.
+    "cpanel": ("mail.{domain}", "CPANEL_EMAIL", "CPANEL_PASSWORD", 993),
 }
+
+# Providers that display app passwords with spaces that are not part of the secret.
+_SPACED_APP_PASSWORDS = {"gmail", "yahoo", "aol", "icloud"}
 
 # Hostinger's mailbox address is not in `.env` yet; the skill records this one.
 _FALLBACK_USERS = {"hostinger": "dev@w57th.agency"}
 
 
 def account_from_env(name: str, *, environ: dict[str, str] | None = None) -> dict[str, str]:
-    """Resolve `gmail` / `hostinger` to host, user, password.
+    """Resolve a provider name to host, user, password, port.
 
     Secrets are read from the environment or the repo `.env` (gitignored), never from
     code and never logged. A missing key raises with the *name* of the key, not its
     value.
+
+    A provider in `ENV_ACCOUNTS` is a shortcut for "look these keys up in `.env`".
+    Anything else must be supplied explicitly — see `account_from_parts()`.
     """
     import os
 
     key = name.strip().lower()
     if key not in ENV_ACCOUNTS:
-        raise ValueError(f"unknown email account {name!r}; known: {', '.join(ENV_ACCOUNTS)}")
+        raise ValueError(
+            f"unknown email provider {name!r}; known: {', '.join(sorted(ENV_ACCOUNTS))}. "
+            "For any other IMAP server, pass host/port/user/password directly."
+        )
     host, user_var, pass_var, port = ENV_ACCOUNTS[key]
 
     env = dict(_dotenv(environ) if environ is None else environ)
@@ -592,10 +620,43 @@ def account_from_env(name: str, *, environ: dict[str, str] | None = None) -> dic
         raise ValueError(f"{user_var} is not set (needed to log in to {key})")
     if not password:
         raise ValueError(f"{pass_var} is not set (needed to log in to {key})")
-    if key == "gmail":
-        # Google displays app passwords with spaces; the spaces are not part of it.
+    if key in _SPACED_APP_PASSWORDS:
+        # These providers display app passwords with spaces; the spaces are not part
+        # of the secret.
         password = password.replace(" ", "")
+
+    # `mail.{domain}` — the cPanel shape, where the host is the mailbox's own domain.
+    if "{domain}" in host:
+        domain = user.rsplit("@", 1)[-1] if "@" in user else ""
+        if not domain:
+            raise ValueError(
+                f"{key} needs a full mailbox address to derive its host; got {user!r}"
+            )
+        host = host.replace("{domain}", domain)
+
     return {"host": host, "user": user, "password": password, "port": str(port)}
+
+
+def account_from_parts(
+    host: str,
+    user: str,
+    password: str,
+    *,
+    port: int = 993,
+) -> dict[str, str]:
+    """An account for any IMAP server, with no provider table involved.
+
+    This is the escape hatch that keeps the adapter from being hung up on a vendor
+    name: if a server speaks IMAP over TLS, these four values are all it takes.
+    """
+    if not host or not user or not password:
+        raise ValueError("host, user and password are all required for a custom IMAP account")
+    return {
+        "host": host.strip(),
+        "user": user.strip(),
+        "password": password,
+        "port": str(int(port)),
+    }
 
 
 def _dotenv(environ: dict[str, str] | None = None) -> dict[str, str]:

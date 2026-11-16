@@ -328,12 +328,16 @@ textarea::placeholder {
   margin: 0 0 4px;
 }
 
+/* Every meta item is the same size as the node-type pill. The type pill is the only
+   thing that is bold/uppercase; the rest is plain text at the same size, so the eye
+   reads "THREAD · telegram · 42 messages" as one line rather than three weights. */
 .viewer-sub {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px 8px;
 }
 
@@ -344,12 +348,23 @@ textarea::placeholder {
   border: 1px solid var(--hairline-strong);
   border-radius: 999px;
   padding: 1px 8px;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--muted);
 }
 
 .pill.platform {
   color: var(--text);
+}
+
+/* The node type, made obvious. Every Viewer state leads with one, so you always
+   know whether you are looking at a Thread, a Correspondent or a Message. */
+.pill.kind {
+  color: var(--orange-text);
+  border-color: rgb(217 122 43 / 0.45);
+  background: rgb(138 61 18 / 0.18);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .arc {

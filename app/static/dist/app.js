@@ -14619,10 +14619,10 @@
     // `params` is forwarded verbatim. Dropping it silently turns every parameterised
     // Cypher statement into a 400 with an undefined `$k` — which is exactly how the
     // thread histogram broke.
-    sources: () => request("/api/sources"),
-    setSources: (sources) => request("/api/sources", {
+    platforms: () => request("/api/platforms"),
+    setPlatforms: (platforms) => request("/api/platforms", {
       method: "POST",
-      body: JSON.stringify({ sources })
+      body: JSON.stringify({ platforms })
     }),
     search: ({
       query,
@@ -14648,7 +14648,7 @@
     }),
     chatHealth: () => request("/api/chat/health"),
     ingest: (payload) => request("/api/ingest", { method: "POST", body: JSON.stringify(payload) }),
-    verify: (source = "real") => request(`/api/ingest/verify?source=${source}`),
+    verify: (which = "real") => request(`/api/ingest/verify?which=${which}`),
     prune: (payload) => request("/api/ingest/prune", { method: "POST", body: JSON.stringify(payload) })
   };
 
@@ -14715,63 +14715,80 @@
       maxWidth: 120,
       // px, with text-wrap: wrap
       color: "#c8d2e0",
-      correspondentColor: "#8fa3bd",
-      // Threads carry two lines: the source, then the title. Cytoscape allows ONE
-      // label and ONE style, so both lines share a font — the hierarchy comes from
-      // uppercasing the source and putting it first, not from a second font size.
-      showSourceLine: true
+      correspondentColor: "#8fa3bd"
     },
     /* ------------------------------------------------------------------- tiers
-     * SIX sizes for the whole graph, one shared ladder.
+     * SIX lettered sizes, A..F, biggest first. A node's letter is COMPUTED per
+     * source (per platform), never from a fixed threshold.
      *
-     * The rungs interleave by kind: the biggest thread, then the biggest
-     * correspondent, then the next thread, then the next correspondent, and so on.
-     * So a thread always outranks a correspondent of the same rung, and "biggest"
-     * means biggest of its kind — never a single number compared across two
-     * different quantities.
+     * Why per source: the platforms are wildly different in scale — 707 messages in
+     * the largest Messenger thread, a handful in the largest email thread. One
+     * global threshold flattens every source but the biggest into the same dust
+     * cloud. Cutting bands inside each source keeps every cluster legible.
      *
-     * Why static tiers and not continuous scaling: the distribution is brutally
-     * skewed (707 messages in the largest thread, 565 of 591 correspondents have
-     * exactly ONE thread). Continuous scaling produces one giant dot and a dust
-     * cloud. Six fixed sizes keep the picture readable and the code trivial.
+     * Which letters each kind may use:
+     *   Thread        A / C / E   — A is the standout, so threads skip B
+     *   Correspondent B / D / F   — B is the biggest correspondent, below A
+     *   Person, Place, Organization, Thing (future)  D / E / F
      *
-     * Each rung is a pair of thresholds — one for threads (message count), one for
-     * correspondents (thread count) — because the two quantities are not comparable.
-     * `min` is inclusive; the first rung whose `min` is met wins, top to bottom.
+     * The two ladders interleave, so a thread always outranks the correspondent of
+     * the same band: A thread, B correspondent, C thread, D correspondent, E thread,
+     * F correspondent.
+     *
+     * The band cut is a fraction of that source's own node count, top-down: the
+     * top `top` share is the big letter, the next `mid` share the middle letter,
+     * everything left the small letter. At least one node always lands in each of
+     * the first two bands, so a source with two threads still gets an A and a C.
      */
     tiers: {
-      // Ordered biggest first. `size` and `font` are what a node in that rung gets.
-      ladder: [
-        { size: 46, font: 15, threadMin: 200, correspondentMin: 20 },
-        { size: 38, font: 14, threadMin: 80, correspondentMin: 8 },
-        { size: 31, font: 13, threadMin: 30, correspondentMin: 4 },
-        { size: 25, font: 12, threadMin: 12, correspondentMin: 2 },
-        { size: 20, font: 11, threadMin: 4, correspondentMin: 1 },
-        { size: 15, font: 10, threadMin: 0, correspondentMin: 0 }
-        // catch-all
-      ],
-      // Edges get three tiers, keyed on the source thread's size. `WITH` carries no
-      // weight property, so the thread's own tier is the only honest signal.
+      sizes: {
+        A: { size: 66, font: 16 },
+        B: { size: 50, font: 14 },
+        C: { size: 38, font: 12 },
+        D: { size: 30, font: 10 },
+        E: { size: 24, font: 10 },
+        F: { size: 18, font: 9 }
+      },
+      // Fractions of one source's node count. 0.2 / 0.3 = big 20%, mid 30%, rest
+      // small. Deliberately not a percentile of the values — a skewed distribution
+      // would put 90% of nodes in one band.
+      //
+      // A band boundary never splits a group of equal values: the whole group drops
+      // into the smaller band. Without that, Telegram's top 20% is 109 threads of
+      // which 104 hold a single message, so "big" means nothing.
+      bands: { top: 0.2, mid: 0.3 },
+      // Edges get three tiers, keyed on the source thread's message count. `WITH`
+      // carries no weight property, so the thread's own size is the only signal.
+      // Edges are the weakest thing on this canvas: a 0.8px line at 0.4 opacity on a
+      // near-black background is invisible until you are almost on top of it. The
+      // floor is therefore high — every edge is at least 1.2px and 0.75 — and the
+      // tiers separate by width more than by opacity, because opacity is what makes
+      // them disappear.
       edge: [
-        { min: 80, width: 2.2, opacity: 0.3 },
-        { min: 12, width: 1.4, opacity: 0.2 },
-        { min: 0, width: 0.8, opacity: 0.12 }
+        { min: 80, width: 2.1, opacity: 1 },
+        { min: 12, width: 1.4, opacity: 1 },
+        { min: 0, width: 0.85, opacity: 1 }
       ]
     },
     /* ------------------------------------------------------------------- visual */
     visual: {
-      edgeOpacity: 0.15,
+      edgeOpacity: 1,
       // fallback when no tier matches
-      edgeWidth: 1,
+      edgeWidth: 0.85,
+      // Edges are drawn in a LIGHT version of the platform colour — the light end of
+      // that platform's scheme, not white. 0.7 washed every hue out to near-white
+      // (a 0.7 mix of #3b6fd4 is #c3d1f0, which reads as grey). 0.35 keeps the hue
+      // recognisable while still lifting it off the near-black background.
+      edgeLighten: 0.35,
       glowBlur: 18,
       // shadow-blur on the selected node
-      hazeOpacity: 0.1,
+      hazeOpacity: 0.2,
       // static radial gradient behind the canvas
       // Correspondents glow permanently, so they read as a different class of thing
       // against the threads. Selection therefore cannot also be a glow — it is a
       // bright border plus a much larger blur (see `node:selected` below).
-      correspondentGlow: 14,
-      correspondentGlowOpacity: 0.55,
+      correspondentGlow: 50,
+      correspondentGlowOpacity: 1.2,
       // Per-node lightness jitter, so a platform cluster reads as a family of shades
       // rather than one flat colour. Deterministic from the node id.
       shadeJitter: 0.16,
@@ -14780,8 +14797,16 @@
       // flat platform colour (baked into the SVG), so shade jitter does not apply to
       // it — jitter would mean one image per node. Correspondents are unaffected.
       nodeIcons: false,
-      iconScale: 0.72
+      iconScale: 0.72,
       // fraction of the node's diameter the icon fills
+      // Correspondents can draw as a person glyph instead of a solid circle. The
+      // glyph is baked per platform (one file per colour), so shade jitter does not
+      // apply to it — same tradeoff as the thread icons. The glow stays, in the
+      // node's own source colour, so a correspondent still reads as a different class
+      // of thing from a thread.
+      correspondentIcons: true,
+      correspondentIconScale: 0.86
+      // a person silhouette is narrow, so it needs more
     },
     /* ------------------------------------------------------------------- reveal
      * Nodes bloom outward in ts_utc order. Highest impact per effort for a demo,
@@ -14815,11 +14840,13 @@
     return JSON.parse(JSON.stringify(theme));
   }
   var STORAGE_KEY = "relate.graphStyle";
+  var THEME_VERSION = 3;
   function loadTheme() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return cloneTheme();
       const saved = JSON.parse(raw);
+      if (saved?.version !== THEME_VERSION) return cloneTheme();
       return mergeDeep(cloneTheme(), saved);
     } catch {
       return cloneTheme();
@@ -14827,7 +14854,10 @@
   }
   function saveTheme(theme) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(theme));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ ...theme, version: THEME_VERSION })
+      );
     } catch {
     }
   }
@@ -15616,9 +15646,9 @@
     onOpenModal,
     storeOk,
     stats,
-    sourcesFiltered,
-    activeSources,
-    totalSources,
+    platformsFiltered,
+    activePlatforms,
+    totalPlatforms,
     nodeIcons,
     onToggleNodeIcons
   }) {
@@ -15722,9 +15752,9 @@
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
         "button",
         {
-          className: `ghost icon${sourcesFiltered ? " active" : ""}`,
+          className: `ghost icon${platformsFiltered ? " active" : ""}`,
           onClick: () => onOpenModal("utilities"),
-          title: sourcesFiltered ? `Sources filtered \u2014 ${activeSources} of ${totalSources} on` : "Utilities \u2014 choose which sources are shown",
+          title: platformsFiltered ? `Platforms filtered \u2014 ${activePlatforms} of ${totalPlatforms} on` : "Utilities \u2014 choose which platforms are shown",
           "aria-label": "Utilities",
           children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(SlidersHorizontal, { size: 14 })
         }
@@ -15763,17 +15793,18 @@
   var PLATFORM_COLORS = {
     messenger: "#3b6fd4",
     // medium blue (Facebook)
-    telegram: "#5cc8f0",
-    // light blue
+    telegram: "#3fb6b0",
+    // aqua
     whatsapp: "#4caf50",
     // green
-    linkedin: "#3fb6b0",
-    // aqua
+    linkedin: "#5cc8f0",
+    // light blue
     email: "#d9534f",
     // red (Hostinger/Gmail both land here)
     gmail: "#d9534f",
     imap: "#d9534f",
-    outlook: "#d9534f",
+    outlook: "#8b5cf6",
+    // purple — its own leg, not a variant of Email
     sms: "#b8912a"
     // dark yellow
   };
@@ -15785,21 +15816,45 @@
     email: "/static/icons/email.svg",
     gmail: "/static/icons/email.svg",
     imap: "/static/icons/email.svg",
-    outlook: "/static/icons/email.svg",
+    outlook: "/static/icons/outlook.svg",
     sms: "/static/icons/sms.svg"
   };
   function platformIcon(platform) {
     return PLATFORM_ICONS[String(platform || "").toLowerCase()] || null;
   }
+  var PERSON_ICONS = {
+    messenger: "/static/icons/person-messenger.svg",
+    telegram: "/static/icons/person-telegram.svg",
+    whatsapp: "/static/icons/person-whatsapp.svg",
+    linkedin: "/static/icons/person-linkedin.svg",
+    email: "/static/icons/person-email.svg",
+    gmail: "/static/icons/person-email.svg",
+    imap: "/static/icons/person-email.svg",
+    outlook: "/static/icons/person-outlook.svg",
+    sms: "/static/icons/person-sms.svg"
+  };
+  function personIcon(platform) {
+    return PERSON_ICONS[String(platform || "").toLowerCase()] || null;
+  }
   var FALLBACK_COLOR = "#6b7a90";
   function platformColor(platform) {
     return PLATFORM_COLORS[String(platform || "").toLowerCase()] || FALLBACK_COLOR;
   }
+  var PLATFORM_LABELS = {
+    messenger: "Fcbk Mssgr",
+    telegram: "Telegram",
+    whatsapp: "WhatsApp",
+    linkedin: "LinkedIn",
+    email: "Email",
+    gmail: "Email",
+    imap: "Email",
+    outlook: "Outlook",
+    sms: "SMS"
+  };
   function platformLabel(platform) {
     const key = String(platform || "").toLowerCase();
     if (!key) return "unknown";
-    if (key === "imap" || key === "gmail" || key === "outlook") return "email";
-    return key;
+    return PLATFORM_LABELS[key] || key;
   }
   var PLACEHOLDER_NAMES = /* @__PURE__ */ new Set([
     "facebook user",
@@ -15819,6 +15874,14 @@
 
   // app/ui/src/components/GraphCanvas.jsx
   var import_jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
+  var LEGEND_PLATFORMS = [
+    "messenger",
+    "telegram",
+    "whatsapp",
+    "linkedin",
+    "email",
+    "outlook"
+  ];
   var GraphCanvas = (0, import_react7.forwardRef)(function GraphCanvas2({ data, theme, onNodeClick, onBackgroundClick, onLayoutDone }, ref) {
     const hostRef = (0, import_react7.useRef)(null);
     const cyRef = (0, import_react7.useRef)(null);
@@ -15826,33 +15889,44 @@
     const themeRef = (0, import_react7.useRef)(theme);
     themeRef.current = theme;
     const stylesheet = (0, import_react7.useMemo)(() => buildStylesheet(theme), [theme]);
+    const sizeKey = JSON.stringify(theme.tiers.sizes);
     const elements = (0, import_react7.useMemo)(() => {
+      const theme2 = themeRef.current;
       if (!data) return [];
-      const threadTiers = /* @__PURE__ */ new Map();
-      for (const node of data.nodes || []) {
-        if (node.type === "Thread") {
-          threadTiers.set(
-            node.id,
-            rungFor(theme.tiers.ladder, "threadMin", node.message_count || 0)
-          );
-        }
-      }
-      const nodes = (data.nodes || []).map((node) => {
+      const allNodes = data.nodes || [];
+      const threadLetters = assignBands(
+        allNodes.filter((node) => node.type === "Thread"),
+        "message_count",
+        ["A", "C", "E"],
+        theme2.tiers.bands
+      );
+      const correspondentLetters = assignBands(
+        allNodes.filter((node) => node.type === "Correspondent"),
+        "thread_count",
+        ["B", "D", "F"],
+        theme2.tiers.bands
+      );
+      const threadCounts = new Map(
+        allNodes.filter((node) => node.type === "Thread").map((node) => [node.id, node.message_count || 0])
+      );
+      const nodes = allNodes.map((node) => {
         const isThread = node.type === "Thread";
-        const tier = isThread ? threadTiers.get(node.id) : rungFor(theme.tiers.ladder, "correspondentMin", node.thread_count || 0);
+        const letter = isThread ? threadLetters.get(node.id) : correspondentLetters.get(node.id);
+        const tier = theme2.tiers.sizes[letter] || theme2.tiers.sizes.F;
         const base = platformColor(node.platform);
-        const icon = isThread && theme.visual.nodeIcons ? platformIcon(node.platform) : null;
+        const icon = isThread ? theme2.visual.nodeIcons ? platformIcon(node.platform) : null : theme2.visual.correspondentIcons ? personIcon(node.platform) : null;
         return {
           group: "nodes",
           // A CLASS, not a data field. Cytoscape's `[key]` selector tests whether the
           // field EXISTS, so `image: null` matched every node and stripped the fill
           // from the whole graph. A class is unambiguous.
-          classes: icon ? "icon" : "",
+          classes: icon ? isThread ? "icon" : "icon person" : "",
           data: {
             id: node.id,
-            // Two lines for a thread: SOURCE above, title below. Cytoscape allows one
-            // label and one style, so the hierarchy is uppercasing + ordering.
-            label: isThread ? threadLabel(node, theme) : truncateLabel(node.label || node.id, 28),
+            // One line, same as every other node. The source is already carried by
+            // the node's colour and, when on, its icon — a SOURCE line above the
+            // title was redundant.
+            label: isThread ? truncateLabel(node.label || node.id, 34) : truncateLabel(node.label || node.id, 28),
             rawLabel: node.label || node.id,
             type: node.type,
             platform: node.platform || "",
@@ -15863,7 +15937,7 @@
             isGroup: !!node.is_group,
             // A shade of the platform colour, deterministic from the id, so a cluster
             // reads as a family and the picture is identical on every load.
-            color: shade(base, node.id, theme.visual.shadeJitter),
+            color: shade(base, node.id, theme2.visual.shadeJitter),
             size: tier.size,
             fontSize: tier.font
             // The image itself is NOT a data field. `background-image: data(image)`
@@ -15876,7 +15950,7 @@
       });
       const ids = new Set(nodes.map((n) => n.data.id));
       const edges = (data.edges || []).filter((edge) => ids.has(edge.source) && ids.has(edge.target)).map((edge) => {
-        const tier = rungFor(theme.tiers.edge, "min", threadTiers.get(edge.source)?.count ?? 0);
+        const tier = rungFor(theme2.tiers.edge, "min", threadCounts.get(edge.source) ?? 0);
         const platform = nodes.find((n) => n.data.id === edge.source)?.data.platform || "";
         return {
           group: "edges",
@@ -15885,14 +15959,16 @@
             source: edge.source,
             target: edge.target,
             type: edge.type,
-            color: platformColor(platform),
+            // Lightened, because a raw platform colour as a 1px line on black is
+            // invisible (theme.js §visual.edgeLighten).
+            color: lighten(platformColor(platform), theme2.visual.edgeLighten),
             width: tier.width,
             opacity: tier.opacity
           }
         };
       });
       return [...nodes, ...edges];
-    }, [data, theme]);
+    }, [data, sizeKey]);
     (0, import_react7.useEffect)(() => {
       if (!hostRef.current || cyRef.current) return void 0;
       if (window.cytoscapeFcose && !window.__fcoseRegistered) {
@@ -15911,7 +15987,11 @@
         minZoom: 0.05,
         maxZoom: 6,
         textureOnViewport: false,
-        hideEdgesOnViewport: true,
+        // MUST stay false. `true` hides every edge while panning or zooming, which
+        // reads as "the edges are dim" — they are not dim, they are absent until the
+        // view settles. It is a performance flag for huge graphs; at 975 edges there
+        // is nothing to save.
+        hideEdgesOnViewport: false,
         pixelRatio: "auto"
       });
       cyRef.current = cy;
@@ -16023,28 +16103,16 @@
         },
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { id: "cy", ref: hostRef }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "canvas-legend", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "legend-row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "legend-swatch", style: { background: "#5c8fd6" } }),
-              "messenger"
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "legend-row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "legend-swatch", style: { background: "#4fb3a5" } }),
-              "telegram"
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "legend-row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "legend-swatch", style: { background: "#5fa86b" } }),
-              "whatsapp"
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "legend-row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "legend-swatch", style: { background: "#7f8fd0" } }),
-              "linkedin"
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "legend-row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "legend-swatch", style: { background: "#c08a4a" } }),
-              "email"
-            ] })
-          ] })
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "canvas-legend", children: LEGEND_PLATFORMS.map((platform) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "legend-row", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+              "span",
+              {
+                className: "legend-swatch",
+                style: { background: platformColor(platform) }
+              }
+            ),
+            platformLabel(platform)
+          ] }, platform)) })
         ]
       }
     );
@@ -16100,24 +16168,51 @@
       // One static rule per platform, so the URL is a literal rather than a data map.
       // `background-image: data(x)` throws inside Cytoscape when a node's value is an
       // empty string, and it would also defeat the renderer's image cache.
+      //
+      // `node.icon` (threads) and `node.icon.person` (correspondents) are separate
+      // selectors, so a platform's two glyphs never collide.
       ...Object.entries(PLATFORM_ICONS).map(([platform, url]) => ({
         selector: `node.icon[platform = "${platform}"]`,
         style: { "background-image": `url("${url}")` }
       })),
+      ...Object.entries(PERSON_ICONS).map(([platform, url]) => ({
+        selector: `node.icon.person[platform = "${platform}"]`,
+        style: {
+          "background-image": `url("${url}")`,
+          "background-width": `${Math.round(visual.correspondentIconScale * 100)}%`,
+          "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`
+        }
+      })),
       {
         // Selector grammar needs spaces around the operator: `[type = "x"]`.
-        // Correspondents glow permanently, in their own source colour, so they read as
-        // a different class of thing against the threads.
+        // Correspondents are circles with a border and glow in their OWN source
+        // colour — the glow is the whole point, so it is strong and the border matches
+        // the fill rather than the generic blue outline. With the person glyph on, the
+        // fill goes away and the glow carries the class distinction instead.
         selector: 'node[type = "Correspondent"]',
         style: {
-          shape: "round-rectangle",
+          shape: "ellipse",
           color: labels.correspondentColor,
-          "background-opacity": 0.8,
+          "background-opacity": 1,
+          "border-width": 1.5,
+          "border-color": "data(color)",
+          "border-opacity": 1,
           "shadow-blur": visual.correspondentGlow,
           "shadow-color": "data(color)",
           "shadow-opacity": visual.correspondentGlowOpacity,
           "shadow-offset-x": 0,
           "shadow-offset-y": 0
+        }
+      },
+      {
+        // The glyph replaces the fill, but the glow and border stay: a correspondent
+        // must still read as a different class of thing from a thread.
+        selector: 'node[type = "Correspondent"].icon',
+        style: {
+          "background-opacity": 0,
+          "border-width": 0,
+          "background-image-opacity": 1,
+          "background-clip": "none"
         }
       },
       {
@@ -16157,19 +16252,58 @@
       }
     ];
   }
+  function assignBands(nodes, countKey, letters, bands) {
+    const result = /* @__PURE__ */ new Map();
+    if (!nodes.length) return result;
+    const [big, mid, small] = letters;
+    const top = bands?.top ?? 0.2;
+    const middle = bands?.mid ?? 0.3;
+    const byPlatform = /* @__PURE__ */ new Map();
+    for (const node of nodes) {
+      const platform = String(node.platform || "").toLowerCase();
+      if (!byPlatform.has(platform)) byPlatform.set(platform, []);
+      byPlatform.get(platform).push(node);
+    }
+    for (const group of byPlatform.values()) {
+      const ranked = [...group].sort(
+        (a, b) => (Number(b[countKey]) || 0) - (Number(a[countKey]) || 0)
+      );
+      const total = ranked.length;
+      let bigCount = Math.max(1, Math.round(total * top));
+      let midCount = Math.max(1, Math.round(total * middle));
+      if (total >= 3 && bigCount + midCount > total - 1) {
+        midCount = Math.max(1, total - bigCount - 1);
+      }
+      if (bigCount + midCount > total) {
+        midCount = Math.max(0, total - bigCount);
+      }
+      bigCount = snapToRunEnd(ranked, bigCount, countKey);
+      midCount = snapToRunEnd(ranked, bigCount + midCount, countKey) - bigCount;
+      if (midCount === 0 && total - bigCount > 1) {
+        midCount = Math.max(1, Math.round((total - bigCount) * middle));
+      }
+      ranked.forEach((node, index) => {
+        const letter = index < bigCount ? big : index < bigCount + midCount ? mid : small;
+        result.set(node.id, letter);
+      });
+    }
+    return result;
+  }
+  function snapToRunEnd(ranked, index, countKey) {
+    if (index <= 0 || index >= ranked.length) return index;
+    const value = Number(ranked[index][countKey]) || 0;
+    let cursor = index;
+    while (cursor > 0 && (Number(ranked[cursor - 1][countKey]) || 0) === value) {
+      cursor -= 1;
+    }
+    return cursor;
+  }
   function rungFor(table, key, value) {
     const count = Number(value) || 0;
     for (const rung of table) {
       if (count >= (rung[key] ?? 0)) return { ...rung, count };
     }
     return { ...table[table.length - 1], count };
-  }
-  function threadLabel(node, theme) {
-    const title = truncateLabel(node.label || node.id, 34);
-    if (!theme.labels.showSourceLine) return title;
-    const source = String(node.platform || "").toUpperCase();
-    return source ? `${source}
-${title}` : title;
   }
   function shade(hex, id, jitter) {
     if (!jitter) return hex;
@@ -16188,6 +16322,12 @@ ${title}` : title;
       Math.round(g + (mix - g) * amount),
       Math.round(b + (mix - b) * amount)
     );
+  }
+  function lighten(hex, amount) {
+    if (!amount) return hex;
+    const [r, g, b] = hexToRgb(hex);
+    const mix = (value) => Math.round(value + (255 - value) * amount);
+    return rgbToHex(mix(r), mix(g), mix(b));
   }
   function hexToRgb(hex) {
     const clean = String(hex).replace("#", "");
@@ -16628,6 +16768,7 @@ ${title}` : title;
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "viewer-head", children: [
         /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h1", { className: "viewer-title", children: thread.title || entry.label }),
         /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "viewer-sub", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill kind", children: "Thread" }),
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill platform", style: { color: platformColor(thread.platform) }, children: platformLabel(thread.platform) }),
           thread.is_group && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill", children: "group" }),
           /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { children: [
@@ -16814,8 +16955,8 @@ ${title}` : title;
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "viewer-head", children: [
         /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h1", { className: "viewer-title", children: entry.label }),
         /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "viewer-sub", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill kind", children: "Correspondent" }),
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill platform", style: { color: platformColor(entry.platform) }, children: platformLabel(entry.platform) }),
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: "correspondent" }),
           isPlaceholder(entry.label) && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill", children: "placeholder account" })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "arc", children: [
@@ -16873,6 +17014,7 @@ ${title}` : title;
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "viewer-head", children: [
         /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h1", { className: "viewer-title", children: message?.thread_title || entry.label || "Message" }),
         /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "viewer-sub", children: message && /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(import_jsx_runtime4.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill kind", children: "Message" }),
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill platform", style: { color: platformColor(message.platform) }, children: platformLabel(message.platform) }),
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: formatDateTime(message.ts_utc) }),
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: message.is_self ? "you" : message.sender_name || "unknown" })
@@ -17000,14 +17142,13 @@ ${title}` : title;
 
   // app/ui/src/components/modals/GraphStyleModal.jsx
   var import_jsx_runtime6 = __toESM(require_jsx_runtime(), 1);
-  function TierTable({ rows, onChange }) {
-    const last = rows.length - 1;
+  function SizeTable({ sizes, onChange }) {
     return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
       "div",
       {
         style: {
           display: "grid",
-          gridTemplateColumns: "28px 1fr 1fr 1fr 1fr",
+          gridTemplateColumns: "28px 1fr 1fr",
           gap: "4px 8px",
           alignItems: "center",
           fontSize: 11,
@@ -17017,17 +17158,15 @@ ${title}` : title;
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: "#" }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: "size" }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: "font" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: "thread \u2265 msgs" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: "corr \u2265 threads" }),
-          rows.map((row, index) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_react10.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: index + 1 }),
+          Object.entries(sizes).map(([letter, row]) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_react10.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: letter }),
             /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
               "input",
               {
                 type: "number",
                 value: row.size,
                 min: 2,
-                onChange: (event) => onChange(index, "size", Number(event.target.value))
+                onChange: (event) => onChange(letter, "size", Number(event.target.value))
               }
             ),
             /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
@@ -17036,32 +17175,10 @@ ${title}` : title;
                 type: "number",
                 value: row.font,
                 min: 4,
-                onChange: (event) => onChange(index, "font", Number(event.target.value))
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-              "input",
-              {
-                type: "number",
-                value: row.threadMin,
-                min: 0,
-                onChange: (event) => onChange(index, "threadMin", Number(event.target.value)),
-                disabled: index === last,
-                title: index === last ? "catch-all \u2014 always matches" : "inclusive minimum"
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-              "input",
-              {
-                type: "number",
-                value: row.correspondentMin,
-                min: 0,
-                onChange: (event) => onChange(index, "correspondentMin", Number(event.target.value)),
-                disabled: index === last,
-                title: index === last ? "catch-all \u2014 always matches" : "inclusive minimum"
+                onChange: (event) => onChange(letter, "font", Number(event.target.value))
               }
             )
-          ] }, index))
+          ] }, letter))
         ]
       }
     );
@@ -17073,12 +17190,16 @@ ${title}` : title;
       onChange(draft);
     }, [draft, onChange]);
     const set = (group, key) => (value) => setDraft((prev) => ({ ...prev, [group]: { ...prev[group], [key]: value } }));
-    const setTier = (ladder, index, key, value) => setDraft((prev) => {
-      const rows = prev.tiers[ladder].map(
-        (row, i) => i === index ? { ...row, [key]: value } : row
-      );
-      return { ...prev, tiers: { ...prev.tiers, [ladder]: rows } };
-    });
+    const setSize = (letter, key, value) => setDraft((prev) => ({
+      ...prev,
+      tiers: {
+        ...prev.tiers,
+        sizes: {
+          ...prev.tiers.sizes,
+          [letter]: { ...prev.tiers.sizes[letter], [key]: value }
+        }
+      }
+    }));
     const toggleType = (type) => setDraft((prev) => {
       const current = prev.filter.nodeTypes;
       const next = current.includes(type) ? current.filter((value) => value !== type) : [...current, type];
@@ -17230,22 +17351,13 @@ ${title}` : title;
               hint: "px, with text-wrap: wrap"
             }
           ),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Sizes \u2014 A to F, computed per source" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Each source is banded on its own, so a small platform is not flattened by a big one. Threads use A / C / E (A is the standout, so they skip B); correspondents use B / D / F. The ladders interleave, so a thread always outranks the correspondent of the same band. Person, Place, Organization and Thing will use D / E / F." }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Check,
+            SizeTable,
             {
-              label: "show the source line above a thread's title",
-              checked: draft.labels.showSourceLine,
-              onChange: set("labels", "showSourceLine"),
-              hint: "TELEGRAM on one line, the thread title below it"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Size tiers \u2014 six rungs, shared" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Rung 1 is the biggest thread and the biggest correspondent, rung 2 the next of each, and so on. A thread is matched on message count, a correspondent on thread count \u2014 the two are not comparable, so each rung carries both." }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            TierTable,
-            {
-              rows: draft.tiers.ladder,
-              onChange: (index, key, value) => setTier("ladder", index, key, value)
+              sizes: draft.tiers.sizes,
+              onChange: (letter, key, value) => setSize(letter, key, value)
             }
           ),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Visual" }),
@@ -17261,13 +17373,34 @@ ${title}` : title;
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
             Slider,
             {
-              label: "icon size (% of node)",
+              label: "thread icon size (% of node)",
               value: Math.round(draft.visual.iconScale * 100),
               min: 40,
               max: 100,
               step: 2,
               onChange: (value) => set("visual", "iconScale")(value / 100),
               hint: "only applies when icons are on"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+            Check,
+            {
+              label: "draw correspondents as a person glyph",
+              checked: draft.visual.correspondentIcons,
+              onChange: set("visual", "correspondentIcons"),
+              hint: "The glyph replaces the fill; the glow and border stay, in the node's own source colour."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+            Slider,
+            {
+              label: "person glyph size (% of node)",
+              value: Math.round(draft.visual.correspondentIconScale * 100),
+              min: 40,
+              max: 100,
+              step: 2,
+              onChange: (value) => set("visual", "correspondentIconScale")(value / 100),
+              hint: "a person silhouette is narrow, so it needs more than a round glyph"
             }
           ),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
@@ -17382,6 +17515,7 @@ ${title}` : title;
     const [tzOffset, setTzOffset] = (0, import_react11.useState)("");
     const [writeEnabled, setWriteEnabled] = (0, import_react11.useState)(false);
     const [prune, setPrune] = (0, import_react11.useState)(false);
+    const [noSpamGroups, setNoSpamGroups] = (0, import_react11.useState)(false);
     const [busy, setBusy] = (0, import_react11.useState)(false);
     const [report, setReport] = (0, import_react11.useState)(null);
     const [error, setError] = (0, import_react11.useState)(null);
@@ -17393,10 +17527,11 @@ ${title}` : title;
       setReport(null);
       try {
         const result = await api.ingest({
-          source: "real",
+          which: "real",
           paths: paths.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
           email: email.split(",").map((value) => value.trim()).filter(Boolean),
           tz_offset_hours: tzOffset === "" ? null : Number(tzOffset),
+          exclude_spam_groups: noSpamGroups,
           prune,
           write_enabled: writeEnabled
         });
@@ -17499,7 +17634,7 @@ ${title}` : title;
                   "."
                 ] })
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Messenger" }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Fcbk Mssgr" }),
               /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
                 /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
                   "Facebook \u2192 Settings \u2192 ",
@@ -17512,6 +17647,18 @@ ${title}` : title;
                   ", media low."
                 ] }),
                 /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("li", { children: "Takes hours to a day. It is a lump, not a sync." })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "SMS" }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "Not built yet." }),
+                  " The adapter is pending; nothing breaks if you have no SMS export."
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
+                  "When it lands it will read ",
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "SMS Backup & Restore" }),
+                  " XML, which is the only route off an Android phone without root."
+                ] })
               ] }),
               /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "LinkedIn" }),
               /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
@@ -17564,7 +17711,7 @@ ${title}` : title;
               /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Timezone" }),
               /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
                 /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "Telegram, WhatsApp and Messenger export ",
+                  "Telegram, WhatsApp and Fcbk Mssgr export ",
                   /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "wall-clock times with no offset" }),
                   ". Declare the offset the export was written in, or the timeline lies."
                 ] }),
@@ -17601,6 +17748,15 @@ ${title}` : title;
                 onChange: setTzOffset,
                 placeholder: "leave blank to reuse the recorded offset",
                 hint: "e.g. -5 for US Eastern. Only Telegram, WhatsApp and Messenger accept it."
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+              Check,
+              {
+                label: "Skip spam group threads (Facebook Messenger)",
+                checked: noSpamGroups,
+                onChange: setNoSpamGroups,
+                hint: "Drops group threads that are mostly link-spam and join-events \u2014 the 700-message groups nobody actually talks in. Real group chats are kept."
               }
             ),
             /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
@@ -17809,11 +17965,11 @@ ${title}` : title;
     const [error, setError] = (0, import_react12.useState)(null);
     (0, import_react12.useEffect)(() => {
       let cancelled = false;
-      api.sources().then((data) => {
+      api.platforms().then((data) => {
         if (cancelled) return;
-        setRows(data.sources || []);
+        setRows(data.platforms || []);
         setEnabled(
-          data.active === null ? (data.sources || []).map((row) => row.platform) : data.active
+          data.active === null ? (data.platforms || []).map((row) => row.platform) : data.active
         );
       }).catch((err) => {
         if (!cancelled) setError(err.message);
@@ -17827,8 +17983,8 @@ ${title}` : title;
       setBusy(true);
       setError(null);
       try {
-        const data = await api.setSources(next);
-        setRows(data.sources || []);
+        const data = await api.setPlatforms(next);
+        setRows(data.platforms || []);
         onChanged?.(data);
       } catch (err) {
         setError(err.message);
@@ -17845,7 +18001,7 @@ ${title}` : title;
     return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
       Modal,
       {
-        title: "Utilities \u2014 sources",
+        title: "Utilities \u2014 platforms",
         onClose,
         footer: /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(import_jsx_runtime10.Fragment, { children: [
           /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "pager-info", children: [
@@ -17858,7 +18014,7 @@ ${title}` : title;
           /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("button", { onClick: onClose, children: "Done" })
         ] }),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "empty", style: { paddingTop: 0 }, children: "Unticking a source removes its threads, correspondents and messages from the graph \u2014 and from search and the AI chat. The store is untouched; this is a view, and it is reversible." }),
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "empty", style: { paddingTop: 0 }, children: "Unticking a platform removes its threads, correspondents and messages from the graph \u2014 and from search and the AI chat. The store is untouched; this is a view, and it is reversible." }),
           error && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "error", children: error }),
           !rows && !error && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "empty", children: "Reading the store\u2026" }),
           (rows || []).map((row) => /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("label", { className: "check", style: { marginBottom: 8 }, children: [
@@ -17868,21 +18024,22 @@ ${title}` : title;
                 type: "checkbox",
                 checked: !!enabled?.includes(row.platform),
                 onChange: () => toggle(row.platform),
-                disabled: busy
+                disabled: busy || !row.built
               }
             ),
             /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
               "span",
               {
                 className: "legend-swatch",
-                style: { background: platformColor(row.platform), marginRight: 2 }
+                style: {
+                  background: row.built ? platformColor(row.platform) : "transparent",
+                  border: row.built ? "none" : "1px dashed var(--muted)",
+                  marginRight: 2
+                }
               }
             ),
             /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { style: { minWidth: 90 }, children: platformLabel(row.platform) }),
-            /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "pager-info", children: [
-              formatCount(row.count),
-              " messages"
-            ] })
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "pager-info", children: row.built ? `${formatCount(row.count)} messages` : "not built yet" })
           ] }, row.platform)),
           rows?.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "empty", children: "No messages in the store yet \u2014 ingest something first." }),
           /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { style: { marginTop: 14 }, children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
@@ -17891,7 +18048,7 @@ ${title}` : title;
               label: "Everything on (no filter)",
               checked: !!everythingOn,
               onChange: () => apply(everythingOn ? [] : null),
-              hint: "Clearing the filter is not the same as ticking every box: a source added later is included automatically."
+              hint: "Clearing the filter is not the same as ticking every box: a platform added later is included automatically."
             }
           ) })
         ]
@@ -17913,7 +18070,7 @@ ${title}` : title;
     const [stats, setStats] = (0, import_react13.useState)(null);
     const [storeOk, setStoreOk] = (0, import_react13.useState)(true);
     const [searchBusy, setSearchBusy] = (0, import_react13.useState)(false);
-    const [sources, setSources] = (0, import_react13.useState)({ active: null, total: 0 });
+    const [platforms, setPlatforms] = (0, import_react13.useState)({ active: null, total: 0 });
     const canvasRef = (0, import_react13.useRef)(null);
     const viewer = useViewerStack();
     const deepLinked = (0, import_react13.useRef)(false);
@@ -17940,13 +18097,13 @@ ${title}` : title;
     }, []);
     (0, import_react13.useEffect)(() => {
       let cancelled = false;
-      Promise.all([api.health(), api.stats(), api.sources()]).then(([health, counts, sourceData]) => {
+      Promise.all([api.health(), api.stats(), api.platforms()]).then(([health, counts, platformData]) => {
         if (cancelled) return;
         setStoreOk(!!health.store_exists);
         setStats(counts);
-        setSources({
-          active: sourceData.active,
-          total: (sourceData.sources || []).length
+        setPlatforms({
+          active: platformData.active,
+          total: (platformData.platforms || []).length
         });
       }).catch(() => {
       });
@@ -18039,9 +18196,9 @@ ${title}` : title;
       });
       loadGraph(theme.filter.nodeTypes);
     }, [loadGraph, theme.filter.nodeTypes]);
-    const onSourcesChanged = (0, import_react13.useCallback)(
+    const onPlatformsChanged = (0, import_react13.useCallback)(
       (data) => {
-        setSources({ active: data.active, total: (data.sources || []).length });
+        setPlatforms({ active: data.active, total: (data.platforms || []).length });
         loadGraph(theme.filter.nodeTypes);
         api.stats().then(setStats).catch(() => {
         });
@@ -18075,9 +18232,9 @@ ${title}` : title;
           onOpenModal: setModal,
           storeOk,
           stats,
-          sourcesFiltered: sources.active !== null,
-          activeSources: sources.active?.length ?? sources.total,
-          totalSources: sources.total,
+          platformsFiltered: platforms.active !== null,
+          activePlatforms: platforms.active?.length ?? platforms.total,
+          totalPlatforms: platforms.total,
           nodeIcons: theme.visual.nodeIcons,
           onToggleNodeIcons: () => updateTheme({
             ...theme,
@@ -18161,7 +18318,7 @@ ${title}` : title;
           onRerunLayout: () => canvasRef.current?.rerunLayout()
         }
       ),
-      modal === "utilities" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(UtilitiesModal, { onClose: () => setModal(null), onChanged: onSourcesChanged })
+      modal === "utilities" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(UtilitiesModal, { onClose: () => setModal(null), onChanged: onPlatformsChanged })
     ] });
   }
 

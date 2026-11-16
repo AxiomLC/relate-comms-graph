@@ -56,12 +56,12 @@ export const api = {
   // `params` is forwarded verbatim. Dropping it silently turns every parameterised
   // Cypher statement into a 400 with an undefined `$k` — which is exactly how the
   // thread histogram broke.
-  sources: () => request("/api/sources"),
+  platforms: () => request("/api/platforms"),
 
-  setSources: (sources) =>
-    request("/api/sources", {
+  setPlatforms: (platforms) =>
+    request("/api/platforms", {
       method: "POST",
-      body: JSON.stringify({ sources }),
+      body: JSON.stringify({ platforms }),
     }),
 
   search: ({
@@ -95,7 +95,7 @@ export const api = {
   ingest: (payload) =>
     request("/api/ingest", { method: "POST", body: JSON.stringify(payload) }),
 
-  verify: (source = "real") => request(`/api/ingest/verify?source=${source}`),
+  verify: (which = "real") => request(`/api/ingest/verify?which=${which}`),
 
   prune: (payload) =>
     request("/api/ingest/prune", { method: "POST", body: JSON.stringify(payload) }),

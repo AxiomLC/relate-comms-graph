@@ -19,12 +19,41 @@ graph you can walk, search and question, on your own disk.
 
 Built as a **Neo4j Relate** hackathon entry (theme *"Context, Connected"*).
 
+## Terms — the short key
+
+Five words mean five specific things in this app. Everything else is prose.
+
+| Term | Means | Never means |
+|---|---|---|
+| **Owner** | The account owner — whose archives these are. One per platform, stored in `store/profile/identity.json`. | Not a node. Not shown in the UI except as "you" in a message body. |
+| **Correspondent** | The other party in a conversation, **on one platform**. A fact from the export, keyed `<platform>:<name>`. | Not a person across platforms. Not an extracted entity. |
+| **Platform** | The social network: `telegram`, `messenger`, `email`, `linkedin`, `whatsapp`, `sms`. Shown as Telegram, Fcbk Mssgr, Email, LinkedIn, WhatsApp, SMS. | Not the file you ingested. Not the user's download. |
+| **Thread** | One conversation. | Not a message. |
+| **Message** | One message. | Not a thread. |
+
+Three more, for the ingest path:
+
+| Term | Means |
+|---|---|
+| **Download** | The raw file the user got from the platform. Never moved, never deleted. |
+| **Export** | The copy inside `spool/`, which is what actually gets parsed. |
+| **Root** | Which spool queue to read: `real` (the user's) or `sample` (generated demo data). |
+
+**`Person`, `Place`, `Organization`, `Product` are not terms in this app yet.** They name a
+*future* extraction step: entities pulled out of a message body that are neither the Owner
+nor a Correspondent. Nothing in the store, the code or the UI uses them today.
+
+**Display note:** the platform key `messenger` is stored as-is (it is part of every
+`Message.key`), but the UI always shows it as **Fcbk Mssgr** — never bare "Messenger",
+which reads as "a message". The mapping lives in one place,
+`PLATFORM_LABELS` in `app/ui/src/config/nodeTypes.js`.
+
 ## Why a graph, why local
 
 | | |
 |---|---|
 | **Native edges** | `from` / `to` / `reply_to` / `thread` are data fields, not LLM guesses. Most "documents → graph" tools guess at structure; here it is given. |
-| **Identity resolution** | The same person appears on three platforms under three identities. Merging them is a real problem, and the demo's money shot. |
+| **Identity resolution** | The same person appears on three platforms as three Correspondents. Merging them is a real problem, and the demo's money shot. |
 | **Privacy by construction** | These are the most sensitive files a person owns. Everything runs locally, and a scrubbing gate sits *before* the write, not after. |
 | **No server** | Relate is an embedded engine — one `.rl` file, no port, no Bolt. That is also why this project has its own Cypher writer: every off-the-shelf graph-extraction library needs a Neo4j server to connect to. |
 
@@ -39,8 +68,8 @@ spool/
   real/     telegram/  whatsapp/  messenger/  linkedin/  sms/  imap/  gmail/
   sample/   the same folders, for generated demo data
 store/
-  graph.rl      the graph — every message, every person
-  profile/      identity.json — which account is "me", per platform
+  graph.rl      the graph — every message, every correspondent
+  profile/      identity.json — which account is the Owner, per platform
 ```
 
 Both folders sit inside the repo and are **gitignored**; only `.gitkeep` files are
@@ -84,7 +113,7 @@ Press **Ingest** in the title bar. The modal explains what each platform require
 accepts a pasted path; files are **copied** into the spool, never moved.
 
 ```bash
-python -m relate_comms ingest --source real --email hostinger --tz-offset -5
+python -m relate_comms ingest --which real --email hostinger --tz-offset -5
 ```
 
 Per-platform download instructions live in
@@ -95,7 +124,7 @@ Per-platform download instructions live in
 1. Drop three archives in: Telegram JSON, WhatsApp `.txt`, LinkedIn zip. (Email reads live.)
 2. Ingest — show the refusal log and what was scrubbed.
 3. Ask: *"Who did I talk to about [topic] on more than one platform, and when did it stop?"*
-4. One `Correspondent` node per platform, edges into each thread, a timeline, a cluster
+4. One `Correspondent` node per platform, edges into each Thread, a timeline, a cluster
    that goes quiet.
 5. Flip `phones: block`, re-ingest → same graph shape, PII gone, refusal log lists what
    was withheld.
@@ -110,22 +139,23 @@ Per-platform download instructions live in
 | **Email (Outlook)** | **A file / F live** | Basic auth is dead. Use the `.pst` export button |
 | **WhatsApp** | B | Per-chat `.txt`/`.zip`. No all-chats export; media placeholders only |
 | **LinkedIn** | **A data / F automation** | *Basic* archive → `messages.csv`. Export only |
-| **Messenger** | B/C | *Download your information* → HTML archive. Slow, no API |
-| **SMS** | — | Adapter not built |
+| **Facebook Messenger** | B/C | *Download your information* → HTML archive. Slow, no API |
+| **SMS** | — | Adapter not built. Will read *SMS Backup & Restore* XML |
 | **Slack** | C | Export needs workspace admin. Not viable |
 | **Instagram** | — | Out of scope. Export names no sender |
 
 ## Status
 
 **Ingested:** 12,499 messages, 955 threads, 591 correspondents, 86 attachments across five
-platforms (Messenger 10,605 · Telegram 1,212 · LinkedIn 292 · Email 221 · WhatsApp 169).
+platforms (Facebook Messenger 10,605 · Telegram 1,212 · LinkedIn 292 · Email 221 · WhatsApp 169).
 
 **Built:** five file adapters + live IMAP, parallel parse → resolve → scrub → serialised
 write → verify → prune, 10-tool layer, FastAPI, and the UI.
 
-**Not built:** `Person` / `Identity` (cross-platform identity — `Correspondent` is a
-per-platform fact, `Person` would be the inference), Place/Company/Product, SMS, semantic
-search (Relate supports vector indexes; none exists in this store yet).
+**Not built:** cross-platform identity (a `Correspondent` is a per-platform fact; merging
+one human across platforms is unsolved), body-entity extraction (`Person`, `Place`,
+`Organization`, `Product`), SMS, semantic search (Relate supports vector indexes; none
+exists in this store yet).
 
 `pytest tests -q` → **137 passed, 2 skipped**.
 

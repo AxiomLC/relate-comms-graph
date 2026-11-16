@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api", tags=["ingest"])
 
 
 class IngestRequest(BaseModel):
-    source: Literal["real", "sample"] = "real"
+    which: Literal["real", "sample"] = "real"
     paths: list[str] = Field(default_factory=list, description="Files to copy into the spool")
     email: list[str] = Field(default_factory=list, description="Mailboxes to read over IMAP")
     since: str | None = None
@@ -26,6 +26,11 @@ class IngestRequest(BaseModel):
         default=None,
         description="Hours the export's local times were written in. Omit to reuse the "
                     "offset this account was last parsed with.",
+    )
+    exclude_spam_groups: bool = Field(
+        default=False,
+        description="Facebook Messenger only: drop group threads that are mostly "
+                    "link-spam and join-events.",
     )
     prune: bool = False
     write_enabled: bool = False
@@ -41,21 +46,22 @@ class PruneRequest(BaseModel):
 def ingest(request: IngestRequest) -> dict:
     """Stage, parse, resolve, scrub, write, verify. Returns the full report."""
     return tools.ingest(
-        source=request.source,
+        which=request.which,
         paths_in=request.paths or None,
         email=request.email or None,
         since=request.since,
         until=request.until,
         tz_offset_hours=request.tz_offset_hours,
+        exclude_spam_groups=request.exclude_spam_groups,
         prune=request.prune,
         write_enabled=request.write_enabled,
     )
 
 
 @router.get("/ingest/verify")
-def verify(source: Literal["real", "sample"] = "real") -> dict:
+def verify(which: Literal["real", "sample"] = "real") -> dict:
     """Re-parse the spool and report, per file, how many keys are missing."""
-    return tools.verify_ingest(source)
+    return tools.verify_ingest(which)
 
 
 @router.post("/ingest/prune")

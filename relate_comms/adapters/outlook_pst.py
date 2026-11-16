@@ -173,7 +173,7 @@ def _walk(folder: Any, prefix: str) -> Iterator[tuple[str, Any]]:
 
 
 def parse(
-    source: str | Path,
+    export_path: str | Path,
     *,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -199,8 +199,8 @@ def parse(
         if bound is not None and bound.tzinfo is None:
             raise ValueError(f"{label} must be timezone-aware")
 
-    path = Path(source)
-    result = IngestResult(platform=PLATFORM, source=str(path))
+    path = Path(export_path)
+    result = IngestResult(platform=PLATFORM, export_path=str(path))
 
     pst = pypff.file()
     pst.open(str(path))

@@ -116,9 +116,9 @@ def message_key(thread_id: str, ts: datetime, sender: str, body: str, ordinal: i
     return f"{PLATFORM}:{thread_id}:{hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]}"
 
 
-def read_rows(source: str | Path, member: str = MESSAGES_MEMBER) -> list[dict[str, str]]:
+def read_rows(export_path: str | Path, member: str = MESSAGES_MEMBER) -> list[dict[str, str]]:
     """Read `messages.csv` from a zip archive or a directory holding the export."""
-    path = Path(source)
+    path = Path(export_path)
     if path.is_dir():
         candidate = path / member
         if not candidate.exists():
@@ -140,7 +140,7 @@ def read_rows(source: str | Path, member: str = MESSAGES_MEMBER) -> list[dict[st
 
 
 def parse(
-    source: str | Path,
+    export_path: str | Path,
     *,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -162,8 +162,8 @@ def parse(
         if bound is not None and bound.tzinfo is None:
             raise ValueError(f"{label} must be timezone-aware")
 
-    path = Path(source)
-    result = IngestResult(platform=PLATFORM, source=str(path))
+    path = Path(export_path)
+    result = IngestResult(platform=PLATFORM, export_path=str(path))
     rows = read_rows(path)
     if not rows:
         result.warnings.append("messages.csv had no rows")

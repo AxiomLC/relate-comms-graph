@@ -59,60 +59,78 @@ export const THEME = {
     maxWidth: 120, // px, with text-wrap: wrap
     color: "#c8d2e0",
     correspondentColor: "#8fa3bd",
-    // Threads carry two lines: the source, then the title. Cytoscape allows ONE
-    // label and ONE style, so both lines share a font — the hierarchy comes from
-    // uppercasing the source and putting it first, not from a second font size.
-    showSourceLine: true,
   },
 
   /* ------------------------------------------------------------------- tiers
-   * SIX sizes for the whole graph, one shared ladder.
+   * SIX lettered sizes, A..F, biggest first. A node's letter is COMPUTED per
+   * source (per platform), never from a fixed threshold.
    *
-   * The rungs interleave by kind: the biggest thread, then the biggest
-   * correspondent, then the next thread, then the next correspondent, and so on.
-   * So a thread always outranks a correspondent of the same rung, and "biggest"
-   * means biggest of its kind — never a single number compared across two
-   * different quantities.
+   * Why per source: the platforms are wildly different in scale — 707 messages in
+   * the largest Messenger thread, a handful in the largest email thread. One
+   * global threshold flattens every source but the biggest into the same dust
+   * cloud. Cutting bands inside each source keeps every cluster legible.
    *
-   * Why static tiers and not continuous scaling: the distribution is brutally
-   * skewed (707 messages in the largest thread, 565 of 591 correspondents have
-   * exactly ONE thread). Continuous scaling produces one giant dot and a dust
-   * cloud. Six fixed sizes keep the picture readable and the code trivial.
+   * Which letters each kind may use:
+   *   Thread        A / C / E   — A is the standout, so threads skip B
+   *   Correspondent B / D / F   — B is the biggest correspondent, below A
+   *   Person, Place, Organization, Thing (future)  D / E / F
    *
-   * Each rung is a pair of thresholds — one for threads (message count), one for
-   * correspondents (thread count) — because the two quantities are not comparable.
-   * `min` is inclusive; the first rung whose `min` is met wins, top to bottom.
+   * The two ladders interleave, so a thread always outranks the correspondent of
+   * the same band: A thread, B correspondent, C thread, D correspondent, E thread,
+   * F correspondent.
+   *
+   * The band cut is a fraction of that source's own node count, top-down: the
+   * top `top` share is the big letter, the next `mid` share the middle letter,
+   * everything left the small letter. At least one node always lands in each of
+   * the first two bands, so a source with two threads still gets an A and a C.
    */
   tiers: {
-    // Ordered biggest first. `size` and `font` are what a node in that rung gets.
-    ladder: [
-      { size: 46, font: 15, threadMin: 200, correspondentMin: 20 },
-      { size: 38, font: 14, threadMin: 80, correspondentMin: 8 },
-      { size: 31, font: 13, threadMin: 30, correspondentMin: 4 },
-      { size: 25, font: 12, threadMin: 12, correspondentMin: 2 },
-      { size: 20, font: 11, threadMin: 4, correspondentMin: 1 },
-      { size: 15, font: 10, threadMin: 0, correspondentMin: 0 }, // catch-all
-    ],
-    // Edges get three tiers, keyed on the source thread's size. `WITH` carries no
-    // weight property, so the thread's own tier is the only honest signal.
+    sizes: {
+      A: { size: 66, font: 16 },
+      B: { size: 50, font: 14 },
+      C: { size: 38, font: 12 },
+      D: { size: 30, font: 10 },
+      E: { size: 24, font: 10 },
+      F: { size: 18, font: 9 },
+    },
+    // Fractions of one source's node count. 0.2 / 0.3 = big 20%, mid 30%, rest
+    // small. Deliberately not a percentile of the values — a skewed distribution
+    // would put 90% of nodes in one band.
+    //
+    // A band boundary never splits a group of equal values: the whole group drops
+    // into the smaller band. Without that, Telegram's top 20% is 109 threads of
+    // which 104 hold a single message, so "big" means nothing.
+    bands: { top: 0.2, mid: 0.3 },
+    // Edges get three tiers, keyed on the source thread's message count. `WITH`
+    // carries no weight property, so the thread's own size is the only signal.
+    // Edges are the weakest thing on this canvas: a 0.8px line at 0.4 opacity on a
+    // near-black background is invisible until you are almost on top of it. The
+    // floor is therefore high — every edge is at least 1.2px and 0.75 — and the
+    // tiers separate by width more than by opacity, because opacity is what makes
+    // them disappear.
     edge: [
-      { min: 80, width: 2.2, opacity: 0.3 },
-      { min: 12, width: 1.4, opacity: 0.2 },
-      { min: 0, width: 0.8, opacity: 0.12 },
+      { min: 80, width: 2.1, opacity: 1 },
+      { min: 12, width: 1.4, opacity: 1 },
+      { min: 0, width: 0.85, opacity: 1 },
     ],
   },
 
   /* ------------------------------------------------------------------- visual */
   visual: {
-    edgeOpacity: 0.15, // fallback when no tier matches
-    edgeWidth: 1,
+    edgeOpacity: 1, // fallback when no tier matches
+    edgeWidth: 0.85,
+    // Edges are drawn in a LIGHT version of the platform colour — the light end of
+    // that platform's scheme, not white. 0.7 washed every hue out to near-white
+    // (a 0.7 mix of #3b6fd4 is #c3d1f0, which reads as grey). 0.35 keeps the hue
+    // recognisable while still lifting it off the near-black background.
+    edgeLighten: 0.35,
     glowBlur: 18, // shadow-blur on the selected node
-    hazeOpacity: 0.1, // static radial gradient behind the canvas
+    hazeOpacity: 0.2, // static radial gradient behind the canvas
     // Correspondents glow permanently, so they read as a different class of thing
     // against the threads. Selection therefore cannot also be a glow — it is a
     // bright border plus a much larger blur (see `node:selected` below).
-    correspondentGlow: 14,
-    correspondentGlowOpacity: 0.55,
+    correspondentGlow: 50,
+    correspondentGlowOpacity: 1.2,
     // Per-node lightness jitter, so a platform cluster reads as a family of shades
     // rather than one flat colour. Deterministic from the node id.
     shadeJitter: 0.16, // 0 = every node identical, 0.3 = noisy
@@ -121,6 +139,13 @@ export const THEME = {
     // it — jitter would mean one image per node. Correspondents are unaffected.
     nodeIcons: false,
     iconScale: 0.72, // fraction of the node's diameter the icon fills
+    // Correspondents can draw as a person glyph instead of a solid circle. The
+    // glyph is baked per platform (one file per colour), so shade jitter does not
+    // apply to it — same tradeoff as the thread icons. The glow stays, in the
+    // node's own source colour, so a correspondent still reads as a different class
+    // of thing from a thread.
+    correspondentIcons: true,
+    correspondentIconScale: 0.86, // a person silhouette is narrow, so it needs more
   },
 
   /* ------------------------------------------------------------------- reveal
@@ -161,12 +186,26 @@ export function cloneTheme(theme = THEME) {
 
 const STORAGE_KEY = "relate.graphStyle";
 
+/**
+ * Bump this whenever a DEFAULT changes in a way that must win over a saved theme.
+ *
+ * Without it, `loadTheme()` merges the saved object over the defaults, so a value
+ * the user once dragged a slider to shadows every later change to that default —
+ * which is exactly how the edge brightening appeared to do nothing: the saved
+ * `tiers.edge` from an earlier session was still winning.
+ *
+ * A version mismatch discards the saved theme. That is the right trade: the theme
+ * is a look, not data, and a stale look that hides a fix is worse than a reset.
+ */
+const THEME_VERSION = 3;
+
 /** Merge a saved partial config over the defaults (new keys keep their default). */
 export function loadTheme() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return cloneTheme();
     const saved = JSON.parse(raw);
+    if (saved?.version !== THEME_VERSION) return cloneTheme();
     return mergeDeep(cloneTheme(), saved);
   } catch {
     return cloneTheme();
@@ -175,7 +214,10 @@ export function loadTheme() {
 
 export function saveTheme(theme) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(theme));
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ ...theme, version: THEME_VERSION }),
+    );
   } catch {
     /* private mode, quota — the look just does not persist */
   }

@@ -17,19 +17,18 @@ import Modal, { Check, Slider, useFetch } from "./Modal.jsx";
  * nothing else — a hidden toggle must never narrow what an agent can query.
  */
 /**
- * One tier ladder, editable in place.
+ * The six lettered sizes, editable in place.
  *
- * `min` is the threshold and `size`/`font` are what a node in that tier gets. The
- * last row is the catch-all (`min: 0`) and is not editable upward, because a ladder
- * with no bottom rung leaves nodes with no size at all.
+ * There are no thresholds here any more: a node's letter is computed per source
+ * (`assignBands` in GraphCanvas), so the only thing to tune is how big each letter
+ * draws. Which letters a kind may use is fixed in `theme.js` §tiers.
  */
-function TierTable({ rows, onChange }) {
-  const last = rows.length - 1;
+function SizeTable({ sizes, onChange }) {
   return (
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "28px 1fr 1fr 1fr 1fr",
+        gridTemplateColumns: "28px 1fr 1fr",
         gap: "4px 8px",
         alignItems: "center",
         fontSize: 11,
@@ -39,40 +38,20 @@ function TierTable({ rows, onChange }) {
       <span className="pager-info">#</span>
       <span className="pager-info">size</span>
       <span className="pager-info">font</span>
-      <span className="pager-info">thread ≥ msgs</span>
-      <span className="pager-info">corr ≥ threads</span>
-      {rows.map((row, index) => (
-        <Fragment key={index}>
-          <span className="pager-info">{index + 1}</span>
+      {Object.entries(sizes).map(([letter, row]) => (
+        <Fragment key={letter}>
+          <span className="pager-info">{letter}</span>
           <input
             type="number"
             value={row.size}
             min={2}
-            onChange={(event) => onChange(index, "size", Number(event.target.value))}
+            onChange={(event) => onChange(letter, "size", Number(event.target.value))}
           />
           <input
             type="number"
             value={row.font}
             min={4}
-            onChange={(event) => onChange(index, "font", Number(event.target.value))}
-          />
-          <input
-            type="number"
-            value={row.threadMin}
-            min={0}
-            onChange={(event) => onChange(index, "threadMin", Number(event.target.value))}
-            disabled={index === last}
-            title={index === last ? "catch-all — always matches" : "inclusive minimum"}
-          />
-          <input
-            type="number"
-            value={row.correspondentMin}
-            min={0}
-            onChange={(event) =>
-              onChange(index, "correspondentMin", Number(event.target.value))
-            }
-            disabled={index === last}
-            title={index === last ? "catch-all — always matches" : "inclusive minimum"}
+            onChange={(event) => onChange(letter, "font", Number(event.target.value))}
           />
         </Fragment>
       ))}
@@ -93,14 +72,18 @@ export default function GraphStyleModal({ theme, onChange, onClose, onRerunLayou
   const set = (group, key) => (value) =>
     setDraft((prev) => ({ ...prev, [group]: { ...prev[group], [key]: value } }));
 
-  /** Edit one cell of a tier table. */
-  const setTier = (ladder, index, key, value) =>
-    setDraft((prev) => {
-      const rows = prev.tiers[ladder].map((row, i) =>
-        i === index ? { ...row, [key]: value } : row,
-      );
-      return { ...prev, tiers: { ...prev.tiers, [ladder]: rows } };
-    });
+  /** Edit one cell of the lettered size table. */
+  const setSize = (letter, key, value) =>
+    setDraft((prev) => ({
+      ...prev,
+      tiers: {
+        ...prev.tiers,
+        sizes: {
+          ...prev.tiers.sizes,
+          [letter]: { ...prev.tiers.sizes[letter], [key]: value },
+        },
+      },
+    }));
 
   const toggleType = (type) =>
     setDraft((prev) => {
@@ -226,22 +209,19 @@ export default function GraphStyleModal({ theme, onChange, onClose, onRerunLayou
         onChange={set("labels", "maxWidth")}
         hint="px, with text-wrap: wrap"
       />
-      <Check
-        label="show the source line above a thread's title"
-        checked={draft.labels.showSourceLine}
-        onChange={set("labels", "showSourceLine")}
-        hint="TELEGRAM on one line, the thread title below it"
-      />
 
-      <h2 className="section">Size tiers — six rungs, shared</h2>
+
+      <h2 className="section">Sizes — A to F, computed per source</h2>
       <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
-        Rung 1 is the biggest thread and the biggest correspondent, rung 2 the next
-        of each, and so on. A thread is matched on message count, a correspondent on
-        thread count — the two are not comparable, so each rung carries both.
+        Each source is banded on its own, so a small platform is not flattened by a
+        big one. Threads use A / C / E (A is the standout, so they skip B);
+        correspondents use B / D / F. The ladders interleave, so a thread always
+        outranks the correspondent of the same band. Person, Place, Organization and
+        Thing will use D / E / F.
       </div>
-      <TierTable
-        rows={draft.tiers.ladder}
-        onChange={(index, key, value) => setTier("ladder", index, key, value)}
+      <SizeTable
+        sizes={draft.tiers.sizes}
+        onChange={(letter, key, value) => setSize(letter, key, value)}
       />
 
       <h2 className="section">Visual</h2>
@@ -252,13 +232,28 @@ export default function GraphStyleModal({ theme, onChange, onClose, onRerunLayou
         hint="Threads only. Correspondents stay as glowing rounded rects, so the two kinds never look alike."
       />
       <Slider
-        label="icon size (% of node)"
+        label="thread icon size (% of node)"
         value={Math.round(draft.visual.iconScale * 100)}
         min={40}
         max={100}
         step={2}
         onChange={(value) => set("visual", "iconScale")(value / 100)}
         hint="only applies when icons are on"
+      />
+      <Check
+        label="draw correspondents as a person glyph"
+        checked={draft.visual.correspondentIcons}
+        onChange={set("visual", "correspondentIcons")}
+        hint="The glyph replaces the fill; the glow and border stay, in the node's own source colour."
+      />
+      <Slider
+        label="person glyph size (% of node)"
+        value={Math.round(draft.visual.correspondentIconScale * 100)}
+        min={40}
+        max={100}
+        step={2}
+        onChange={(value) => set("visual", "correspondentIconScale")(value / 100)}
+        hint="a person silhouette is narrow, so it needs more than a round glyph"
       />
       <Slider
         label="correspondent glow (shadow-blur)"

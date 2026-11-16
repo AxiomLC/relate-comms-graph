@@ -1,8 +1,8 @@
 """`python -m relate_comms` — the shipped command line.
 
     python -m relate_comms sample build            # generate sample downloads
-    python -m relate_comms ingest --source sample  # ingest them
-    python -m relate_comms ingest --source real    # ingest ~/relate-comms/spool/
+    python -m relate_comms ingest --which sample   # ingest them
+    python -m relate_comms ingest --which real     # ingest ~/relate-comms/spool/
 
 `prune` is not implicit. Deleting a spool file requires both `--prune` and
 `--confirm`, matching `tools.require(Access.DESTRUCTIVE)` so the CLI and a model
@@ -37,7 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--seed", type=int, default=20261114)
 
     ingest = sub.add_parser("ingest", help="parse exports into the store")
-    ingest.add_argument("--source", choices=("sample", "real"), default="real")
+    ingest.add_argument("--which", choices=("sample", "real"), default="real",
+                        help="which spool queue to read (default: real)")
     ingest.add_argument("paths", nargs="*",
                         help="export files to copy into the spool before ingesting")
     ingest.add_argument("--root", help="directory to read instead of the default spool")
@@ -49,6 +50,9 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument("--until", type=_utc, help="ISO-8601, inclusive")
     ingest.add_argument("--no-service", action="store_true",
                         help="drop Telegram service rows instead of counting them")
+    ingest.add_argument("--no-spam-groups", action="store_true",
+                        help="Facebook Messenger only: drop group threads that are "
+                             "mostly link-spam and join-events")
     ingest.add_argument("--workers", type=int, help="parse processes (default: half the cores)")
     ingest.add_argument("--self-id", help="pin the owner id instead of inferring it")
     ingest.add_argument("--prune", action="store_true",
@@ -89,12 +93,13 @@ def main(argv: list[str] | None = None) -> int:
             mail_results = _fetch_mailboxes(args.email, args.since, args.until)
 
         report = ingest_module.ingest(
-            source=args.source,
+            which=args.which,
             root=args.root,
             store=args.store,
             since=args.since,
             until=args.until,
             include_service=not args.no_service,
+            exclude_spam_groups=args.no_spam_groups,
             prune=args.prune,
             workers=args.workers,
             self_id=args.self_id,
