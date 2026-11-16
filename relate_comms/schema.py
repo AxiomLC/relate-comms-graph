@@ -4,7 +4,7 @@ One shape, six platforms. If a platform cannot fill a field, the field is empty 
 the row is never dropped. Media-only messages, service events and polls all become
 rows; `raw_kind` is how "what was this actually" survives the normalisation.
 
-Two rules that are not negotiable (buildNOTES §3.1):
+Two rules that are not negotiable (TECHREADME.md §5):
 
 1. `key` is built once, from stable parts, and never mutated. It is what makes
    re-ingest idempotent — the daily job re-reads the same archive and must not

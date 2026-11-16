@@ -14,7 +14,6 @@ token.json
 exports/
 spool/*
 !spool/.gitkeep
-archive_docs/
 *.zip
 *.result.json
 
@@ -31,9 +30,14 @@ store/*
 relate_comms/sample_data/generated/
 
 # Research scratch — npm metadata, doc dumps, library probes. VALUABLE, KEEP ON DISK,
-# never committed. Reference material for the graph-library decision (buildUI.md §4.2).
+# never committed. Reference material for the graph-library decision (UI-Cytoscape.md §2).
 .tmp_research/*
 !/.tmp_research/.gitkeep
+
+# Node — dependencies are installed, never committed. `package-lock.json` IS committed,
+# so `npm ci` reproduces the exact tree.
+node_modules/
+
 # Python
 __pycache__/
 *.py[cod]

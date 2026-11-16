@@ -1,6 +1,6 @@
 """One generator per platform. Each models that platform's REAL export structure.
 
-The rule from buildNOTES §6 applies here as much as anywhere: a generator written
+The rule applies here as much as anywhere: a generator written
 before the real payload is a guess. `telegram.py` is written after two real
 exports were read; the others stay TODO until their real file exists.
 

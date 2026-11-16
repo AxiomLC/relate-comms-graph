@@ -22,7 +22,7 @@ FOUR RULES THIS FILE EXISTS TO ENFORCE
 
 PARALLELISM IS BOUNDED BY THE MACHINE, NOT BY THE FILE COUNT
 ------------------------------------------------------------
-There is no GPU here (buildNOTES §2.2). A process pool of `os.cpu_count()` on a
+There is no GPU here (TECHREADME.md §9). A process pool of `os.cpu_count()` on a
 4P+8E chip would spawn 12 workers to parse 12 JSON files, and the E-cores would
 finish the same work slower than 6. `default_workers()` encodes that.
 """
@@ -197,7 +197,7 @@ class Report:
 def default_workers() -> int:
     """P-priented default: leave headroom, never exceed the core count.
 
-    Measured context (buildNOTES §10): `num_thread` is still unmeasured, so this is
+    Measured context: `num_thread` is still unmeasured, so this is
     deliberately conservative — parallel parsing must not make a single-file ingest
     slower by stealing cores from the same machine the user is using.
     """

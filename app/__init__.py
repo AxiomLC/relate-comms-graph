@@ -19,5 +19,5 @@ Layout:
     app/mcp/           same tool set over MCP, with auth
     app/static/        the single-page 3D frontend
 
-Not yet written — this package is a scaffold. See buildNOTES §5.
+Not yet written — this package is a scaffold. See TECHREADME.md §2.
 """

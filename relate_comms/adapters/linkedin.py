@@ -4,7 +4,7 @@ Verified against a real archive (2026-11-14, "Basic" LinkedIn data export).
 
 THE BASIC EXPORT *DOES* CONTAIN MESSAGES
 ----------------------------------------
-§9.1.3 of buildNOTES said the larger archive was required. That is wrong: the
+An earlier note said the larger archive was required. That is wrong: the
 **Basic** export (23 files, 216 KB) carries `messages.csv` with the full DM history.
 The modal guidance is corrected accordingly — one less 24-hour wait for the user.
 

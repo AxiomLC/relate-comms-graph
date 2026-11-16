@@ -42,7 +42,7 @@ NOT IMPLEMENTED, AND DELIBERATELY NOT REGISTERED
                                      embeddings are written; registering a tool
                                      that always fails burns a model turn
     person_profile, who_did_i_talk_to  `Person` and `SENT` have zero rows
-                                     (buildNOTES §3.2) — the queries would return
+                                     (TECHREADME.md §4) — the queries would return
                                      nothing and look like a bug in the tool
 
 TOGGLE MODEL — views filter, queries do not
@@ -149,6 +149,59 @@ def store_path() -> Path:
     return _STORE or paths.store_path()
 
 
+# ------------------------------------------------------------- source filter
+
+# The platforms the UI can toggle. A source is a platform, not a node type: hiding
+# `telegram` must remove Telegram threads, their correspondents AND their messages,
+# which a node-type filter cannot express.
+KNOWN_SOURCES: tuple[str, ...] = (
+    "messenger", "telegram", "linkedin", "email", "whatsapp", "sms",
+)
+
+# `None` means "no filter" — every source. An empty list means "nothing", which is
+# a legitimate state (the user unticked everything) and must not silently become
+# "everything".
+_SOURCES: list[str] | None = None
+
+
+def configure_sources(sources: Sequence[str] | None) -> None:
+    """Restrict every read tool to these platforms. `None` clears the filter.
+
+    This is a **surface** setting, like `write_enabled`: the UI sets it from its
+    Utilities modal and the chat inherits it, so "search only what is on the graph"
+    is true rather than aspirational. It is deliberately not a tool argument — a
+    model must not be able to widen or narrow what the user is looking at.
+
+    Note this contradicts `TECHREADME.md` §5 ("UI state must never narrow an
+    agent's query"). The author overrode that for sources on 2026-11-16: the graph
+    and the search must agree, or a hit appears for a node that is not drawn.
+    """
+    global _SOURCES
+    if sources is None:
+        _SOURCES = None
+        return
+    cleaned = [str(s).strip().lower() for s in sources if str(s).strip()]
+    _SOURCES = cleaned
+
+
+def active_sources() -> list[str] | None:
+    """The current filter, or `None` for unfiltered."""
+    return list(_SOURCES) if _SOURCES is not None else None
+
+
+def _source_clause(alias: str, params: dict[str, Any]) -> str:
+    """A Cypher predicate for the active source filter, or `""`.
+
+    `alias` is the variable the platform property lives on. The parameter is always
+    named `$sources`, so a caller can add the clause to any MATCH without inventing
+    a name.
+    """
+    if _SOURCES is None:
+        return ""
+    params["sources"] = list(_SOURCES)
+    return f"{alias}.platform IN $sources"
+
+
 def _connect(*, read_only: bool = True) -> Any:
     path = store_path()
     if not path.exists():
@@ -202,8 +255,10 @@ def _scalar(conn: Any, cypher: str, params: dict[str, Any] | None = None) -> Any
 
 # ------------------------------------------------------------------- schema
 
-# Never shown to a model: the surface's own toggle, not a model-settable argument.
-_HIDDEN_PARAMS = frozenset({"write_enabled"})
+# Never shown to a model: the surface's own toggles, not model-settable arguments.
+# `sources` is here for the same reason as `write_enabled` — it is the UI's state,
+# and a model that could set it would be able to answer from data the user hid.
+_HIDDEN_PARAMS = frozenset({"write_enabled", "sources"})
 
 
 def _json_type(annotation: Any) -> dict[str, Any]:
@@ -305,13 +360,17 @@ def _snippet(body: str, needle: str, width: int = 160) -> str:
 
 # --------------------------------------------------------------- read tools
 
-# The canvas draws these and nothing else (buildNOTES §5.5): 955 threads is
+# The canvas draws these and nothing else (UI-Cytoscape.md §3): 955 threads is
 # drawable, 12,499 messages is not. Asking for `Message` is explicit, never default.
 DRAWABLE_NODE_TYPES: tuple[str, ...] = ("Thread", "Correspondent")
 
+# Node queries are templates: `{where}` is the source-filter predicate (or empty).
+# Every one of them filters on the node's own `platform`, so hiding a source removes
+# the node itself rather than leaving an orphan with no edges.
 _NODE_QUERIES: dict[str, str] = {
     "Thread": (
         "MATCH (t:Thread) "
+        "{where}"
         "OPTIONAL MATCH (t)<-[:IN]-(m:Message) "
         "RETURN t.key AS id, t.title AS label, t.platform AS platform, "
         "       t.is_group AS is_group, count(m) AS message_count, "
@@ -320,13 +379,20 @@ _NODE_QUERIES: dict[str, str] = {
         "LIMIT $n"
     ),
     "Correspondent": (
+        # `thread_count` is what tiers a correspondent: it is the only quantity the
+        # store has for one. Counted through `WITH`, so a person in ten threads is
+        # ten, not the number of messages they sent.
         "MATCH (c:Correspondent) "
-        "RETURN c.key AS id, c.display_name AS label, c.platform AS platform "
-        "ORDER BY label, id "
+        "{where}"
+        "OPTIONAL MATCH (t:Thread)-[:WITH]->(c) "
+        "RETURN c.key AS id, c.display_name AS label, c.platform AS platform, "
+        "       count(DISTINCT t) AS thread_count "
+        "ORDER BY thread_count DESC, label, id "
         "LIMIT $n"
     ),
     "Message": (
         "MATCH (m:Message) "
+        "{where}"
         "RETURN m.key AS id, m.sender_name AS label, m.platform AS platform, "
         "       m.ts_utc AS ts_utc, m.is_self AS is_self, m.raw_kind AS raw_kind "
         "ORDER BY m.ts_utc DESC "
@@ -334,27 +400,60 @@ _NODE_QUERIES: dict[str, str] = {
     ),
     "Attachment": (
         "MATCH (a:Attachment) "
+        "{where}"
         "RETURN a.key AS id, a.filename_scrubbed AS label, a.mime AS mime "
         "ORDER BY id "
         "LIMIT $n"
     ),
 }
 
+# `Attachment` has no platform of its own; it inherits the message's. The filter is
+# applied through the owning message, which is the only honest way to attribute it.
+_ATTACHMENT_SOURCE_WHERE = (
+    "MATCH (m:Message)-[:HAS_ATTACHMENT]->(a) WHERE {pred} "
+)
+
 _EDGE_QUERIES: dict[str, str] = {
     "WITH": "MATCH (t:Thread)-[:WITH]->(c:Correspondent) "
+            "{where}"
             "RETURN t.key AS source, c.key AS target",
     "IN": "MATCH (m:Message)-[:IN]->(t:Thread) "
+          "{where}"
           "RETURN m.key AS source, t.key AS target",
     "REPLY_TO": "MATCH (m:Message)-[:REPLY_TO]->(r:Message) "
+                "{where}"
                 "RETURN m.key AS source, r.key AS target",
     "HAS_ATTACHMENT": "MATCH (m:Message)-[:HAS_ATTACHMENT]->(a:Attachment) "
+                      "{where}"
                       "RETURN m.key AS source, a.key AS target",
+}
+
+# Which variable each query's platform predicate applies to.
+_EDGE_SOURCE_ALIAS: dict[str, str] = {
+    "WITH": "t",
+    "IN": "m",
+    "REPLY_TO": "m",
+    "HAS_ATTACHMENT": "m",
 }
 
 # Edges whose endpoints are both in the default node set. `IN`, `REPLY_TO` and
 # `HAS_ATTACHMENT` all start at a Message, so with the default nodes they can only
 # ever be dropped — 12,611 of them. They are available on request, never by default.
 DRAWABLE_EDGE_TYPES: tuple[str, ...] = ("WITH",)
+
+
+def _node_where(node_type: str, params: dict[str, Any]) -> str:
+    """The `WHERE` line for a node query, honouring the source filter.
+
+    Attachments have no platform, so they are filtered through the message that
+    owns them — the only attribution the store can honestly support.
+    """
+    if node_type == "Attachment":
+        clause = _source_clause("m", params)
+        return f"WHERE {clause} " if clause else ""
+    alias = "m" if node_type == "Message" else ("c" if node_type == "Correspondent" else "t")
+    clause = _source_clause(alias, params)
+    return f"WHERE {clause} " if clause else ""
 
 
 def _resolve_types(
@@ -408,8 +507,12 @@ def graph_slice(
             if remaining <= 0:
                 truncated = True
                 break
+            params: dict[str, Any] = {"n": remaining + 1}
+            where = _node_where(node_type, params)
             # Ask for one extra row: that is how we know the limit was hit.
-            rows = _fetch(conn, _NODE_QUERIES[node_type], {"n": remaining + 1})
+            rows = _fetch(
+                conn, _NODE_QUERIES[node_type].format(where=where), params,
+            )
             if len(rows) > remaining:
                 rows = rows[:remaining]
                 truncated = True
@@ -419,7 +522,12 @@ def graph_slice(
 
         drawn = {node["id"] for node in nodes}
         for edge_type in wanted_edges:
-            for row in _fetch(conn, _EDGE_QUERIES[edge_type]):
+            params = {}
+            clause = _source_clause(_EDGE_SOURCE_ALIAS[edge_type], params)
+            where = f"WHERE {clause} " if clause else ""
+            for row in _fetch(
+                conn, _EDGE_QUERIES[edge_type].format(where=where), params,
+            ):
                 if row["source"] in drawn and row["target"] in drawn:
                     row["type"] = edge_type
                     edges.append(row)
@@ -459,11 +567,17 @@ def thread_arc(
     skip = _clamp(skip, 0, 1_000_000)
     limit = _clamp(limit, 1, 200)
 
-    where = ""
     params: dict[str, Any] = {"k": key}
+    clauses: list[str] = []
     if query and str(query).strip():
-        where = "WHERE toLower(m.body) CONTAINS toLower($q) "
+        clauses.append("toLower(m.body) CONTAINS toLower($q)")
         params["q"] = str(query).strip()
+    # A thread from a hidden source is not readable: the Viewer must not show
+    # messages the canvas has removed.
+    source = _source_clause("m", params)
+    if source:
+        clauses.append(source)
+    where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
 
     with _session() as conn:
         meta = _fetch(
@@ -476,12 +590,27 @@ def thread_arc(
         )
         if not meta:
             raise ToolError(f"no thread with key {key!r}")
+        if _SOURCES is not None and meta[0].get("platform") not in _SOURCES:
+            raise ToolError(
+                f"thread {key!r} is from {meta[0].get('platform')!r}, "
+                "which is hidden by the source filter"
+            )
 
         total = _scalar(
             conn,
             f"MATCH (t:Thread {{key: $k}})<-[:IN]-(m:Message) {where}RETURN count(m) AS n",
             params,
         ) or 0
+
+        # The thread's own span, unfiltered. The Viewer's arc ("first … · quiet 2y")
+        # is three facts, and two of them are these. Kept as a separate query so the
+        # correspondents OPTIONAL MATCH above cannot multiply the message rows.
+        span = _fetch(
+            conn,
+            "MATCH (t:Thread {key: $k})<-[:IN]-(m:Message) "
+            "RETURN min(m.ts_utc) AS first_ts, max(m.ts_utc) AS last_ts",
+            {"k": key},
+        )
 
         params.update({"s": skip, "n": limit})
         rows = _fetch(
@@ -499,6 +628,9 @@ def thread_arc(
 
     thread = meta[0]
     thread["correspondents"] = [n for n in thread.get("correspondents") or [] if n]
+    if span:
+        thread["first_ts"] = span[0].get("first_ts")
+        thread["last_ts"] = span[0].get("last_ts")
     for row in rows:
         row["attachments"] = attachments.get(row["key"], [])
 
@@ -547,8 +679,9 @@ def search_messages(
     are ordered by `ts_utc DESC`, so a common word returns the most recent hits
     rather than the best ones.
 
-    `platform` and `thread_key` narrow the search; both are explicit arguments,
-    never inherited from UI state.
+    `platform` and `thread_key` narrow the search; both are explicit arguments.
+    The active **source filter** also applies, so a search can only return what the
+    canvas is drawing — that is the point of the Utilities modal.
     """
     if not query or not str(query).strip():
         raise ToolError("query is required")
@@ -563,6 +696,9 @@ def search_messages(
     if thread_key and str(thread_key).strip():
         clauses.append("m.chat_id = $chat_id")
         params["chat_id"] = _chat_id_from_thread_key(str(thread_key).strip())
+    source = _source_clause("m", params)
+    if source:
+        clauses.append(source)
 
     with _session() as conn:
         rows = _fetch(
@@ -633,6 +769,11 @@ def message_view(message_key: str) -> dict[str, Any]:
         )
         if not rows:
             raise ToolError(f"no message with key {key!r}")
+        if _SOURCES is not None and rows[0].get("platform") not in _SOURCES:
+            raise ToolError(
+                f"message {key!r} is from {rows[0].get('platform')!r}, "
+                "which is hidden by the source filter"
+            )
 
         reply = _fetch(
             conn,

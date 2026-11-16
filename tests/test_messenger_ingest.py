@@ -1,6 +1,6 @@
 """Messenger HTML export -> canonical rows.
 
-Every test names a trap found in the real archive (§ buildNOTES §10). The HTML
+Every test names a trap found in the real archive (TECHREADME.md §5). The HTML
 fragments are hand-built so the suite runs on a clean clone.
 
 Run: python -m pytest tests -q

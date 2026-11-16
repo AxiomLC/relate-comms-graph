@@ -2,165 +2,148 @@
 
 **Your own message archives — across platforms — as one local, privacy-scrubbed graph.**
 
-> ✅ **Working prototype.** Five adapters, live email, identity resolution and a scrub
-> gate. See [Status](#status).
+> Working prototype. Five adapters, live email, identity resolution, a scrub gate, and a
+> local-only UI. Nothing leaves the machine.
 
 ---
 
-## Where the data lives
+## What it is
 
-**One file holds everything: `store/graph.rl`**
+Your messages already *are* a graph: sender → message → thread → reply. That structure is
+explicit, not inferred. But it is shredded across five apps, so nobody can answer:
 
-There is no CSV or database server. Exports live in `spool/real/<platform>/`, are read into
-in-memory records, and merged into that single `.rl` file. It appears while `ingest` runs
-(committed per batch) and contains every message and every person.
+> **"Who did I talk to about X on more than one platform, and when did it stop?"**
 
-Both folders sit inside the repo and are **gitignored** — only their `.gitkeep` files are
-committed, so a fresh clone has the shape but no data. `ingest` recreates them if deleted.
+The answer exists in your data today and is invisible. This makes it visible — as one
+graph you can walk, search and question, on your own disk.
 
-```
-spool/
-  real/     telegram/  whatsapp/  messenger/  linkedin/  sms/  imap/  gmail/
-  sample/   the same seven folders, for generated demo data
-store/
-  graph.rl      the graph
-  profile/      identity.json — which account is "me", per platform
-```
-
-**Backup:** `graph.rl` is rebuildable only from `spool/`. Copy it somewhere safe before
-running anything destructive; a Backup button is planned.
-
-Relate is an **embedded** engine — no server, no port, no Bolt. That is deliberate, and it
-is also why this project uses its own Cypher writer rather than any off-the-shelf graph
-extraction library: those all require a Neo4j server to connect to.
-
-| File you drop | Parser |
-|---|---|
-| Telegram `result.json` | `relate_comms/adapters/telegram.py` |
-| WhatsApp `.txt` / `.zip` | `relate_comms/adapters/whatsapp.py` |
-| Messenger HTML archive | `relate_comms/adapters/messenger.py` |
-| LinkedIn `messages.csv` zip | `relate_comms/adapters/linkedin.py` |
-| Outlook `.pst` | `relate_comms/adapters/outlook_pst.py` |
-| Live mailbox (IMAP) | `relate_comms/adapters/email_imap.py` |
-
-The in-memory unit is a **`Message` record** (`relate_comms/schema.py:31`), not JSON:
-
-```
-{key, platform, chat_id, message_id, ts_utc, sender_name, sender_id,
- body, reply_to, has_attachments, is_self, raw_kind,
- forwarded_from, saved_from}
-```
-
----
-
-## The idea
-
-Messaging is already a graph. Every message has a sender, a recipient, a thread, a
-reply target, a timestamp, an attachment. That structure is **explicit** — unlike
-documents, where a graph tool has to guess at entities from prose.
-
-It is also **fragmented**. Nobody can search across WhatsApp, Telegram, Slack,
-Messenger and LinkedIn at once. Each is a separate silo with its own export format.
-
-So the interesting question isn't *"can I search my messages"* — it's:
-
-> **"Who did I talk to about X across more than one platform, and when did it stop?"**
-
-That relationship exists in your data today and is invisible, because it's split
-across four apps. A graph makes it visible.
+Built as a **Neo4j Relate** hackathon entry (theme *"Context, Connected"*).
 
 ## Why a graph, why local
 
 | | |
 |---|---|
-| **Native edges** | `from`/`to`/`reply_to`/`thread` are data fields, not LLM inferences. Most "documents → graph" tools guess at structure. Here it's given. |
-| **Identity resolution** | The same person appears on 3 platforms under 3 identities. Merging them is a real, respected problem — and the demo's money shot. |
-| **Privacy by construction** | These are the most sensitive files a person owns. Everything runs locally; a scrubbing gate sits *before* ingest, not after. |
-| **Competition** | Every mature tool (Neo4j KG Builder, GraphRAG, LightRAG, CocoIndex) is documents-only *and* needs a Neo4j server — none can open a single local `.rl` file. Nobody joins messaging silos into one graph with a PII gate. |
+| **Native edges** | `from` / `to` / `reply_to` / `thread` are data fields, not LLM guesses. Most "documents → graph" tools guess at structure; here it is given. |
+| **Identity resolution** | The same person appears on three platforms under three identities. Merging them is a real problem, and the demo's money shot. |
+| **Privacy by construction** | These are the most sensitive files a person owns. Everything runs locally, and a scrubbing gate sits *before* the write, not after. |
+| **No server** | Relate is an embedded engine — one `.rl` file, no port, no Bolt. That is also why this project has its own Cypher writer: every off-the-shelf graph-extraction library needs a Neo4j server to connect to. |
+
+## Where the data lives
+
+**One file holds everything: `store/graph.rl`.** No CSV, no database server, no export
+between parse and write. Exports land in `spool/real/<platform>/`, are read into in-memory
+records, and merged into that single file.
+
+```
+spool/
+  real/     telegram/  whatsapp/  messenger/  linkedin/  sms/  imap/  gmail/
+  sample/   the same folders, for generated demo data
+store/
+  graph.rl      the graph — every message, every person
+  profile/      identity.json — which account is "me", per platform
+```
+
+Both folders sit inside the repo and are **gitignored**; only `.gitkeep` files are
+committed, so a fresh clone has the shape but no data. `ingest` recreates them if deleted.
+
+**Backup:** `graph.rl` is rebuildable only from `spool/`. Copy it somewhere safe before
+running anything destructive.
+
+## Setup
+
+Requires **Python 3.11+**. Node is only needed if you change the UI.
+
+```bash
+pip install -e ".[resolve,app]"     # rapidfuzz + fastapi/uvicorn
+cp .env.example .env                # only if you want live email
+```
+
+Optional, for the AI chat: install [Ollama](https://ollama.com) and pull a model.
+
+```bash
+ollama pull lfm2.5:8b
+```
+
+## How to run
+
+**Windows:** double-click **`start.bat`** in the root. A console window opens, the browser
+opens at `http://127.0.0.1:8100`, and closing the window stops the app.
+
+**Any platform:**
+
+```bash
+python -m app                       # http://127.0.0.1:8100
+python -m app --port 8110           # if 8100 is taken
+```
+
+Port **8100**, not 8000 — 8000 is held by another app on this machine.
+
+### Getting your messages in
+
+Press **Ingest** in the title bar. The modal explains what each platform requires and
+accepts a pasted path; files are **copied** into the spool, never moved.
+
+```bash
+python -m relate_comms ingest --source real --email hostinger --tz-offset -5
+```
+
+Per-platform download instructions live in
+[`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md).
+
+### What the demo looks like
+
+1. Drop three archives in: Telegram JSON, WhatsApp `.txt`, LinkedIn zip. (Email reads live.)
+2. Ingest — show the refusal log and what was scrubbed.
+3. Ask: *"Who did I talk to about [topic] on more than one platform, and when did it stop?"*
+4. One `Correspondent` node per platform, edges into each thread, a timeline, a cluster
+   that goes quiet.
+5. Flip `phones: block`, re-ingest → same graph shape, PII gone, refusal log lists what
+   was withheld.
+
+## Platform reality
+
+| Platform | Grade | Route |
+|---|---|---|
+| **Telegram** | **A** | Desktop export → `result.json` (officially documented schema) |
+| **Email (Gmail)** | **A** | IMAP read-only, App Password. Verified live |
+| **Email (Hostinger / cPanel)** | **A** | IMAP read-only, `INBOX` + `INBOX.Sent`. Verified live |
+| **Email (Outlook)** | **A file / F live** | Basic auth is dead. Use the `.pst` export button |
+| **WhatsApp** | B | Per-chat `.txt`/`.zip`. No all-chats export; media placeholders only |
+| **LinkedIn** | **A data / F automation** | *Basic* archive → `messages.csv`. Export only |
+| **Messenger** | B/C | *Download your information* → HTML archive. Slow, no API |
+| **SMS** | — | Adapter not built |
+| **Slack** | C | Export needs workspace admin. Not viable |
+| **Instagram** | — | Out of scope. Export names no sender |
+
+## Status
+
+**Ingested:** 12,499 messages, 955 threads, 591 correspondents, 86 attachments across five
+platforms (Messenger 10,605 · Telegram 1,212 · LinkedIn 292 · Email 221 · WhatsApp 169).
+
+**Built:** five file adapters + live IMAP, parallel parse → resolve → scrub → serialised
+write → verify → prune, 10-tool layer, FastAPI, and the UI.
+
+**Not built:** `Person` / `Identity` (cross-platform identity — `Correspondent` is a
+per-platform fact, `Person` would be the inference), Place/Company/Product, SMS, semantic
+search (Relate supports vector indexes; none exists in this store yet).
+
+`pytest tests -q` → **137 passed, 2 skipped**.
 
 ## Docs
 
 | Doc | What's in it |
 |---|---|
-| [`MssgDownloadInstructs.md`](MssgDownloadInstructs.md) | **Start here.** How to get each platform's export, what the file looks like, and how ingest reports back |
-| [`buildNOTES.md`](buildNOTES.md) | Engineering notes: schema, pipeline, per-platform traps found in real exports, decisions |
-| [`buildUI.md`](buildUI.md) | **UI build brief.** Layout, colours, 2D graph library choice, Viewer states, local Ollama wiring, handover |
-| [`HowToRunOllama.md`](HowToRunOllama.md) | Local model setup |
+| [`TECHREADME.md`](TECHREADME.md) | Module map, key functions, commands, Relate/Neo4j references — written for an AI |
+| [`HANDOVER.md`](HANDOVER.md) | Short, dated, newest at the bottom — what is next |
+| [`archive_docs/UI-Cytoscape.md`](archive_docs/UI-Cytoscape.md) | The UI as built, and every Cytoscape decision behind it |
+| [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) | How to get each platform's export |
+| [`archive_docs/HowToRunOllama.md`](archive_docs/HowToRunOllama.md) | Local model setup on this machine |
 
-## Platform reality, at a glance
+## Design principles
 
-| Platform | Grade | Route |
-|---|---|---|
-| **Telegram** | **A** | Desktop export → `result.json` (officially documented schema) |
-| **Email (Gmail)** | **A** | IMAP read-only, App Password. Verified live: 250 msgs in a 30-day window |
-| **Email (Hostinger / cPanel)** | **A** | IMAP read-only, `INBOX` + `INBOX.Sent`. Verified live: 221 msgs, 68 conversations |
-| **Email (Outlook)** | **A file / F live** | Basic auth is dead, so live IMAP needs an Azure app. **Use the `.pst` export button** — the app reads the file |
-| **WhatsApp** | B | `.txt`/`.zip` per-chat export. No all-chats export; media placeholders only |
-| **LinkedIn** | **A data / F automation** | *Basic* archive → `messages.csv`. **Export only — never automate** |
-| **Messenger** | B/C | `Download your information` → HTML archive. Slow, no API |
-| **Slack** | C | Full export needs workspace **admin**. Not viable for a normal member |
-| **Instagram** | — | **Out of scope.** Not this app's messaging; the export names no sender |
-
-**Other email providers** (Yahoo, iCloud, Fastmail, Zoho, Proton, any IMAP host) work
-through the same read-only IMAP reader: it asks the server which folder is "sent" or
-"all mail" using the standard mailbox flags (RFC 6154), and falls back to common names
-(`Sent`, `INBOX.Sent`, `Sent Items`, `Bulk Mail`). Only Gmail and Hostinger are proven
-against live mailboxes on this machine; the rest are untested. Per-provider servers and
-quirks are listed in [`MssgDownloadInstructs.md`](MssgDownloadInstructs.md).
-
-Why a graph tool should not hardcode email folders: they are **not standardised** and
-several providers *translate* them (Gmail in Spanish returns `[Gmail]/Todos`). Asking the
-server avoids a silent zero-message import.
-
-## What the demo looks like
-
-1. Drop three archives in a folder: Telegram JSON, WhatsApp `.txt`, LinkedIn zip.
-   (Email is the fourth source and reads live instead of from a file.)
-2. Ingest — show the refusal log and what was scrubbed.
-3. Query: *"Who did I talk to about [topic] on more than one platform, and when did it stop?"*
-4. A `Correspondent` node per platform, edges into each thread, a timeline, a cluster that goes quiet.
-   *(When `Person` is built this becomes one node across platforms — §3.3.)*
-5. Flip `phones: block`, re-run → graph shape identical, PII gone, refusal log lists what was withheld.
-
-Step 3 is the shock moment. Step 5 is what no existing tool does.
-
-## Design principles (carried over from earlier work)
-
-- **Deterministic before LLM.** Parsing, normalisation, exact matching and shape
-  scrubbing never need a model. Enrichment is optional.
-- **Never a silent drop.** Unknown message types get counted and reported.
+- **Deterministic before LLM.** Parsing, normalisation, exact matching and shape scrubbing
+  never need a model. Enrichment is optional.
+- **Never a silent drop.** Unknown message types are counted and reported.
 - **Refusals are append-only and user-visible.**
 - **Single writer per graph file;** every other access is read-only.
-- **Alias maps are re-identification keys.** Decide explicitly whether they're encrypted.
-
-## Status
-
-Five adapters ingest real data into a local Relate store: **Telegram, WhatsApp, Messenger,
-LinkedIn** (from exported files) and **email** (Gmail + any IMAP mailbox live, Outlook from
-a `.pst`). A scrub gate withholds phones, emails, addresses and card numbers before anything
-is written; every thread carries a `Correspondent` node.
-
-12,499 messages across 5 platforms in ~4 s. `pytest tests -q` → 92 passed, 2 skipped.
-
-Not built yet: SMS, the UI, `Person`/`Identity` (cross-platform identity), and Place/Company/Product.
-Today the graph holds `Message`, `Thread`, `Attachment` and `Correspondent`.
-See [`buildNOTES.md` §3.3](buildNOTES.md) for what is deliberately absent, and §10 for the handover.
-
-**Email setup:** copy `.env.example` to `.env` and fill in your mailbox credentials.
-`.env` is gitignored and never committed. Email is read live over IMAP — it never lands in
-`spool/`, which is why `spool/real/imap/` and `spool/real/gmail/` stay empty.
-
-**Setup after a clone:** `spool/` and `store/` ship as empty folders via `.gitkeep`. Nothing
-else is required — the first `ingest` call creates any missing platform folder itself.
-
-```bash
-python -m relate_comms ingest --source real --email hostinger   # your exports + mailbox
-```
-
-## Scope note
-
-This replaces an earlier project (`desk-relate`) that indexed local documents. That
-approach was measured and parked: documents span ~40 file extensions in one real
-folder, each needing its own flattening and scrubbing rule, and regex scrubbing
-provably misses how people actually write secrets. Messaging has explicit structure,
-which is why it's the better input.
+- **Alias maps are re-identification keys** — memory-only by default.
