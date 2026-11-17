@@ -174,7 +174,7 @@ both inbox and sent).
 
 ---
 
-## SMS — Android only *(not built yet)*
+## SMS — Android only
 
 **Where:** **SMS Backup & Restore** app → *Back up* → **XML** → save to local storage.
 
@@ -195,6 +195,7 @@ asks what shape it is:
 | Messenger | `*.zip` | `facebook_activity` paths with `message_*.html` |
 | LinkedIn | `*.zip` | a `messages.csv` with `CONVERSATION ID` and `CONTENT` columns |
 | Outlook | `*.pst` / `*.ost` | the file's own binary signature, not the extension |
+| SMS | `*.xml` / `*.xml.zip` | a `<smses>` root with a `backup_set` attribute; a `<calls` log is refused |
 
 Anything it does not recognise is **reported and left alone** — never guessed at,
 never deleted.
