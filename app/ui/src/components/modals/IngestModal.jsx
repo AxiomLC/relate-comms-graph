@@ -19,6 +19,86 @@ import Modal, { Check, TextField } from "./Modal.jsx";
  *  - **Write is a toggle.** Ingest is a WRITE tool, so `write_enabled` is sent
  *    explicitly with every request and is never remembered server-side.
  */
+/*
+ * The ingest flow is THREE steps, not one, and the middle one is the point:
+ *
+ *   1. **Inspect** — read headers only. No bodies, no writes. Answers "how much is
+ *      in here, and spread over which months?"
+ *   2. **Decide** — the user sees the counts and picks a window. This is the only
+ *      place a big export is allowed to be narrowed, and it happens before anything
+ *      is written.
+ *   3. **Ingest** — parse with the chosen window and write.
+ *
+ * Why not just cap during ingest: by the time a cap fires, the file is already
+ * parsed and the time is already spent. Inspecting first means the user chooses with
+ * real numbers in front of them instead of discovering the size afterwards.
+ *
+ * **`api.inspect` does not exist yet.** It is a placeholder contract — see the
+ * function below. Until the server side lands, `inspect()` returns `null` and the
+ * modal falls back to the old one-step behaviour, so nothing is broken by the gap.
+ */
+
+/**
+ * Pre-inspect the chosen inputs. PLACEHOLDER — the server route is not built.
+ *
+ * The contract this must satisfy when it lands:
+ *
+ *   POST /api/ingest/inspect  { paths: [...], email: [...] }
+ *   -> {
+ *        legs: [{
+ *          platform: "whatsapp",
+ *          path: "…",
+ *          total: 124000,          // rows the file states or a header pass counts
+ *          months: {"2026-05": 9000, …},   // for the window slider
+ *          estimated: true,        // false when the count is exact
+ *        }],
+ *        total: 137000,
+ *      }
+ *
+ * Cost per format, so the estimate is honest:
+ *   - SMS      free — `<smses count="…">` is in the first 4 KB.
+ *   - IMAP     cheap — SEARCH per folder, no FETCH, so no bodies are downloaded.
+ *   - Telegram streaming pass over `result.json`; timestamps only.
+ *   - PST      folder walk; `number_of_sub_messages` per folder.
+ *   - WhatsApp must read the whole `chat.txt` — there is no header count.
+ */
+async function inspect({ paths, email }) {
+  if (!api.inspect) return null;
+  try {
+    return await api.inspect({ paths, email });
+  } catch {
+    return null; // a failed inspection must never block an ingest
+  }
+}
+
+/** The window presets. `null` means "everything". */
+const WINDOWS = [
+  { key: "3m", label: "3 months", months: 3 },
+  { key: "6m", label: "6 months", months: 6 },
+  { key: "12m", label: "12 months", months: 12 },
+  { key: "all", label: "All", months: null },
+];
+
+/** `2026-11-17` -> the ISO bound `months` back, or null for "all". */
+function windowStart(months) {
+  if (!months) return null;
+  const date = new Date();
+  date.setMonth(date.getMonth() - months);
+  return date.toISOString().slice(0, 10);
+}
+
+/** How many messages a window would keep, from the pre-inspect histogram. */
+function countInWindow(legs, months) {
+  if (!months) return legs.reduce((sum, leg) => sum + (leg.total || 0), 0);
+  const cutoff = windowStart(months);
+  return legs.reduce((sum, leg) => {
+    const months_ = leg.months || {};
+    return sum + Object.entries(months_)
+      .filter(([month]) => month >= cutoff.slice(0, 7))
+      .reduce((inner, [, n]) => inner + n, 0);
+  }, 0);
+}
+
 export default function IngestModal({ onClose, onIngested }) {
   const [paths, setPaths] = useState("");
   const [email, setEmail] = useState("");
@@ -30,23 +110,52 @@ export default function IngestModal({ onClose, onIngested }) {
   const [report, setReport] = useState(null);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("drop");
+  const [window_, setWindow] = useState("all");
+  const [inspection, setInspection] = useState(null);
   const dropRef = useRef(null);
+
+  const pathList = () =>
+    paths
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+  const emailList = () =>
+    email
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+  /** Step 1. Read headers only, then show the user what they are about to write. */
+  const preInspect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await inspect({ paths: pathList(), email: emailList() });
+      setInspection(result);
+      if (!result) {
+        // No server route yet: say so plainly rather than pretending.
+        setError(
+          "Pre-inspection is not wired yet, so the size of this export is unknown " +
+            "until it is parsed. Ingest will run with the window you chose.",
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const run = async () => {
     setBusy(true);
     setError(null);
     setReport(null);
     try {
+      const months = WINDOWS.find((w) => w.key === window_)?.months ?? null;
       const result = await api.ingest({
         which: "real",
-        paths: paths
-          .split(/\r?\n/)
-          .map((line) => line.trim())
-          .filter(Boolean),
-        email: email
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean),
+        paths: pathList(),
+        email: emailList(),
+        since: windowStart(months),
         tz_offset_hours: tzOffset === "" ? null : Number(tzOffset),
         exclude_spam_groups: noSpamGroups,
         prune,
@@ -86,6 +195,11 @@ export default function IngestModal({ onClose, onIngested }) {
           <span className="spacer" />
           <button className="ghost" onClick={onClose}>
             Close
+          </button>
+          {/* Step 1. Read-only, so it does not need the write toggle. */}
+          <button className="ghost" onClick={preInspect} disabled={busy}>
+            {busy ? <Loader2 size={13} className="spin" /> : null}
+            Inspect first
           </button>
           <button onClick={run} disabled={busy || !writeEnabled}>
             {busy ? <Loader2 size={13} className="spin" /> : <Upload size={13} />}
@@ -197,9 +311,27 @@ export default function IngestModal({ onClose, onIngested }) {
                 or <code>HOSTINGER_EMAIL</code>/<code>HOSTINGER_PASSWORD</code> in{" "}
                 <code>.env</code>, then name the mailbox in the field below.
               </li>
+            </ul>
+
+            <h3>Outlook</h3>
+            <ul>
               <li>
-                Outlook is a <code>.pst</code> export — Microsoft killed basic auth, so live
-                IMAP is not available.
+                Outlook is its own platform, not a variant of Email — it gets its own
+                colour and cluster.
+              </li>
+              <li>
+                Outlook.com → Settings → General → <em>Privacy and data</em> →{" "}
+                <em>Export mailbox</em>. Microsoft assembles it server-side and mails a
+                link.
+              </li>
+              <li>
+                Classic Outlook → File → <em>Open &amp; Export</em> →{" "}
+                <em>Import/Export</em> → <em>Export to a file</em> →{" "}
+                <strong>Outlook Data File (.pst)</strong>, ticking “Include subfolders”.
+              </li>
+              <li>
+                Microsoft killed basic auth for IMAP, so live IMAP is not available — the
+                <code>.pst</code> is the only route.
               </li>
             </ul>
 
@@ -243,6 +375,28 @@ export default function IngestModal({ onClose, onIngested }) {
             placeholder="leave blank to reuse the recorded offset"
             hint="e.g. -5 for US Eastern. Only Telegram, WhatsApp and Messenger accept it."
           />
+          <h2 className="section">How far back</h2>
+          <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
+            Applied to every leg at parse time. A message outside the window is counted
+            as skipped, never silently dropped.
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {WINDOWS.map((option) => (
+              <button
+                key={option.key}
+                className={window_ === option.key ? "active" : "ghost"}
+                onClick={() => setWindow(option.key)}
+              >
+                {option.label}
+                {inspection ? (
+                  <span className="pager-info" style={{ marginLeft: 6 }}>
+                    ~{countInWindow(inspection.legs || [], option.months).toLocaleString()}
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+
           <Check
             label="Skip spam group threads (Facebook Messenger)"
             checked={noSpamGroups}
@@ -255,6 +409,27 @@ export default function IngestModal({ onClose, onIngested }) {
             onChange={setPrune}
             hint="Only files whose key set is confirmed present in the store. Unverified files are never pruned."
           />
+        </>
+      )}
+
+      {inspection && (
+        <>
+          <h2 className="section">What is in here</h2>
+          <dl className="kv">
+            <dt>total</dt>
+            <dd>{Number(inspection.total || 0).toLocaleString()} messages</dd>
+          </dl>
+          {(inspection.legs || []).map((leg, index) => (
+            <div key={index} className="result-row" style={{ cursor: "default" }}>
+              <div className="result-snippet">
+                {leg.platform || "?"} · {leg.path}
+              </div>
+              <div className="result-meta">
+                {Number(leg.total || 0).toLocaleString()} messages
+                {leg.estimated ? " · estimated" : " · exact"}
+              </div>
+            </div>
+          ))}
         </>
       )}
 

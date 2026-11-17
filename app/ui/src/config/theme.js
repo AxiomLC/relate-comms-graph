@@ -4,7 +4,8 @@
  * Two reasons this file exists rather than values being scattered through
  * components:
  *
- *  1. The Graph Style modal (UI-Cytoscape.md §12) writes here, live.
+ *  1. The Canvas modal writes the view controls here, live. Icons, colours, edge
+ *     widths and node sizes are dev knobs: edit them here, not in the UI.
  *  2. The whole look is one diff. If the graph feels wrong, this is the file to
  *     open, not a hunt through six components.
  *
@@ -134,18 +135,25 @@ export const THEME = {
     // Per-node lightness jitter, so a platform cluster reads as a family of shades
     // rather than one flat colour. Deterministic from the node id.
     shadeJitter: 0.16, // 0 = every node identical, 0.3 = noisy
-    // Draw a Thread as its source's icon instead of a plain circle. The icon is a
-    // flat platform colour (baked into the SVG), so shade jitter does not apply to
-    // it — jitter would mean one image per node. Correspondents are unaffected.
-    nodeIcons: false,
-    iconScale: 0.72, // fraction of the node's diameter the icon fills
-    // Correspondents can draw as a person glyph instead of a solid circle. The
-    // glyph is baked per platform (one file per colour), so shade jitter does not
-    // apply to it — same tradeoff as the thread icons. The glow stays, in the
-    // node's own source colour, so a correspondent still reads as a different class
-    // of thing from a thread.
-    correspondentIcons: true,
+    // Icons are the only node look. There is no circle mode and no toggle: a thread
+    // draws its source's glyph, a correspondent draws the person glyph. The glyph is
+    // a flat platform colour baked into the SVG, so `shadeJitter` does not apply to
+    // it — jitter would mean one image per node.
+    iconScale: 0.72, // fraction of the node's diameter the thread glyph fills
     correspondentIconScale: 0.86, // a person silhouette is narrow, so it needs more
+    // Per-platform multiplier on `iconScale`, for glyphs whose own artwork sits
+    // smaller or larger inside its 24x24 viewBox. The SVGs were normalised to the
+    // same box, but a wide envelope and a compact speech bubble do not read as the
+    // same size at the same scale — this is the optical correction.
+    //
+    // 1.0 is the default, so a platform added later needs no entry.
+    iconScaleByPlatform: {
+      messenger: 1.15, // Facebook speech bubble reads small
+      whatsapp: 1.15, // same
+      email: 0.85, // the envelope is wide, so it reads large
+      gmail: 0.85, // same glyph as email
+      imap: 0.85, // same glyph as email
+    },
   },
 
   /* ------------------------------------------------------------------- reveal
@@ -168,9 +176,25 @@ export const THEME = {
   /* ------------------------------------------------------------------ filter
    * VIEW ONLY. A hidden toggle must never narrow what an agent can query
    * (TECHREADME.md §5) — this only decides what is drawn.
+   *
+   * `platforms` is the canvas's own cluster toggle, and it is NOT the same thing as
+   * the Utilities filter. Utilities narrows what the *tools* return, so search and
+   * the AI chat see less. This hides a cluster from the drawing and nothing else.
+   *
+   * `sort` and `limit` decide which nodes survive truncation, so they are a real
+   * choice rather than a preference: `messages` keeps the biggest threads, `quiet`
+   * keeps the ones that went silent — the question this app exists to answer.
    */
   filter: {
     nodeTypes: ["Thread", "Correspondent"],
+    // Every platform on by default, and the toggle is a plain on/off per platform —
+    // the same shape as the node-type list above it. An empty list means "not
+    // chosen yet", which the canvas reads as "all on", so a platform added later
+    // appears without the user having to tick it.
+    platforms: [],
+    hideSilent: false, // hide threads the owner never sent a message in
+    sort: "messages", // messages | recent | quiet
+    limit: 2000, // nodes drawn; the canvas reports the real total beside it
   },
 
   /* --------------------------------------------------------------------- chat */
@@ -197,7 +221,7 @@ const STORAGE_KEY = "relate.graphStyle";
  * A version mismatch discards the saved theme. That is the right trade: the theme
  * is a look, not data, and a stale look that hides a fix is worse than a reset.
  */
-const THEME_VERSION = 3;
+const THEME_VERSION = 6;
 
 /** Merge a saved partial config over the defaults (new keys keep their default). */
 export function loadTheme() {

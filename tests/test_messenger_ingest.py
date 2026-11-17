@@ -213,6 +213,48 @@ def test_pipeline_ingest_and_idempotency(tmp_path):
     assert len(keys) == 2 and second.written == 2
 
 
+def test_silent_group_is_dropped_only_when_asked(tmp_path):
+    """A group the owner never spoke in is not a conversation they had.
+
+    Measured on the real archive: all 70 Messenger group threads are owner-silent and
+    hold 9,513 of the 10,605 Messenger messages. Off by default — the store is whole
+    unless asked otherwise — and counted when on.
+    """
+    archive = _archive(tmp_path, {
+        "silent_101": [
+            _section("Alice", "yo", "Jan 01, 2026 10:00:00 am"),
+            _section("Bob", "hey", "Jan 01, 2026 10:01:00 am"),
+        ],
+        "mine_102": [
+            _section("Alice", "yo", "Jan 01, 2026 10:00:00 am"),
+            _section("David Sartori", "hello", "Jan 01, 2026 10:01:00 am"),
+        ],
+    })
+
+    kept = messenger.parse(archive, self_id="David Sartori")
+    assert len(kept.chats) == 2
+    assert len(kept.messages) == 4
+
+    trimmed = messenger.parse(archive, self_id="David Sartori",
+                              exclude_silent_groups=True)
+    assert len(trimmed.chats) == 1
+    assert len(trimmed.messages) == 2
+    # Never silently: the drop is counted with its reason.
+    assert trimmed.skipped.get("group thread the owner never spoke in") == 1
+
+
+def test_silent_gate_never_drops_a_one_to_one(tmp_path):
+    """The rule is about *groups*. A 1:1 thread the owner never replied to is still
+    a conversation someone had with them, and is a view toggle, not a drop."""
+    archive = _archive(tmp_path, {"alice_111": [
+        _section("Alice", "hello", "Jan 01, 2026 10:00:00 am"),
+    ]})
+    result = messenger.parse(archive, self_id="David Sartori",
+                             exclude_silent_groups=True)
+    assert len(result.chats) == 1
+    assert len(result.messages) == 1
+
+
 # ---------------------------------------------------------------------- real file
 
 @pytest.mark.skipif(not REAL.exists(), reason="no real Messenger export on this machine")

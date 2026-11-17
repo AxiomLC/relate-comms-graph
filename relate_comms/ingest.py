@@ -41,7 +41,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from . import identity, paths, resolution, scrub, writer
-from .adapters import email_imap, linkedin, messenger, outlook_pst, telegram, whatsapp
+from .adapters import (email_imap, linkedin, messenger, outlook_pst, sms, telegram,
+                       whatsapp)
 from .schema import IngestResult
 
 # Files this module will consider. Suffix is a cheap filter only; the platform is
@@ -50,7 +51,10 @@ _JSON_SUFFIXES = {".json"}
 _ARCHIVE_SUFFIXES = {".zip"}
 _TEXT_SUFFIXES = {".txt", ".md"}
 _MAIL_SUFFIXES = {".pst", ".ost"}
-_CONSIDER_SUFFIXES = _JSON_SUFFIXES | _ARCHIVE_SUFFIXES | _TEXT_SUFFIXES | _MAIL_SUFFIXES
+# SMS Backup & Restore writes `.xml`, or `.xml.zip` when "compress backup" is on.
+_XML_SUFFIXES = {".xml"}
+_CONSIDER_SUFFIXES = (_JSON_SUFFIXES | _ARCHIVE_SUFFIXES | _TEXT_SUFFIXES
+                      | _MAIL_SUFFIXES | _XML_SUFFIXES)
 
 # Parse functions by platform. Adding an adapter means adding one line here.
 # Parsers that read wall-clock times with no offset. Only these accept
@@ -64,6 +68,7 @@ _PARSERS: dict[str, Callable[..., IngestResult]] = {
     messenger.PLATFORM: messenger.parse,
     linkedin.PLATFORM: linkedin.parse,
     outlook_pst.PLATFORM: outlook_pst.parse,
+    sms.PLATFORM: sms.parse,
 }
 
 # A file older than this, once verified, may be deleted. Nothing younger is touched,
@@ -232,13 +237,20 @@ def detect_platform(path: Path) -> str | None:
     if suffix in _MAIL_SUFFIXES:
         return outlook_pst.PLATFORM if outlook_pst.detect(path) else None
 
+    if suffix in _XML_SUFFIXES:
+        # Only SMS Backup & Restore writes an `.xml` we read. Anything else is
+        # reported and kept, never guessed at.
+        return sms.PLATFORM if sms.detect(path) else None
+
     if suffix in {".zip", ".txt", ".md"}:
-        # Three zip-shaped platforms. Detection is by content, never by filename:
+        # Four zip-shaped platforms. Detection is by content, never by filename:
         # a user renames downloads.
         if linkedin.detect(path):
             return linkedin.PLATFORM
         if messenger.detect(path):
             return messenger.PLATFORM
+        if sms.detect(path):
+            return sms.PLATFORM
         return _detect_whatsapp(path)
 
     if suffix not in _JSON_SUFFIXES:
@@ -317,10 +329,12 @@ def _kwargs_for(platform: str, parse_kwargs: dict[str, Any]) -> dict[str, Any]:
     if owner_platform is not None and platform != owner_platform:
         trimmed.pop("self_id", None)
 
-    # `exclude_spam_groups` is Messenger-only. It is popped here rather than passed
-    # to every adapter, so adding a platform never means adding a no-op argument.
+    # `exclude_spam_groups` and `exclude_silent_groups` are Messenger-only. They are
+    # popped here rather than passed to every adapter, so adding a platform never
+    # means adding a no-op argument.
     if platform != messenger.PLATFORM:
         trimmed.pop("exclude_spam_groups", None)
+        trimmed.pop("exclude_silent_groups", None)
 
     # A spool can hold platforms that were exported in different timezones, and the
     # offset is part of every wall-clock key. `tz_offsets` is the per-platform map;
@@ -392,6 +406,7 @@ def ingest(
     until: datetime | None = None,
     include_service: bool = True,
     exclude_spam_groups: bool = False,
+    exclude_silent_groups: bool = False,
     prune: bool = False,
     prune_after: timedelta = PRUNE_AFTER,
     workers: int | None = None,
@@ -520,6 +535,8 @@ def ingest(
     # Messenger-only, and dropped for every other platform by `_kwargs_for`.
     if exclude_spam_groups:
         parse_kwargs["exclude_spam_groups"] = True
+    if exclude_silent_groups:
+        parse_kwargs["exclude_silent_groups"] = True
 
     parsed = parse_batches(batches, parse_kwargs=parse_kwargs, workers=workers)
 

@@ -19,6 +19,9 @@ spool/*
 
 # ...except the scrubbed test fixtures, which hold no real data and must ship
 !tests/fixtures/**/result.json
+# The Outlook fixture is the Aspose sample mailbox — 11 demo messages from 2011,
+# no real correspondence. A .pst cannot be generated in pure Python, so it ships.
+!tests/fixtures/outlook/*.pst
 
 # Relate stores — generated, never source
 store/*

@@ -27,6 +27,10 @@ class IngestRequest(BaseModel):
         description="Hours the export's local times were written in. Omit to reuse the "
                     "offset this account was last parsed with.",
     )
+    exclude_silent_groups: bool = Field(
+        default=False,
+        description="Messenger only: drop group threads the owner never spoke in",
+    )
     exclude_spam_groups: bool = Field(
         default=False,
         description="Facebook Messenger only: drop group threads that are mostly "
@@ -53,6 +57,7 @@ def ingest(request: IngestRequest) -> dict:
         until=request.until,
         tz_offset_hours=request.tz_offset_hours,
         exclude_spam_groups=request.exclude_spam_groups,
+        exclude_silent_groups=request.exclude_silent_groups,
         prune=request.prune,
         write_enabled=request.write_enabled,
     )

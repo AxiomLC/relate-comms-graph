@@ -258,7 +258,13 @@ def parse(
             result.note_skip("chat with no non-service messages")
             continue
 
-        participant_names = {str(m.get("from")) for m in messages if m.get("from")}
+        # Same fallback as `_parse_message`: an id with no name is still a
+        # participant, and dropping it is what made the thread an orphan.
+        participant_names = {
+            str(m.get("from") or m.get("actor") or m.get("from_id") or m.get("actor_id"))
+            for m in messages
+            if m.get("from") or m.get("actor") or m.get("from_id") or m.get("actor_id")
+        }
         is_group = chat_kind not in {"personal_chat", "bot_chat", "saved_messages"}
         result.chats.append(Chat(
             platform=PLATFORM,
@@ -306,6 +312,15 @@ def _parse_message(
     # Sender: `from` normally; service rows carry `actor` instead. Gotcha #4.
     sender_name = msg.get("from") or msg.get("actor") or ""
     sender_id = msg.get("from_id") or msg.get("actor_id") or None
+
+    # A sender with an id but no display name is a real person the export did not
+    # name — 160 rows in the real export, all strangers who messaged once. Leaving
+    # the name blank meant `participant_names` was empty, so no Correspondent was
+    # written and the thread became an orphan node with no edge. The id is the only
+    # identity available, so it becomes the name: ugly, but it is a fact, and it
+    # keeps the thread connected.
+    if not sender_name and sender_id:
+        sender_name = str(sender_id)
 
     body = _join_text(msg.get("text"))
     has_attachments = any(msg.get(f) for f in _MEDIA_FIELDS)

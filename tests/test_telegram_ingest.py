@@ -92,6 +92,34 @@ def test_key_is_not_just_message_id():
     assert key.count(":") == 2
 
 
+def test_sender_with_an_id_and_no_name_is_named_by_its_id(tmp_path):
+    """A stranger who messaged once has a `from_id` and no `from`.
+
+    160 rows in the real export are like this. Leaving the name blank meant
+    `participant_names` was empty, so no Correspondent was written and the thread
+    became an orphan node with no edge — invisible in the graph and unreachable.
+    """
+    document = {
+        "personal_information": {"user_id": 1},
+        "chats": {"list": [{
+            "name": "Stranger", "type": "personal_chat", "id": 42,
+            "messages": [{
+                "id": 1, "type": "message", "date_unixtime": "1700000000",
+                "from_id": "user999", "text": "hi",
+            }],
+        }]},
+    }
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    result = telegram.parse(path)
+    assert len(result.messages) == 1
+    assert result.messages[0].sender_name == "user999"
+    assert result.messages[0].sender_id == "user999"
+    # The thread must carry a participant, or it has no Correspondent edge.
+    assert result.chats[0].participant_names == ("user999",)
+
+
 # ----------------------------------------------------------------- synthetic e2e
 
 def test_dummy_download_parses_without_dropping_service_rows():

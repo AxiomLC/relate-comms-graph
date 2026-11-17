@@ -306,6 +306,16 @@ textarea::placeholder {
   flex: 0 0 auto;
 }
 
+/* A platform with no adapter yet: hollow swatch, dimmed label. The row stays so the
+   legend keeps describing what the graph can hold, not only what it holds today. */
+.legend-row.planned {
+  opacity: 0.55;
+}
+
+.legend-row.planned .legend-swatch {
+  box-sizing: border-box;
+}
+
 /* ------------------------------------------------------------------ viewer */
 .viewer-nav {
   display: flex;

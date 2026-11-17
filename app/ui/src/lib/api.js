@@ -35,12 +35,18 @@ export const api = {
   stats: () => request("/api/stats"),
   types: () => request("/api/types"),
 
-  /** The canvas payload. `nodeTypes`/`edgeTypes` are explicit, never inherited. */
-  graph: ({ nodeTypes, edgeTypes, limit = 2000 } = {}) => {
+  /**
+   * The canvas payload. `nodeTypes`/`edgeTypes` are explicit, never inherited.
+   *
+   * `sort` decides which nodes survive `limit` — it is not a display preference,
+   * because the cutoff is real.
+   */
+  graph: ({ nodeTypes, edgeTypes, limit = 2000, sort = "messages" } = {}) => {
     const params = new URLSearchParams();
     if (nodeTypes?.length) params.set("nodes", nodeTypes.join(","));
     if (edgeTypes?.length) params.set("edges", edgeTypes.join(","));
     params.set("limit", String(limit));
+    params.set("sort", sort);
     return request(`/api/graph?${params}`);
   },
 

@@ -47,6 +47,7 @@ PLATFORM_FOLDERS = (
     "whatsapp",
     "messenger",
     "linkedin",
+    "outlook",
     "sms",
     "imap",
     "gmail",

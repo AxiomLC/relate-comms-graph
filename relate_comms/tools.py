@@ -163,8 +163,9 @@ KNOWN_PLATFORMS: tuple[str, ...] = (
 )
 
 # Platforms with no adapter yet. Listed in the UI as "not built", never offered as
-# something to ingest. Adding the adapter means deleting the entry here.
-PLANNED_PLATFORMS: tuple[str, ...] = ("sms",)
+# something to ingest. Adding the adapter means deleting the entry here — and the
+# mirrored `PLANNED_PLATFORMS` set in `app/ui/src/components/GraphCanvas.jsx`.
+PLANNED_PLATFORMS: tuple[str, ...] = ()
 
 # `None` means "no filter" — every platform. An empty list means "nothing", which
 # is a legitimate state (the user unticked everything) and must not silently become
@@ -373,9 +374,16 @@ def _snippet(body: str, needle: str, width: int = 160) -> str:
 # drawable, 12,499 messages is not. Asking for `Message` is explicit, never default.
 DRAWABLE_NODE_TYPES: tuple[str, ...] = ("Thread", "Correspondent")
 
-# Node queries are templates: `{where}` is the source-filter predicate (or empty).
-# Every one of them filters on the node's own `platform`, so hiding a source removes
-# the node itself rather than leaving an orphan with no edges.
+# Node queries are templates: `{where}` is the source-filter predicate (or empty),
+# `{order}` is the sort chosen by the caller. Every one of them filters on the node's
+# own `platform`, so hiding a source removes the node itself rather than leaving an
+# orphan with no edges.
+#
+# **The sort is not cosmetic.** `limit` truncates, so whichever ordering is in force
+# decides which nodes the user can never see. `messages` (the default) keeps the
+# biggest threads; `recent` keeps the live ones; `quiet` keeps the ones that went
+# silent, which is the question this app exists to answer and the one a
+# biggest-first sort hides completely.
 _NODE_QUERIES: dict[str, str] = {
     "Thread": (
         "MATCH (t:Thread) "
@@ -383,8 +391,12 @@ _NODE_QUERIES: dict[str, str] = {
         "OPTIONAL MATCH (t)<-[:IN]-(m:Message) "
         "RETURN t.key AS id, t.title AS label, t.platform AS platform, "
         "       t.is_group AS is_group, count(m) AS message_count, "
-        "       max(m.ts_utc) AS last_ts, min(m.ts_utc) AS first_ts "
-        "ORDER BY message_count DESC, id "
+        "       max(m.ts_utc) AS last_ts, min(m.ts_utc) AS first_ts, "
+        # `is_silent` is a fact the canvas needs to offer "hide threads I never
+        # spoke in" as a view toggle. Counted here because the messages are already
+        # being walked; a second query per thread would be absurd.
+        "       sum(CASE WHEN m.is_self THEN 1 ELSE 0 END) = 0 AS is_silent "
+        "ORDER BY {order} "
         "LIMIT $n"
     ),
     "Correspondent": (
@@ -396,7 +408,7 @@ _NODE_QUERIES: dict[str, str] = {
         "OPTIONAL MATCH (t:Thread)-[:WITH]->(c) "
         "RETURN c.key AS id, c.display_name AS label, c.platform AS platform, "
         "       count(DISTINCT t) AS thread_count "
-        "ORDER BY thread_count DESC, label, id "
+        "ORDER BY {order} "
         "LIMIT $n"
     ),
     "Message": (
@@ -404,16 +416,54 @@ _NODE_QUERIES: dict[str, str] = {
         "{where}"
         "RETURN m.key AS id, m.sender_name AS label, m.platform AS platform, "
         "       m.ts_utc AS ts_utc, m.is_self AS is_self, m.raw_kind AS raw_kind "
-        "ORDER BY m.ts_utc DESC "
+        "ORDER BY {order} "
         "LIMIT $n"
     ),
     "Attachment": (
         "MATCH (a:Attachment) "
         "{where}"
         "RETURN a.key AS id, a.filename_scrubbed AS label, a.mime AS mime "
-        "ORDER BY id "
+        "ORDER BY {order} "
         "LIMIT $n"
     ),
+}
+
+# Sort key -> the ORDER BY fragment for each node type. Every fragment ends in a
+# unique tiebreaker, or two nodes with equal counts would swap places between loads
+# and the canvas would look like it was shuffling itself.
+_SORTS: dict[str, dict[str, str]] = {
+    "messages": {
+        "Thread": "message_count DESC, id",
+        "Correspondent": "thread_count DESC, label, id",
+        "Message": "ts_utc DESC, id",
+        "Attachment": "id",
+    },
+    "recent": {
+        "Thread": "last_ts DESC, id",
+        "Correspondent": "thread_count DESC, label, id",
+        "Message": "ts_utc DESC, id",
+        "Attachment": "id",
+    },
+    "quiet": {
+        # Least recently active first. `last_ts` is null for a thread with no
+        # messages, and those sort first — a thread with nothing in it is the
+        # quietest thing there is.
+        "Thread": "last_ts ASC, id",
+        "Correspondent": "thread_count ASC, label, id",
+        "Message": "ts_utc ASC, id",
+        "Attachment": "id",
+    },
+}
+
+SORT_KEYS: tuple[str, ...] = tuple(_SORTS)
+
+# One count per node type, so `graph_slice` can report what the limit hid. Same
+# `{where}` predicate as the node query, so the two can never disagree.
+_COUNT_QUERIES: dict[str, str] = {
+    "Thread": "MATCH (t:Thread) {where}RETURN count(t) AS n",
+    "Correspondent": "MATCH (c:Correspondent) {where}RETURN count(c) AS n",
+    "Message": "MATCH (m:Message) {where}RETURN count(m) AS n",
+    "Attachment": "MATCH (a:Attachment) {where}RETURN count(a) AS n",
 }
 
 # `Attachment` has no platform of its own; it inherits the message's. The filter is
@@ -488,6 +538,7 @@ def graph_slice(
     node_types: Sequence[str] | None = None,
     edge_types: Sequence[str] | None = None,
     limit: int = 2000,
+    sort: str = "messages",
 ) -> dict[str, Any]:
     """The canvas payload: nodes and edges, ready to hand to graphology.
 
@@ -498,29 +549,54 @@ def graph_slice(
     `edge_types=None` draws every edge whose two endpoints are both drawn.
     An edge with a missing endpoint is counted in `edges_skipped`, never invented.
 
-    Returns `truncated: true` when `limit` cut the node list short. Never assume
-    the returned count is the store's count.
+    `sort` decides **which** nodes survive `limit`: `messages` (biggest first),
+    `recent` (most recently active) or `quiet` (least recently active). It is not a
+    display preference — the cutoff is real, so the ordering is what makes a hidden
+    node hidden.
+
+    Returns `truncated: true` when `limit` cut the node list short, plus `total` —
+    the number of nodes that *would* have been drawn. Never assume the returned
+    count is the store's count.
     """
     limit = _clamp(limit, 1, 20000)
     wanted_nodes = _resolve_types(node_types, _NODE_QUERIES, DRAWABLE_NODE_TYPES)
     wanted_edges = _resolve_types(edge_types, _EDGE_QUERIES, DRAWABLE_EDGE_TYPES)
 
+    key = str(sort or "messages").strip().lower()
+    if key not in _SORTS:
+        raise ToolError(f"unknown sort {sort!r}; known sorts are {list(SORT_KEYS)}")
+    orders = _SORTS[key]
+
     nodes: list[dict[str, Any]] = []
     truncated = False
     edges: list[dict[str, Any]] = []
     skipped = 0
+    total = 0
 
     with _session() as conn:
         for node_type in wanted_nodes:
+            # Count first, so the UI can say "showing 2,000 of 12,499" instead of
+            # leaving the user to guess what the cutoff hid.
+            count_params: dict[str, Any] = {}
+            count_where = _node_where(node_type, count_params)
+            counted = _fetch(
+                conn,
+                _COUNT_QUERIES[node_type].format(where=count_where),
+                count_params,
+            )
+            total += int(counted[0]["n"]) if counted else 0
+
             remaining = limit - len(nodes)
             if remaining <= 0:
                 truncated = True
-                break
+                continue
             params: dict[str, Any] = {"n": remaining + 1}
             where = _node_where(node_type, params)
             # Ask for one extra row: that is how we know the limit was hit.
             rows = _fetch(
-                conn, _NODE_QUERIES[node_type].format(where=where), params,
+                conn,
+                _NODE_QUERIES[node_type].format(where=where, order=orders[node_type]),
+                params,
             )
             if len(rows) > remaining:
                 rows = rows[:remaining]
@@ -547,9 +623,11 @@ def graph_slice(
         "nodes": nodes,
         "edges": edges,
         "counts": {"nodes": len(nodes), "edges": len(edges)},
+        "total": total,
         "node_types": wanted_nodes,
         "edge_types": wanted_edges,
         "limit": limit,
+        "sort": key,
         "truncated": truncated,
         "edges_skipped": skipped,
     }
@@ -973,6 +1051,7 @@ def ingest(
     until: str | None = None,
     tz_offset_hours: float | None = None,
     exclude_spam_groups: bool = False,
+    exclude_silent_groups: bool = False,
     prune: bool = False,
     write_enabled: bool = False,
 ) -> dict[str, Any]:
@@ -989,6 +1068,11 @@ def ingest(
     `exclude_spam_groups` applies to Facebook Messenger only: a group thread whose
     rows are mostly housekeeping (`sent a link`, `added X to the group`) is dropped
     rather than written. Off by default — the store is whole unless asked otherwise.
+
+    `exclude_silent_groups` also applies to Messenger only: a group thread the owner
+    never sent a message in is dropped. A group you never spoke in is not a
+    conversation you had, and on the real export these are 70 threads holding 9,513
+    of 10,605 Messenger messages.
 
     `prune` deletes spool files older than 3 days **only after verification**.
     It is off by default and is not the same thing as `prune_spool`.
@@ -1014,6 +1098,7 @@ def ingest(
         since=_iso(since),
         until=_iso(until),
         exclude_spam_groups=bool(exclude_spam_groups),
+        exclude_silent_groups=bool(exclude_silent_groups),
         prune=bool(prune),
         tz_offset_hours=None if tz_offset_hours is None else float(tz_offset_hours),
         extra_results=extra_results,

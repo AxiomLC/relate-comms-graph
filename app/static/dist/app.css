@@ -271,6 +271,12 @@ textarea::placeholder {
   border-radius: 50%;
   flex: 0 0 auto;
 }
+.legend-row.planned {
+  opacity: 0.55;
+}
+.legend-row.planned .legend-swatch {
+  box-sizing: border-box;
+}
 .viewer-nav {
   display: flex;
   align-items: center;

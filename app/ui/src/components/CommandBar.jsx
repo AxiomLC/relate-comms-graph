@@ -1,11 +1,9 @@
 import { useState } from "react";
 import {
   Braces,
-  Circle,
   Info,
   Palette,
   Search,
-  Shapes,
   SlidersHorizontal,
   Sparkles,
   Terminal,
@@ -31,8 +29,6 @@ export default function CommandBar({
   platformsFiltered,
   activePlatforms,
   totalPlatforms,
-  nodeIcons,
-  onToggleNodeIcons,
 }) {
   const [query, setQuery] = useState("");
 
@@ -97,29 +93,13 @@ export default function CommandBar({
       <button className="ghost" onClick={() => onOpenModal("setup")} title="What this is">
         <Info size={13} /> Setup
       </button>
-      {/* The two node looks, side by side. A one-click switch, because comparing
-          them is the whole reason both exist. */}
-      <button
-        className={nodeIcons ? "ghost" : "active"}
-        onClick={onToggleNodeIcons}
-        title="Circles — shaded platform colour"
-      >
-        <Circle size={13} />
-      </button>
-      <button
-        className={nodeIcons ? "active" : "ghost"}
-        onClick={onToggleNodeIcons}
-        title="Icons — the source's own symbol"
-      >
-        <Shapes size={13} />
-      </button>
 
       <button
         className="ghost"
-        onClick={() => onOpenModal("style")}
-        title="Force simulation and visuals"
+        onClick={() => onOpenModal("canvas")}
+        title="What is drawn: sort, node count, node types, platform clusters"
       >
-        <Palette size={13} /> Graph Style
+        <Palette size={13} /> Canvas
       </button>
       {/* Icon only, by request: the title bar is already dense, and this control
           is used far less often than the ones beside it. */}

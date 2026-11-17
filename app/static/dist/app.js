@@ -14601,12 +14601,18 @@
     health: () => request("/api/health"),
     stats: () => request("/api/stats"),
     types: () => request("/api/types"),
-    /** The canvas payload. `nodeTypes`/`edgeTypes` are explicit, never inherited. */
-    graph: ({ nodeTypes, edgeTypes, limit = 2e3 } = {}) => {
+    /**
+     * The canvas payload. `nodeTypes`/`edgeTypes` are explicit, never inherited.
+     *
+     * `sort` decides which nodes survive `limit` — it is not a display preference,
+     * because the cutoff is real.
+     */
+    graph: ({ nodeTypes, edgeTypes, limit = 2e3, sort = "messages" } = {}) => {
       const params = new URLSearchParams();
       if (nodeTypes?.length) params.set("nodes", nodeTypes.join(","));
       if (edgeTypes?.length) params.set("edges", edgeTypes.join(","));
       params.set("limit", String(limit));
+      params.set("sort", sort);
       return request(`/api/graph?${params}`);
     },
     /** One thread's messages, newest first, paged. `q` filters inside the thread. */
@@ -14793,20 +14799,32 @@
       // rather than one flat colour. Deterministic from the node id.
       shadeJitter: 0.16,
       // 0 = every node identical, 0.3 = noisy
-      // Draw a Thread as its source's icon instead of a plain circle. The icon is a
-      // flat platform colour (baked into the SVG), so shade jitter does not apply to
-      // it — jitter would mean one image per node. Correspondents are unaffected.
-      nodeIcons: false,
+      // Icons are the only node look. There is no circle mode and no toggle: a thread
+      // draws its source's glyph, a correspondent draws the person glyph. The glyph is
+      // a flat platform colour baked into the SVG, so `shadeJitter` does not apply to
+      // it — jitter would mean one image per node.
       iconScale: 0.72,
-      // fraction of the node's diameter the icon fills
-      // Correspondents can draw as a person glyph instead of a solid circle. The
-      // glyph is baked per platform (one file per colour), so shade jitter does not
-      // apply to it — same tradeoff as the thread icons. The glow stays, in the
-      // node's own source colour, so a correspondent still reads as a different class
-      // of thing from a thread.
-      correspondentIcons: true,
-      correspondentIconScale: 0.86
+      // fraction of the node's diameter the thread glyph fills
+      correspondentIconScale: 0.86,
       // a person silhouette is narrow, so it needs more
+      // Per-platform multiplier on `iconScale`, for glyphs whose own artwork sits
+      // smaller or larger inside its 24x24 viewBox. The SVGs were normalised to the
+      // same box, but a wide envelope and a compact speech bubble do not read as the
+      // same size at the same scale — this is the optical correction.
+      //
+      // 1.0 is the default, so a platform added later needs no entry.
+      iconScaleByPlatform: {
+        messenger: 1.15,
+        // Facebook speech bubble reads small
+        whatsapp: 1.15,
+        // same
+        email: 0.85,
+        // the envelope is wide, so it reads large
+        gmail: 0.85,
+        // same glyph as email
+        imap: 0.85
+        // same glyph as email
+      }
     },
     /* ------------------------------------------------------------------- reveal
      * Nodes bloom outward in ts_utc order. Highest impact per effort for a demo,
@@ -14826,9 +14844,28 @@
     /* ------------------------------------------------------------------ filter
      * VIEW ONLY. A hidden toggle must never narrow what an agent can query
      * (TECHREADME.md §5) — this only decides what is drawn.
+     *
+     * `platforms` is the canvas's own cluster toggle, and it is NOT the same thing as
+     * the Utilities filter. Utilities narrows what the *tools* return, so search and
+     * the AI chat see less. This hides a cluster from the drawing and nothing else.
+     *
+     * `sort` and `limit` decide which nodes survive truncation, so they are a real
+     * choice rather than a preference: `messages` keeps the biggest threads, `quiet`
+     * keeps the ones that went silent — the question this app exists to answer.
      */
     filter: {
-      nodeTypes: ["Thread", "Correspondent"]
+      nodeTypes: ["Thread", "Correspondent"],
+      // Every platform on by default, and the toggle is a plain on/off per platform —
+      // the same shape as the node-type list above it. An empty list means "not
+      // chosen yet", which the canvas reads as "all on", so a platform added later
+      // appears without the user having to tick it.
+      platforms: [],
+      hideSilent: false,
+      // hide threads the owner never sent a message in
+      sort: "messages",
+      // messages | recent | quiet
+      limit: 2e3
+      // nodes drawn; the canvas reports the real total beside it
     },
     /* --------------------------------------------------------------------- chat */
     chat: {
@@ -14840,7 +14877,7 @@
     return JSON.parse(JSON.stringify(theme));
   }
   var STORAGE_KEY = "relate.graphStyle";
-  var THEME_VERSION = 3;
+  var THEME_VERSION = 6;
   function loadTheme() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -15223,17 +15260,8 @@
   __iconData3.node;
   var Braces = createLucideIcon(__iconData3);
 
-  // node_modules/lucide-react/dist/esm/icons/circle.mjs
-  var __iconData4 = {
-    name: "circle",
-    size: 24,
-    node: [["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }]]
-  };
-  __iconData4.node;
-  var Circle = createLucideIcon(__iconData4);
-
   // node_modules/lucide-react/dist/esm/icons/corner-down-right.mjs
-  var __iconData5 = {
+  var __iconData4 = {
     name: "corner-down-right",
     size: 24,
     node: [
@@ -15241,11 +15269,11 @@
       ["path", { d: "M4 4v7a4 4 0 0 0 4 4h12", key: "z08zvw" }]
     ]
   };
-  __iconData5.node;
-  var CornerDownRight = createLucideIcon(__iconData5);
+  __iconData4.node;
+  var CornerDownRight = createLucideIcon(__iconData4);
 
   // node_modules/lucide-react/dist/esm/icons/info.mjs
-  var __iconData6 = {
+  var __iconData5 = {
     name: "info",
     size: 24,
     node: [
@@ -15254,21 +15282,21 @@
       ["path", { d: "M12 8h.01", key: "e9boi3" }]
     ]
   };
-  __iconData6.node;
-  var Info = createLucideIcon(__iconData6);
+  __iconData5.node;
+  var Info = createLucideIcon(__iconData5);
 
   // node_modules/lucide-react/dist/esm/icons/loader-circle.mjs
-  var __iconData7 = {
+  var __iconData6 = {
     name: "loader-circle",
     size: 24,
     node: [["path", { d: "M21 12a9 9 0 1 1-6.219-8.56", key: "13zald" }]],
     aliases: ["loader-2"]
   };
-  __iconData7.node;
-  var LoaderCircle = createLucideIcon(__iconData7);
+  __iconData6.node;
+  var LoaderCircle = createLucideIcon(__iconData6);
 
   // node_modules/lucide-react/dist/esm/icons/palette.mjs
-  var __iconData8 = {
+  var __iconData7 = {
     name: "palette",
     size: 24,
     node: [
@@ -15285,11 +15313,11 @@
       ["circle", { cx: "8.5", cy: "7.5", r: ".5", fill: "currentColor", key: "fotxhn" }]
     ]
   };
-  __iconData8.node;
-  var Palette = createLucideIcon(__iconData8);
+  __iconData7.node;
+  var Palette = createLucideIcon(__iconData7);
 
   // node_modules/lucide-react/dist/esm/icons/rotate-ccw.mjs
-  var __iconData9 = {
+  var __iconData8 = {
     name: "rotate-ccw",
     size: 24,
     node: [
@@ -15297,11 +15325,11 @@
       ["path", { d: "M3 3v5h5", key: "1xhq8a" }]
     ]
   };
-  __iconData9.node;
-  var RotateCcw = createLucideIcon(__iconData9);
+  __iconData8.node;
+  var RotateCcw = createLucideIcon(__iconData8);
 
   // node_modules/lucide-react/dist/esm/icons/search.mjs
-  var __iconData10 = {
+  var __iconData9 = {
     name: "search",
     size: 24,
     node: [
@@ -15309,11 +15337,11 @@
       ["circle", { cx: "11", cy: "11", r: "8", key: "4ej97u" }]
     ]
   };
-  __iconData10.node;
-  var Search = createLucideIcon(__iconData10);
+  __iconData9.node;
+  var Search = createLucideIcon(__iconData9);
 
   // node_modules/lucide-react/dist/esm/icons/send.mjs
-  var __iconData11 = {
+  var __iconData10 = {
     name: "send",
     size: 24,
     node: [
@@ -15327,30 +15355,11 @@
       ["path", { d: "m21.854 2.147-10.94 10.939", key: "12cjpa" }]
     ]
   };
-  __iconData11.node;
-  var Send = createLucideIcon(__iconData11);
-
-  // node_modules/lucide-react/dist/esm/icons/shapes.mjs
-  var __iconData12 = {
-    name: "shapes",
-    size: 24,
-    node: [
-      [
-        "path",
-        {
-          d: "M8.3 10a.7.7 0 0 1-.626-1.079L11.4 3a.7.7 0 0 1 1.198-.043L16.3 8.9a.7.7 0 0 1-.572 1.1Z",
-          key: "1bo67w"
-        }
-      ],
-      ["rect", { x: "3", y: "14", width: "7", height: "7", rx: "1", key: "1bkyp8" }],
-      ["circle", { cx: "17.5", cy: "17.5", r: "3.5", key: "w3z12y" }]
-    ]
-  };
-  __iconData12.node;
-  var Shapes = createLucideIcon(__iconData12);
+  __iconData10.node;
+  var Send = createLucideIcon(__iconData10);
 
   // node_modules/lucide-react/dist/esm/icons/sliders-horizontal.mjs
-  var __iconData13 = {
+  var __iconData11 = {
     name: "sliders-horizontal",
     size: 24,
     node: [
@@ -15365,11 +15374,11 @@
       ["path", { d: "M8 12H3", key: "a7s4jb" }]
     ]
   };
-  __iconData13.node;
-  var SlidersHorizontal = createLucideIcon(__iconData13);
+  __iconData11.node;
+  var SlidersHorizontal = createLucideIcon(__iconData11);
 
   // node_modules/lucide-react/dist/esm/icons/sparkles.mjs
-  var __iconData14 = {
+  var __iconData12 = {
     name: "sparkles",
     size: 24,
     node: [
@@ -15386,11 +15395,11 @@
     ],
     aliases: ["stars"]
   };
-  __iconData14.node;
-  var Sparkles = createLucideIcon(__iconData14);
+  __iconData12.node;
+  var Sparkles = createLucideIcon(__iconData12);
 
   // node_modules/lucide-react/dist/esm/icons/terminal.mjs
-  var __iconData15 = {
+  var __iconData13 = {
     name: "terminal",
     size: 24,
     node: [
@@ -15398,11 +15407,11 @@
       ["path", { d: "m4 17 6-6-6-6", key: "1yngyt" }]
     ]
   };
-  __iconData15.node;
-  var Terminal = createLucideIcon(__iconData15);
+  __iconData13.node;
+  var Terminal = createLucideIcon(__iconData13);
 
   // node_modules/lucide-react/dist/esm/icons/trash.mjs
-  var __iconData16 = {
+  var __iconData14 = {
     name: "trash",
     size: 24,
     node: [
@@ -15414,11 +15423,11 @@
     ],
     aliases: ["trash-2"]
   };
-  __iconData16.node;
-  var Trash = createLucideIcon(__iconData16);
+  __iconData14.node;
+  var Trash = createLucideIcon(__iconData14);
 
   // node_modules/lucide-react/dist/esm/icons/upload.mjs
-  var __iconData17 = {
+  var __iconData15 = {
     name: "upload",
     size: 24,
     node: [
@@ -15427,11 +15436,11 @@
       ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }]
     ]
   };
-  __iconData17.node;
-  var Upload = createLucideIcon(__iconData17);
+  __iconData15.node;
+  var Upload = createLucideIcon(__iconData15);
 
   // node_modules/lucide-react/dist/esm/icons/x.mjs
-  var __iconData18 = {
+  var __iconData16 = {
     name: "x",
     size: 24,
     node: [
@@ -15439,8 +15448,8 @@
       ["path", { d: "m6 6 12 12", key: "d8bk6v" }]
     ]
   };
-  __iconData18.node;
-  var X = createLucideIcon(__iconData18);
+  __iconData16.node;
+  var X = createLucideIcon(__iconData16);
 
   // app/ui/src/components/ChatPanel.jsx
   var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
@@ -15648,9 +15657,7 @@
     stats,
     platformsFiltered,
     activePlatforms,
-    totalPlatforms,
-    nodeIcons,
-    onToggleNodeIcons
+    totalPlatforms
   }) {
     const [query, setQuery] = (0, import_react6.useState)("");
     const submit = () => {
@@ -15719,33 +15726,15 @@
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Info, { size: 13 }),
         " Setup"
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
-        "button",
-        {
-          className: nodeIcons ? "ghost" : "active",
-          onClick: onToggleNodeIcons,
-          title: "Circles \u2014 shaded platform colour",
-          children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Circle, { size: 13 })
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
-        "button",
-        {
-          className: nodeIcons ? "active" : "ghost",
-          onClick: onToggleNodeIcons,
-          title: "Icons \u2014 the source's own symbol",
-          children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Shapes, { size: 13 })
-        }
-      ),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
         "button",
         {
           className: "ghost",
-          onClick: () => onOpenModal("style"),
-          title: "Force simulation and visuals",
+          onClick: () => onOpenModal("canvas"),
+          title: "What is drawn: sort, node count, node types, platform clusters",
           children: [
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Palette, { size: 13 }),
-            " Graph Style"
+            " Canvas"
           ]
         }
       ),
@@ -15880,8 +15869,10 @@
     "whatsapp",
     "linkedin",
     "email",
-    "outlook"
+    "outlook",
+    "sms"
   ];
+  var PLANNED_PLATFORMS = /* @__PURE__ */ new Set([]);
   var GraphCanvas = (0, import_react7.forwardRef)(function GraphCanvas2({ data, theme, onNodeClick, onBackgroundClick, onLayoutDone }, ref) {
     const hostRef = (0, import_react7.useRef)(null);
     const cyRef = (0, import_react7.useRef)(null);
@@ -15890,10 +15881,20 @@
     themeRef.current = theme;
     const stylesheet = (0, import_react7.useMemo)(() => buildStylesheet(theme), [theme]);
     const sizeKey = JSON.stringify(theme.tiers.sizes);
+    const platformKey = (theme.filter.platforms || []).join(",");
     const elements = (0, import_react7.useMemo)(() => {
       const theme2 = themeRef.current;
       if (!data) return [];
-      const allNodes = data.nodes || [];
+      const chosen = theme2.filter.platforms || [];
+      const hiddenPlatforms = chosen.length ? new Set(
+        (data.nodes || []).map((node) => node.platform).filter((platform) => !chosen.includes(platform))
+      ) : /* @__PURE__ */ new Set();
+      const hideSilent2 = !!theme2.filter.hideSilent;
+      const allNodes = (data.nodes || []).filter((node) => {
+        if (hiddenPlatforms.has(node.platform)) return false;
+        if (hideSilent2 && node.type === "Thread" && node.is_silent) return false;
+        return true;
+      });
       const threadLetters = assignBands(
         allNodes.filter((node) => node.type === "Thread"),
         "message_count",
@@ -15914,18 +15915,17 @@
         const letter = isThread ? threadLetters.get(node.id) : correspondentLetters.get(node.id);
         const tier = theme2.tiers.sizes[letter] || theme2.tiers.sizes.F;
         const base = platformColor(node.platform);
-        const icon = isThread ? theme2.visual.nodeIcons ? platformIcon(node.platform) : null : theme2.visual.correspondentIcons ? personIcon(node.platform) : null;
+        const glyph = isThread ? platformIcon(node.platform) : personIcon(node.platform);
         return {
           group: "nodes",
           // A CLASS, not a data field. Cytoscape's `[key]` selector tests whether the
           // field EXISTS, so `image: null` matched every node and stripped the fill
           // from the whole graph. A class is unambiguous.
-          classes: icon ? isThread ? "icon" : "icon person" : "",
+          classes: glyph ? isThread ? "icon" : "icon person" : "",
           data: {
             id: node.id,
             // One line, same as every other node. The source is already carried by
-            // the node's colour and, when on, its icon — a SOURCE line above the
-            // title was redundant.
+            // the node's icon — a SOURCE line above the title was redundant.
             label: isThread ? truncateLabel(node.label || node.id, 34) : truncateLabel(node.label || node.id, 28),
             rawLabel: node.label || node.id,
             type: node.type,
@@ -15968,7 +15968,7 @@
         };
       });
       return [...nodes, ...edges];
-    }, [data, sizeKey]);
+    }, [data, sizeKey, platformKey, hideSilent]);
     (0, import_react7.useEffect)(() => {
       if (!hostRef.current || cyRef.current) return void 0;
       if (window.cytoscapeFcose && !window.__fcoseRegistered) {
@@ -16103,16 +16103,27 @@
         },
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { id: "cy", ref: hostRef }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "canvas-legend", children: LEGEND_PLATFORMS.map((platform) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "legend-row", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
-              "span",
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "canvas-legend", children: LEGEND_PLATFORMS.map((platform) => {
+            const planned = PLANNED_PLATFORMS.has(platform);
+            return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+              "div",
               {
-                className: "legend-swatch",
-                style: { background: platformColor(platform) }
-              }
-            ),
-            platformLabel(platform)
-          ] }, platform)) })
+                className: `legend-row${planned ? " planned" : ""}`,
+                title: planned ? "Adapter not built yet" : void 0,
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                    "span",
+                    {
+                      className: "legend-swatch",
+                      style: planned ? { border: `1px dashed ${platformColor(platform)}` } : { background: platformColor(platform) }
+                    }
+                  ),
+                  platformLabel(platform)
+                ]
+              },
+              platform
+            );
+          }) })
         ]
       }
     );
@@ -16120,8 +16131,17 @@
   var GraphCanvas_default = GraphCanvas;
   function buildStylesheet(theme) {
     const { palette, labels, visual } = theme;
+    const iconScaleFor = (visual2, platform) => visual2.iconScale * (visual2.iconScaleByPlatform?.[platform] ?? 1);
     return [
       {
+        // The base rule is a FILLED CIRCLE, and it stays that way. Icons are an
+        // override layer on top of it, not a replacement for it.
+        //
+        // That layering is what makes the fallback free: a node whose platform has no
+        // icon file simply never matches an icon rule, so it keeps this fill and stays
+        // visible. Making the icon styling the base instead would leave every node
+        // with no fill and no border, and an unknown platform would draw as nothing at
+        // all — an invisible node, which is the one failure this app must never have.
         selector: "node",
         style: {
           "background-color": "data(color)",
@@ -16154,9 +16174,12 @@
         }
       },
       {
-        // An icon node drops its fill: the glyph IS the mark, and a shaded circle
-        // behind a flat-coloured icon reads as a mistake. `background-opacity` affects
-        // only the colour — `background-image-opacity` keeps the glyph visible.
+        // The icon override. A glyph IS the mark, so the shaded circle behind it goes:
+        // a flat-coloured icon on a shaded disc reads as a mistake. `background-opacity`
+        // affects only the colour — `background-image-opacity` keeps the glyph visible.
+        //
+        // This is the ONLY thing that removes the base fill, which is why a platform
+        // with no icon file is still drawn as a circle rather than vanishing.
         selector: "node.icon",
         style: {
           "background-opacity": 0,
@@ -16171,9 +16194,16 @@
       //
       // `node.icon` (threads) and `node.icon.person` (correspondents) are separate
       // selectors, so a platform's two glyphs never collide.
+      // `iconScaleByPlatform` is the optical correction: the SVGs share a 24x24 box,
+      // but a wide envelope and a compact speech bubble do not read as the same size at
+      // the same scale. A platform with no entry keeps the base scale.
       ...Object.entries(PLATFORM_ICONS).map(([platform, url]) => ({
         selector: `node.icon[platform = "${platform}"]`,
-        style: { "background-image": `url("${url}")` }
+        style: {
+          "background-image": `url("${url}")`,
+          "background-width": `${Math.round(iconScaleFor(visual, platform) * 100)}%`,
+          "background-height": `${Math.round(iconScaleFor(visual, platform) * 100)}%`
+        }
       })),
       ...Object.entries(PERSON_ICONS).map(([platform, url]) => ({
         selector: `node.icon.person[platform = "${platform}"]`,
@@ -16185,16 +16215,14 @@
       })),
       {
         // Selector grammar needs spaces around the operator: `[type = "x"]`.
-        // Correspondents are circles with a border and glow in their OWN source
-        // colour — the glow is the whole point, so it is strong and the border matches
-        // the fill rather than the generic blue outline. With the person glyph on, the
-        // fill goes away and the glow carries the class distinction instead.
+        // A correspondent keeps a permanent glow in its OWN source colour — that glow
+        // is what makes it read as a different class of thing from a thread, now that
+        // both are glyphs. The fill and border are left to the base rule and the icon
+        // override; only the glow is added here.
         selector: 'node[type = "Correspondent"]',
         style: {
           shape: "ellipse",
           color: labels.correspondentColor,
-          "background-opacity": 1,
-          "border-width": 1.5,
           "border-color": "data(color)",
           "border-opacity": 1,
           "shadow-blur": visual.correspondentGlow,
@@ -17061,7 +17089,7 @@
     ] });
   }
 
-  // app/ui/src/components/modals/GraphStyleModal.jsx
+  // app/ui/src/components/modals/CanvasModal.jsx
   var import_react10 = __toESM(require_react(), 1);
 
   // app/ui/src/components/modals/Modal.jsx
@@ -17140,85 +17168,190 @@
     return state;
   }
 
-  // app/ui/src/components/modals/GraphStyleModal.jsx
+  // app/ui/src/components/modals/CanvasModal.jsx
   var import_jsx_runtime6 = __toESM(require_jsx_runtime(), 1);
-  function SizeTable({ sizes, onChange }) {
-    return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
-      "div",
-      {
-        style: {
-          display: "grid",
-          gridTemplateColumns: "28px 1fr 1fr",
-          gap: "4px 8px",
-          alignItems: "center",
-          fontSize: 11,
-          marginBottom: 14
-        },
-        children: [
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: "#" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: "size" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: "font" }),
-          Object.entries(sizes).map(([letter, row]) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_react10.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: letter }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-              "input",
-              {
-                type: "number",
-                value: row.size,
-                min: 2,
-                onChange: (event) => onChange(letter, "size", Number(event.target.value))
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-              "input",
-              {
-                type: "number",
-                value: row.font,
-                min: 4,
-                onChange: (event) => onChange(letter, "font", Number(event.target.value))
-              }
-            )
-          ] }, letter))
-        ]
-      }
-    );
+  var SORTS = [
+    { key: "messages", label: "Most messages", hint: "the biggest threads first" },
+    { key: "recent", label: "Most recent", hint: "the live ones first" },
+    { key: "quiet", label: "Quietest", hint: "the ones that went silent first" }
+  ];
+  var LIMITS = [500, 1e3, 2e3, 5e3, 1e4, 2e4];
+  function isPlatformOn(chosen, platform, rows) {
+    if (!chosen || chosen.length === 0) return true;
+    return chosen.includes(platform);
   }
-  function GraphStyleModal({ theme, onChange, onClose, onRerunLayout }) {
+  function CanvasModal({
+    theme,
+    onChange,
+    onClose,
+    onRerunLayout,
+    graph,
+    onReload,
+    platforms
+  }) {
     const [draft, setDraft] = (0, import_react10.useState)(() => cloneTheme(theme));
+    const [styling, setStyling] = (0, import_react10.useState)(false);
     const types = useFetch(() => api.types(), []);
     (0, import_react10.useEffect)(() => {
       onChange(draft);
     }, [draft, onChange]);
     const set = (group, key) => (value) => setDraft((prev) => ({ ...prev, [group]: { ...prev[group], [key]: value } }));
-    const setSize = (letter, key, value) => setDraft((prev) => ({
-      ...prev,
-      tiers: {
-        ...prev.tiers,
-        sizes: {
-          ...prev.tiers.sizes,
-          [letter]: { ...prev.tiers.sizes[letter], [key]: value }
-        }
-      }
-    }));
     const toggleType = (type) => setDraft((prev) => {
       const current = prev.filter.nodeTypes;
       const next = current.includes(type) ? current.filter((value) => value !== type) : [...current, type];
       return { ...prev, filter: { ...prev.filter, nodeTypes: next } };
     });
+    const togglePlatform = (platform) => setDraft((prev) => {
+      const all = (platforms?.rows || []).map((row) => row.platform);
+      const current = prev.filter.platforms.length ? prev.filter.platforms : all;
+      const next = current.includes(platform) ? current.filter((value) => value !== platform) : [...current, platform];
+      return { ...prev, filter: { ...prev.filter, platforms: next } };
+    });
+    const shown = graph?.counts?.nodes ?? 0;
+    const total = graph?.total ?? shown;
+    const hidden = Math.max(0, total - shown);
+    if (styling) {
+      return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+        StylingModal,
+        {
+          draft,
+          setDraft,
+          set,
+          onBack: () => setStyling(false),
+          onClose,
+          onRerunLayout
+        }
+      );
+    }
     return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
       Modal,
       {
-        title: "Graph Style",
+        title: "Canvas",
         onClose,
         wide: true,
+        footer: /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_jsx_runtime6.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("span", { className: "pager-info", children: [
+            shown.toLocaleString(),
+            " of ",
+            total.toLocaleString(),
+            " nodes",
+            hidden > 0 ? ` \xB7 ${hidden.toLocaleString()} hidden` : ""
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "ghost", onClick: onClose, children: "Close" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { onClick: onRerunLayout, children: "Re-run layout" })
+        ] }),
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Sort \u2014 which nodes survive the cutoff" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "The canvas draws a limited number of nodes. Whichever order is chosen decides which ones you can never see, so this is a real choice, not a preference." }),
+          SORTS.map((sort) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+            Check,
+            {
+              label: sort.label,
+              checked: (draft.filter.sort || "messages") === sort.key,
+              onChange: () => {
+                setDraft((prev) => ({
+                  ...prev,
+                  filter: { ...prev.filter, sort: sort.key }
+                }));
+                onReload?.({ sort: sort.key });
+              },
+              hint: sort.hint
+            },
+            sort.key
+          )),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "How many nodes" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: LIMITS.map((value) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+            "button",
+            {
+              className: (draft.filter.limit || 2e3) === value ? "active" : "ghost",
+              onClick: () => {
+                setDraft((prev) => ({
+                  ...prev,
+                  filter: { ...prev.filter, limit: value }
+                }));
+                onReload?.({ limit: value });
+              },
+              children: value.toLocaleString()
+            },
+            value
+          )) }),
+          hidden > 0 && /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "empty", style: { paddingTop: 0 }, children: [
+            hidden.toLocaleString(),
+            " nodes are not drawn. Raise the number above, or change the sort, to reach them. Search and the AI chat always see the whole store \u2014 this cutoff is the canvas only."
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Node types" }),
+          Object.entries(NODE_TYPES).map(([type, meta]) => {
+            const count = types.data?.node_types?.find((entry) => entry.type === type)?.count;
+            return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+              Check,
+              {
+                label: `${meta.label}${count != null ? ` (${count.toLocaleString()})` : ""}${meta.drawable ? "" : " \u2014 not drawable"}`,
+                checked: draft.filter.nodeTypes.includes(type),
+                onChange: () => toggleType(type),
+                hint: meta.hint
+              },
+              type
+            );
+          }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Viewable platforms" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
+            "All on by default. Toggle one off to hide its cluster from the canvas \u2014 it stays fully searchable, and the AI chat still sees it. This is ",
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("em", { children: "not" }),
+            " ",
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: "Utilities" }),
+            ", which narrows what the tools return."
+          ] }),
+          (platforms?.rows || []).map((row) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("label", { className: "check", style: { marginBottom: 6 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+              "input",
+              {
+                type: "checkbox",
+                checked: isPlatformOn(draft.filter.platforms, row.platform, platforms?.rows),
+                onChange: () => togglePlatform(row.platform)
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+              "span",
+              {
+                className: "legend-swatch",
+                style: { background: platformColor(row.platform), marginRight: 2 }
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { minWidth: 90 }, children: PLATFORM_LABELS[row.platform] || row.platform }),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: row.built ? `${row.count.toLocaleString()} messages` : "not built yet" })
+          ] }, row.platform)),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Threads you never spoke in" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+            Check,
+            {
+              label: "Hide threads where the owner never sent a message",
+              checked: !!draft.filter.hideSilent,
+              onChange: (value) => setDraft((prev) => ({
+                ...prev,
+                filter: { ...prev.filter, hideSilent: value }
+              })),
+              hint: "View only. A thread you never replied in is often a broadcast or a group you were added to \u2014 hidden here, still searchable."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { marginTop: 18 }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "ghost", onClick: () => setStyling(true), children: "Styling \u2014 force and labels" }) })
+        ]
+      }
+    );
+  }
+  function StylingModal({ draft, setDraft, set, onBack, onClose, onRerunLayout }) {
+    return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
+      Modal,
+      {
+        title: "Styling",
+        onClose,
         footer: /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_jsx_runtime6.Fragment, { children: [
           /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
             "button",
             {
               className: "ghost",
               onClick: () => {
-                const fresh = resetTheme();
-                setDraft(fresh);
+                setDraft(resetTheme());
                 onRerunLayout?.();
               },
               children: [
@@ -17228,11 +17361,11 @@
             }
           ),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "ghost", onClick: onClose, children: "Close" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "ghost", onClick: onBack, children: "Back" }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { onClick: onRerunLayout, children: "Re-run layout" })
         ] }),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Physics \u2014 fcose" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Force \u2014 fcose" }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
             Slider,
             {
@@ -17350,157 +17483,7 @@
               onChange: set("labels", "maxWidth"),
               hint: "px, with text-wrap: wrap"
             }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Sizes \u2014 A to F, computed per source" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Each source is banded on its own, so a small platform is not flattened by a big one. Threads use A / C / E (A is the standout, so they skip B); correspondents use B / D / F. The ladders interleave, so a thread always outranks the correspondent of the same band. Person, Place, Organization and Thing will use D / E / F." }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            SizeTable,
-            {
-              sizes: draft.tiers.sizes,
-              onChange: (letter, key, value) => setSize(letter, key, value)
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Visual" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Check,
-            {
-              label: "draw threads as their source icon",
-              checked: draft.visual.nodeIcons,
-              onChange: set("visual", "nodeIcons"),
-              hint: "Threads only. Correspondents stay as glowing rounded rects, so the two kinds never look alike."
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Slider,
-            {
-              label: "thread icon size (% of node)",
-              value: Math.round(draft.visual.iconScale * 100),
-              min: 40,
-              max: 100,
-              step: 2,
-              onChange: (value) => set("visual", "iconScale")(value / 100),
-              hint: "only applies when icons are on"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Check,
-            {
-              label: "draw correspondents as a person glyph",
-              checked: draft.visual.correspondentIcons,
-              onChange: set("visual", "correspondentIcons"),
-              hint: "The glyph replaces the fill; the glow and border stay, in the node's own source colour."
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Slider,
-            {
-              label: "person glyph size (% of node)",
-              value: Math.round(draft.visual.correspondentIconScale * 100),
-              min: 40,
-              max: 100,
-              step: 2,
-              onChange: (value) => set("visual", "correspondentIconScale")(value / 100),
-              hint: "a person silhouette is narrow, so it needs more than a round glyph"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Slider,
-            {
-              label: "correspondent glow (shadow-blur)",
-              value: draft.visual.correspondentGlow,
-              min: 0,
-              max: 40,
-              step: 1,
-              onChange: set("visual", "correspondentGlow"),
-              hint: "permanent, in the node's own source colour"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Slider,
-            {
-              label: "correspondent glow opacity",
-              value: draft.visual.correspondentGlowOpacity,
-              min: 0,
-              max: 1,
-              step: 0.05,
-              onChange: set("visual", "correspondentGlowOpacity")
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Slider,
-            {
-              label: "selection glow (shadow-blur)",
-              value: draft.visual.glowBlur,
-              min: 0,
-              max: 60,
-              step: 2,
-              onChange: set("visual", "glowBlur"),
-              hint: "doubled for the selected node, which is white"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Slider,
-            {
-              label: "shade jitter within a source",
-              value: draft.visual.shadeJitter,
-              min: 0,
-              max: 0.4,
-              step: 0.02,
-              onChange: set("visual", "shadeJitter"),
-              hint: "0 = every node identical, 0.3 = noisy"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Slider,
-            {
-              label: "background haze",
-              value: draft.visual.hazeOpacity,
-              min: 0,
-              max: 0.4,
-              step: 0.01,
-              onChange: set("visual", "hazeOpacity")
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Reveal" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Check,
-            {
-              label: "bloom nodes in ts_utc order on load",
-              checked: draft.reveal.enabled,
-              onChange: set("reveal", "enabled"),
-              hint: "highest impact per effort for a demo"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Slider,
-            {
-              label: "duration (ms)",
-              value: draft.reveal.durationMs,
-              min: 400,
-              max: 6e3,
-              step: 100,
-              onChange: set("reveal", "durationMs")
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Filter \u2014 view only" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
-            "This changes what is ",
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("em", { children: "drawn" }),
-            ". It never narrows what the AI or MCP can query."
-          ] }),
-          Object.entries(NODE_TYPES).map(([type, meta]) => {
-            const count = types.data?.node_types?.find((entry) => entry.type === type)?.count;
-            return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-              Check,
-              {
-                label: `${meta.label}${count != null ? ` (${count.toLocaleString()})` : ""}${meta.drawable ? "" : " \u2014 not drawable"}`,
-                checked: draft.filter.nodeTypes.includes(type),
-                onChange: () => toggleType(type),
-                hint: meta.hint
-              },
-              type
-            );
-          })
+          )
         ]
       }
     );
@@ -17509,6 +17492,34 @@
   // app/ui/src/components/modals/IngestModal.jsx
   var import_react11 = __toESM(require_react(), 1);
   var import_jsx_runtime7 = __toESM(require_jsx_runtime(), 1);
+  async function inspect({ paths, email }) {
+    if (!api.inspect) return null;
+    try {
+      return await api.inspect({ paths, email });
+    } catch {
+      return null;
+    }
+  }
+  var WINDOWS = [
+    { key: "3m", label: "3 months", months: 3 },
+    { key: "6m", label: "6 months", months: 6 },
+    { key: "12m", label: "12 months", months: 12 },
+    { key: "all", label: "All", months: null }
+  ];
+  function windowStart(months) {
+    if (!months) return null;
+    const date = /* @__PURE__ */ new Date();
+    date.setMonth(date.getMonth() - months);
+    return date.toISOString().slice(0, 10);
+  }
+  function countInWindow(legs, months) {
+    if (!months) return legs.reduce((sum, leg) => sum + (leg.total || 0), 0);
+    const cutoff = windowStart(months);
+    return legs.reduce((sum, leg) => {
+      const months_ = leg.months || {};
+      return sum + Object.entries(months_).filter(([month]) => month >= cutoff.slice(0, 7)).reduce((inner, [, n]) => inner + n, 0);
+    }, 0);
+  }
   function IngestModal({ onClose, onIngested }) {
     const [paths, setPaths] = (0, import_react11.useState)("");
     const [email, setEmail] = (0, import_react11.useState)("");
@@ -17520,16 +17531,37 @@
     const [report, setReport] = (0, import_react11.useState)(null);
     const [error, setError] = (0, import_react11.useState)(null);
     const [tab, setTab] = (0, import_react11.useState)("drop");
+    const [window_, setWindow] = (0, import_react11.useState)("all");
+    const [inspection, setInspection] = (0, import_react11.useState)(null);
     const dropRef = (0, import_react11.useRef)(null);
+    const pathList = () => paths.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const emailList = () => email.split(",").map((value) => value.trim()).filter(Boolean);
+    const preInspect = async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        const result = await inspect({ paths: pathList(), email: emailList() });
+        setInspection(result);
+        if (!result) {
+          setError(
+            "Pre-inspection is not wired yet, so the size of this export is unknown until it is parsed. Ingest will run with the window you chose."
+          );
+        }
+      } finally {
+        setBusy(false);
+      }
+    };
     const run = async () => {
       setBusy(true);
       setError(null);
       setReport(null);
       try {
+        const months = WINDOWS.find((w) => w.key === window_)?.months ?? null;
         const result = await api.ingest({
           which: "real",
-          paths: paths.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
-          email: email.split(",").map((value) => value.trim()).filter(Boolean),
+          paths: pathList(),
+          email: emailList(),
+          since: windowStart(months),
           tz_offset_hours: tzOffset === "" ? null : Number(tzOffset),
           exclude_spam_groups: noSpamGroups,
           prune,
@@ -17566,6 +17598,10 @@
           ),
           /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "spacer" }),
           /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: onClose, children: "Close" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("button", { className: "ghost", onClick: preInspect, disabled: busy, children: [
+            busy ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(LoaderCircle, { size: 13, className: "spin" }) : null,
+            "Inspect first"
+          ] }),
           /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("button", { onClick: run, disabled: busy || !writeEnabled, children: [
             busy ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(LoaderCircle, { size: 13, className: "spin" }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Upload, { size: 13 }),
             "Ingest"
@@ -17684,28 +17720,51 @@
                 ] })
               ] }),
               /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Email" }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("ul", { children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
+                "Gmail and Hostinger are read ",
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "live over IMAP" }),
+                " \u2014 there is no file to drop. Put ",
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "GOOGLE_EMAIL" }),
+                "/",
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "GOOGLE_APP_PASSWORD" }),
+                " ",
+                "or ",
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "HOSTINGER_EMAIL" }),
+                "/",
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "HOSTINGER_PASSWORD" }),
+                " in",
+                " ",
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: ".env" }),
+                ", then name the mailbox in the field below."
+              ] }) }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Outlook" }),
               /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("li", { children: "Outlook is its own platform, not a variant of Email \u2014 it gets its own colour and cluster." }),
                 /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "Gmail and Hostinger are read ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "live over IMAP" }),
-                  " \u2014 there is no file to drop. Put ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "GOOGLE_EMAIL" }),
-                  "/",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "GOOGLE_APP_PASSWORD" }),
+                  "Outlook.com \u2192 Settings \u2192 General \u2192 ",
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Privacy and data" }),
+                  " \u2192",
                   " ",
-                  "or ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "HOSTINGER_EMAIL" }),
-                  "/",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "HOSTINGER_PASSWORD" }),
-                  " in",
-                  " ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: ".env" }),
-                  ", then name the mailbox in the field below."
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Export mailbox" }),
+                  ". Microsoft assembles it server-side and mails a link."
                 ] }),
                 /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "Outlook is a ",
+                  "Classic Outlook \u2192 File \u2192 ",
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Open & Export" }),
+                  " \u2192",
+                  " ",
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Import/Export" }),
+                  " \u2192 ",
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Export to a file" }),
+                  " \u2192",
+                  " ",
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "Outlook Data File (.pst)" }),
+                  ", ticking \u201CInclude subfolders\u201D."
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
+                  "Microsoft killed basic auth for IMAP, so live IMAP is not available \u2014 the",
                   /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: ".pst" }),
-                  " export \u2014 Microsoft killed basic auth, so live IMAP is not available."
+                  " is the only route."
                 ] })
               ] }),
               /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Timezone" }),
@@ -17750,6 +17809,23 @@
                 hint: "e.g. -5 for US Eastern. Only Telegram, WhatsApp and Messenger accept it."
               }
             ),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "How far back" }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Applied to every leg at parse time. A message outside the window is counted as skipped, never silently dropped." }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: WINDOWS.map((option) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+              "button",
+              {
+                className: window_ === option.key ? "active" : "ghost",
+                onClick: () => setWindow(option.key),
+                children: [
+                  option.label,
+                  inspection ? /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "pager-info", style: { marginLeft: 6 }, children: [
+                    "~",
+                    countInWindow(inspection.legs || [], option.months).toLocaleString()
+                  ] }) : null
+                ]
+              },
+              option.key
+            )) }),
             /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
               Check,
               {
@@ -17768,6 +17844,28 @@
                 hint: "Only files whose key set is confirmed present in the store. Unverified files are never pruned."
               }
             )
+          ] }),
+          inspection && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "What is in here" }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("dl", { className: "kv", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dt", { children: "total" }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("dd", { children: [
+                Number(inspection.total || 0).toLocaleString(),
+                " messages"
+              ] })
+            ] }),
+            (inspection.legs || []).map((leg, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-snippet", children: [
+                leg.platform || "?",
+                " \xB7 ",
+                leg.path
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-meta", children: [
+                Number(leg.total || 0).toLocaleString(),
+                " messages",
+                leg.estimated ? " \xB7 estimated" : " \xB7 exact"
+              ] })
+            ] }, index))
           ] }),
           error && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "error", style: { marginTop: 12 }, children: error }),
           report && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
@@ -18071,6 +18169,7 @@
     const [storeOk, setStoreOk] = (0, import_react13.useState)(true);
     const [searchBusy, setSearchBusy] = (0, import_react13.useState)(false);
     const [platforms, setPlatforms] = (0, import_react13.useState)({ active: null, total: 0 });
+    const [platformRows, setPlatformRows] = (0, import_react13.useState)({ rows: [] });
     const canvasRef = (0, import_react13.useRef)(null);
     const viewer = useViewerStack();
     const deepLinked = (0, import_react13.useRef)(false);
@@ -18086,10 +18185,14 @@
       setTheme(next);
       saveTheme(next);
     }, []);
-    const loadGraph = (0, import_react13.useCallback)(async (nodeTypes) => {
+    const loadGraph = (0, import_react13.useCallback)(async (nodeTypes, { sort, limit } = {}) => {
       setGraphError(null);
       try {
-        const data = await api.graph({ nodeTypes, limit: 2e4 });
+        const data = await api.graph({
+          nodeTypes,
+          sort: sort || theme.filter.sort || "messages",
+          limit: limit || theme.filter.limit || 2e3
+        });
         setGraph(data);
       } catch (err) {
         setGraphError(err.message);
@@ -18105,13 +18208,18 @@
           active: platformData.active,
           total: (platformData.platforms || []).length
         });
+        setPlatformRows({ rows: platformData.platforms || [] });
       }).catch(() => {
       });
       return () => {
         cancelled = true;
       };
     }, []);
-    const filterKey = theme.filter.nodeTypes.join(",");
+    const filterKey = [
+      theme.filter.nodeTypes.join(","),
+      theme.filter.sort,
+      theme.filter.limit
+    ].join("|");
     (0, import_react13.useEffect)(() => {
       loadGraph(theme.filter.nodeTypes);
     }, [filterKey]);
@@ -18234,12 +18342,7 @@
           stats,
           platformsFiltered: platforms.active !== null,
           activePlatforms: platforms.active?.length ?? platforms.total,
-          totalPlatforms: platforms.total,
-          nodeIcons: theme.visual.nodeIcons,
-          onToggleNodeIcons: () => updateTheme({
-            ...theme,
-            visual: { ...theme.visual, nodeIcons: !theme.visual.nodeIcons }
-          })
+          totalPlatforms: platforms.total
         }
       ),
       /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "columns", children: [
@@ -18309,13 +18412,16 @@
       modal === "log" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(LogModal, { onClose: () => setModal(null) }),
       modal === "ingest" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(IngestModal, { onClose: () => setModal(null), onIngested }),
       modal === "setup" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(SetupModal, { onClose: () => setModal(null) }),
-      modal === "style" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
-        GraphStyleModal,
+      modal === "canvas" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+        CanvasModal,
         {
           theme,
           onChange: updateTheme,
           onClose: () => setModal(null),
-          onRerunLayout: () => canvasRef.current?.rerunLayout()
+          onRerunLayout: () => canvasRef.current?.rerunLayout(),
+          graph,
+          platforms: platformRows,
+          onReload: (overrides) => loadGraph(theme.filter.nodeTypes, overrides)
         }
       ),
       modal === "utilities" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(UtilitiesModal, { onClose: () => setModal(null), onChanged: onPlatformsChanged })
@@ -18400,7 +18506,6 @@ lucide-react/dist/esm/createLucideIcon.mjs:
 lucide-react/dist/esm/icons/arrow-left.mjs:
 lucide-react/dist/esm/icons/arrow-right.mjs:
 lucide-react/dist/esm/icons/braces.mjs:
-lucide-react/dist/esm/icons/circle.mjs:
 lucide-react/dist/esm/icons/corner-down-right.mjs:
 lucide-react/dist/esm/icons/info.mjs:
 lucide-react/dist/esm/icons/loader-circle.mjs:
@@ -18408,7 +18513,6 @@ lucide-react/dist/esm/icons/palette.mjs:
 lucide-react/dist/esm/icons/rotate-ccw.mjs:
 lucide-react/dist/esm/icons/search.mjs:
 lucide-react/dist/esm/icons/send.mjs:
-lucide-react/dist/esm/icons/shapes.mjs:
 lucide-react/dist/esm/icons/sliders-horizontal.mjs:
 lucide-react/dist/esm/icons/sparkles.mjs:
 lucide-react/dist/esm/icons/terminal.mjs:

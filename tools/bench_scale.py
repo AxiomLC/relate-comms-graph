@@ -58,7 +58,7 @@ def build(n: int, chats: int = 500) -> IngestResult:
         ))
         seen[cid] = Chat(platform="bench", chat_id=cid, title="Bench",
                          kind="personal_chat", is_group=False)
-    return IngestResult(platform="bench", source="bench",
+    return IngestResult(platform="bench", export_path="bench",
                         chats=list(seen.values()), messages=messages)
 
 

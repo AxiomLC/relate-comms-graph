@@ -8,7 +8,7 @@ import ChatPanel from "./components/ChatPanel.jsx";
 import CommandBar from "./components/CommandBar.jsx";
 import GraphCanvas from "./components/GraphCanvas.jsx";
 import Viewer from "./components/Viewer.jsx";
-import GraphStyleModal from "./components/modals/GraphStyleModal.jsx";
+import CanvasModal from "./components/modals/CanvasModal.jsx";
 import IngestModal from "./components/modals/IngestModal.jsx";
 import LogModal from "./components/modals/LogModal.jsx";
 import SetupModal from "./components/modals/SetupModal.jsx";
@@ -48,6 +48,9 @@ export default function App() {
   // Platform filter, mirrored from the server so the title bar can show it. The
   // server is the source of truth: it is what the tools actually read.
   const [platforms, setPlatforms] = useState({ active: null, total: 0 });
+  // The full platform rows, for the Canvas modal's view-only cluster toggle.
+  // `platforms` above is only the badge summary.
+  const [platformRows, setPlatformRows] = useState({ rows: [] });
 
   const canvasRef = useRef(null);
   const viewer = useViewerStack();
@@ -80,14 +83,22 @@ export default function App() {
 
   /* ------------------------------------------------------------------ graph */
 
-  const loadGraph = useCallback(async (nodeTypes) => {
+  const loadGraph = useCallback(async (nodeTypes, { sort, limit } = {}) => {
     setGraphError(null);
     try {
-      const data = await api.graph({ nodeTypes, limit: 20000 });
+      const data = await api.graph({
+        nodeTypes,
+        sort: sort || theme.filter.sort || "messages",
+        limit: limit || theme.filter.limit || 2000,
+      });
       setGraph(data);
     } catch (err) {
       setGraphError(err.message);
     }
+    // `theme.filter.sort/limit` are read as defaults, not dependencies: the modal
+    // passes them explicitly, and depending on the whole theme would refetch on
+    // every slider move.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -101,6 +112,7 @@ export default function App() {
           active: platformData.active,
           total: (platformData.platforms || []).length,
         });
+        setPlatformRows({ rows: platformData.platforms || [] });
       })
       .catch(() => {
         /* the canvas will report the real error */
@@ -110,9 +122,13 @@ export default function App() {
     };
   }, []);
 
-  // Re-fetch when the filter changes. The filter is view-only, so this is the only
-  // thing it touches.
-  const filterKey = theme.filter.nodeTypes.join(",");
+  // Re-fetch when the node types, sort or limit change. All three are view-only, so
+  // this is the only thing they touch.
+  const filterKey = [
+    theme.filter.nodeTypes.join(","),
+    theme.filter.sort,
+    theme.filter.limit,
+  ].join("|");
   useEffect(() => {
     loadGraph(theme.filter.nodeTypes);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -266,13 +282,6 @@ export default function App() {
         platformsFiltered={platforms.active !== null}
         activePlatforms={platforms.active?.length ?? platforms.total}
         totalPlatforms={platforms.total}
-        nodeIcons={theme.visual.nodeIcons}
-        onToggleNodeIcons={() =>
-          updateTheme({
-            ...theme,
-            visual: { ...theme.visual, nodeIcons: !theme.visual.nodeIcons },
-          })
-        }
       />
 
       <div className="columns">
@@ -346,12 +355,17 @@ export default function App() {
         <IngestModal onClose={() => setModal(null)} onIngested={onIngested} />
       )}
       {modal === "setup" && <SetupModal onClose={() => setModal(null)} />}
-      {modal === "style" && (
-        <GraphStyleModal
+      {modal === "canvas" && (
+        <CanvasModal
           theme={theme}
           onChange={updateTheme}
           onClose={() => setModal(null)}
           onRerunLayout={() => canvasRef.current?.rerunLayout()}
+          graph={graph}
+          platforms={platformRows}
+          onReload={(overrides) =>
+            loadGraph(theme.filter.nodeTypes, overrides)
+          }
         />
       )}
       {modal === "utilities" && (

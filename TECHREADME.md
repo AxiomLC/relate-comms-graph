@@ -16,7 +16,7 @@ concept. Use these spellings in code, in Cypher, in the UI and in docs.
 |---|---|---|---|
 | **Owner** | `identity.py`, `store/profile/identity.json` | The account owner. Per platform, persisted, with `tz_offsets`. | Not a node. Not a `Correspondent`. Shown on UI only as "you" inside a message body. |
 | **Correspondent** | `(:Correspondent {key, display_name, platform, handle, email, phone_e164})`, key `<platform>:<name>` | The other party, **on one platform**. A fact from the export. | Not one human across platforms. Not an extracted entity. |
-| **Platform** | `platform` property on every node; `_PLATFORMS` filter in `tools.py` | The social network: `telegram`, `messenger`, `email`, `linkedin`, `whatsapp`, `sms`. | Not the export file. Not the user's download. |
+| **Platform** | `platform` property on every node; `_PLATFORMS` filter in `tools.py` | The source: `telegram`, `messenger`, `email`, `linkedin`, `whatsapp`, `outlook`, `sms`. | Not the export file. Not the user's download. Not the provider — Outlook-over-IMAP is `email`. |
 | **Thread** | `(:Thread {key, platform, title, is_group})` | One conversation. | Not a message. |
 | **Message** | `(:Message {key, platform, chat_id, message_id, …})` | One message. | Not a thread. |
 
@@ -51,8 +51,38 @@ shows **Fcbk Mssgr** — never bare "Messenger", which reads as "a message" besi
 Viewer pill.
 
 The mapping lives in exactly one place — `PLATFORM_LABELS` in
-`app/ui/src/config/nodeTypes.js`. Never hardcode either spelling elsewhere. The four email
-keys (`email`, `gmail`, `imap`, `outlook`) collapse to one label, `Email`.
+`app/ui/src/config/nodeTypes.js`. Never hardcode either spelling elsewhere. The three IMAP
+keys (`email`, `gmail`, `imap`) collapse to one label, `Email`.
+
+**`outlook` is not one of them.** It is its own platform — own label, own colour
+(`#8b5cf6`), own icon, own legend row, own filter checkbox. A `.pst` export and a live
+IMAP mailbox are different sources with different provenance, and collapsing them made a
+`.pst` cluster visually identical to IMAP mail.
+
+### Platform identity table
+
+One row per platform key. `PLATFORM_LABELS`, `PLATFORM_COLORS`, `PLATFORM_ICONS` and
+`PERSON_ICONS` in `app/ui/src/config/nodeTypes.js` are the implementation; this table is
+the contract they must satisfy.
+
+| key | label | colour | thread icon | built |
+|---|---|---|---|---|
+| `messenger` | Fcbk Mssgr | `#3b6fd4` blue | messenger | yes |
+| `telegram` | Telegram | `#3fb6b0` aqua | telegram | yes |
+| `whatsapp` | WhatsApp | `#4caf50` green | whatsapp | yes |
+| `linkedin` | LinkedIn | `#5cc8f0` light blue | linkedin | yes |
+| `email` | Email | `#d9534f` red | envelope | yes |
+| `outlook` | Outlook | `#8b5cf6` purple | envelope (recoloured) | yes |
+| `sms` | SMS | `#b8912a` dark gold | phone | **no** |
+
+`gmail` and `imap` are aliases that resolve to the `email` row; they exist only so an old
+row or a provider name never renders as a raw key.
+
+A platform with no adapter is **not** omitted from the legend. It is drawn as a hollow
+dashed swatch with a dimmed label, so the legend describes what the graph can hold rather
+than only what it holds today. `PLANNED_PLATFORMS` in `tools.py` is the authority; the UI
+mirrors it as a literal set in `GraphCanvas.jsx` because it has no build-time access to
+Python. **Adding an adapter means deleting the key from both.**
 
 ---
 
@@ -88,7 +118,7 @@ pull in FastAPI or a web server.
 | `tools.py` | **The tool layer.** 10 registered tools, schema derived from each signature. |
 | `models.py` | Ollama model choice. `pick(task)`, `THINK = False`, `OPTIONS`. |
 | `cli.py` | `python -m relate_comms` — `ingest`, `sample build`. |
-| `adapters/` | One module per platform; each exposes `parse(export_path, **kw) -> IngestResult` and `detect(path)`. |
+| `adapters/` | One module per platform; each exposes `parse(export_path, **kw) -> IngestResult` and `detect(path)`. Built: `telegram`, `whatsapp`, `messenger`, `linkedin`, `email_imap`, `outlook_pst`. Not built: `sms`. |
 
 ### App — `app/`
 
@@ -99,7 +129,7 @@ pull in FastAPI or a web server.
 | `routers/graph.py` | `/api/graph`, `/api/thread/{key}`, `/api/message/{key}`. |
 | `routers/search.py` | `POST /api/search` — `mode: substring|cypher`. |
 | `routers/chat.py` | `/api/chat/health`, `POST /api/chat`. Ollama loopback, one tool round. |
-| `routers/ingest.py` | `POST /api/ingest`, `GET /api/ingest/verify`, `POST /api/ingest/prune`. |
+| `routers/ingest.py` | `POST /api/ingest`, `GET /api/ingest/verify`, `POST /api/ingest/prune`. The UI half of this flow is **half-wired** — see `buildINGESTUI.md`. |
 | `__main__.py` | `python -m app`, default port **8100**. |
 
 ### UI — `app/ui/src/`
@@ -109,13 +139,13 @@ React 19 + esbuild. `dist/app.js` is **committed** so a clone runs without npm.
 | File | Role |
 |---|---|
 | `App.jsx` | Shell. Owns theme, viewer stack, chat toggle, modal, platform filter. Enforces the halo/fly-to rule. |
-| `components/GraphCanvas.jsx` | Cytoscape + fcose. Tiers, shades, icons, labels, reveal, `halo()`/`focus()`. |
+| `components/GraphCanvas.jsx` | Cytoscape + fcose. Tiers, labels, reveal, `halo()`/`focus()`. **Icons are the only node look** — no circle mode, no toggle. |
 | `components/Viewer.jsx` | Two states, Back, character-budgeted message loads, per-thread search, paging. |
 | `components/ChatPanel.jsx` | Ollama chat, `localStorage` transcript, tool trace. |
 | `components/CommandBar.jsx` | Title bar. Every control is a button here. |
-| `components/modals/` | `Modal.jsx` (shell + `Slider`/`Check`/`TextField`), Log, Ingest, Setup, GraphStyle, Utilities. |
-| `config/theme.js` | **Every tunable.** The Graph Style modal writes here; persists to `localStorage`. |
-| `config/nodeTypes.js` | Platform colours, icons, placeholder names, label truncation. |
+| `components/modals/` | `Modal.jsx` (shell + `Slider`/`Check`/`TextField`), Log, Ingest, Setup, **Canvas** (with a Styling sub-modal), Utilities. |
+| `config/theme.js` | **Every tunable.** The Canvas modal writes the view controls here; persists to `localStorage`. Icons, colours, edge widths and node sizes are dev knobs, not UI. |
+| `config/nodeTypes.js` | Platform colours, icons (`PLATFORM_ICONS` for threads, `PERSON_ICONS` for correspondents), placeholder names, label truncation. Per-platform glyph size is `visual.iconScaleByPlatform` in `theme.js`. |
 | `lib/api.js` | The only place the UI talks to the server. |
 | `lib/useViewerStack.js` | The state timeline, persisted to `localStorage`. |
 
@@ -180,13 +210,18 @@ for it (see §0).
 |---|---|
 | `Message.key = platform:chat_id:message_id` | Makes re-ingest idempotent. Never an array index or timestamp. |
 | `ts_utc` everywhere | Telegram/WhatsApp/Facebook Messenger export wall-clock with no offset. Convert at parse or the timeline lies. |
+| **A platform is a source, not a provider** | `outlook` is a `.pst` file; Outlook-over-IMAP is `email`. Same account, two lines, deliberately — a point-in-time export and a live mailbox have different provenance and different keys. |
+| **The owner is never a Correspondent** | `writer.write_correspondents()` filters by display name, which cannot match an address, so an adapter that knows the owner must prune them from `participant_names` under both forms. `outlook_pst` does; without it the owner appears as their own contact. |
 | **The tz offset is part of the key** | `ts_utc` hashes into the key, so a different `--tz-offset` produces different keys. Stored per platform in `identity.json` (`tz_offsets`) and reused when omitted. Changing it on a populated store is refused. |
 | `MERGE` on `key`, never `CREATE` | Re-ingest must not duplicate. |
 | Every title has a fallback, never empty | `writer.thread_display_title()`. 291 of 955 threads rendered `""` before this existed. |
 | One writer per `.rl` file | Concurrent writers are corruption, not speed-up. Hence parallel parse → serialised write. |
 | Messages are atomic — never chunk | One message is already one node, under 500 chars. |
-| Truncation is never silent | Any tool that hits `limit` returns `truncated: true`. |
+| Truncation is never silent | Any tool that hits `limit` returns `truncated: true`, and `graph_slice` also returns `total` — the count the limit hid. |
+| **A view toggle never narrows a query** | Canvas hides clusters and silent threads; that is drawing only. `Utilities` is the one that narrows what the tools return. Never merge the two. |
+| **Icons are an override layer, never the base** | The base `node` rule is a filled circle; `node.icon` removes the fill and draws the glyph. A thread uses its platform glyph, a correspondent the person glyph. Because the icon styling is an override, a platform with no icon file keeps the base fill and stays visible — no fallback class needed. Making the icon styling the base would leave unknown platforms invisible. |
 | `write_enabled` and `platforms` are excluded from tool schemas | They are the surface's toggles, not something a model may set. |
+| **A dropped thread leaves no orphan messages** | Any parse-time gate runs before the rows are committed and before the `Chat` is appended. Same ordering that fixed Telegram's service-only chats. |
 
 ## 6. Commands
 
@@ -274,6 +309,7 @@ Ports in use on this box: **8000 is taken** by another app — this project uses
 
 | Topic | File |
 |---|---|
+| **Ingest UI — the half-wired gap** (temporary) | [`buildINGESTUI.md`](buildINGESTUI.md) |
 | UI as built, every Cytoscape decision | [`archive_docs/UI-Cytoscape.md`](archive_docs/UI-Cytoscape.md) |
 | Per-platform export shapes and traps | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) |
 | Ollama on this machine | [`archive_docs/HowToRunOllama.md`](archive_docs/HowToRunOllama.md) |

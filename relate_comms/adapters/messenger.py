@@ -197,6 +197,7 @@ def parse(
     tz_offset_hours: float = 0,
     include_filtered: bool = True,
     exclude_spam_groups: bool = False,
+    exclude_silent_groups: bool = False,
 ) -> IngestResult:
     """Parse a Messenger archive directory or `.zip` into Messages.
 
@@ -209,6 +210,11 @@ def parse(
     `is_noise_row` and `SPAM_NOISE_RATIO`. Off by default for the same reason: the
     store is whole unless the user asks otherwise. A dropped thread is counted in
     `skipped`, never silently lost.
+
+    `exclude_silent_groups=True` drops group threads the owner never sent a message
+    in. A group you never spoke in is not a conversation you had, and on the real
+    export these are 70 threads holding 9,513 of 10,605 Messenger messages. Off by
+    default, and counted when on.
 
     `self_id` is the owner's **display name** for Messenger (the export names senders,
     it does not give ids). `profile_dir` keeps it stable across platforms.
@@ -324,6 +330,16 @@ def parse(
             if noise / len(rows) >= SPAM_NOISE_RATIO:
                 result.note_skip("spam group thread")
                 continue
+
+        # A group the owner never spoke in is not a conversation they had. Measured
+        # on the real export: all 70 Messenger group threads are owner-silent, and
+        # they hold 9,513 of the 10,605 Messenger messages — the single biggest
+        # source of noise in the store. Off by default (the store is whole unless
+        # asked otherwise), but it is the switch that makes a Messenger import
+        # usable.
+        if exclude_silent_groups and is_group and not any(row.is_self for row in rows):
+            result.note_skip("group thread the owner never spoke in")
+            continue
 
         # The export writes newest-first; a thread must read forward in time.
         rows.reverse()

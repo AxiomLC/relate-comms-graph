@@ -2,7 +2,7 @@
  * Node types the canvas can draw, and how each one looks.
  *
  * The canvas draws Thread and Correspondent only (UI-Cytoscape.md §3). Message and
- * Attachment are listed because `types_present()` reports them and the Graph Style
+ * Attachment are listed because `types_present()` reports them and the Canvas
  * modal shows the real counts — but they are not drawable at this node count, and
  * the canvas refuses them rather than trying.
  */
@@ -55,9 +55,10 @@ export const PLATFORM_COLORS = {
  * Platform icons, one per platform, served from `app/static/icons/`.
  *
  * These are solid silhouettes recoloured to the platform's own colour, normalised
- * to a 24x24 viewBox so they all draw at the same weight. Used for **Threads only**
- * when `visual.nodeIcons` is on — correspondents stay as glowing rounded rects, so
- * the two kinds never look alike.
+ * to a 24x24 viewBox so they all draw at the same weight. Used for **Threads**.
+ * Correspondents use `PERSON_ICONS` below, so the two kinds never look alike.
+ *
+ * Icons are the only node look — there is no circle mode.
  */
 export const PLATFORM_ICONS = {
   messenger: "/static/icons/messenger.svg",

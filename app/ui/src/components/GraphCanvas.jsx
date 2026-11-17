@@ -39,9 +39,20 @@ import {
 
 // The platforms the legend lists, in reading order. `email` stands for all four
 // email keys, because they share one label and one colour.
+// Every platform the product intends to carry, in a fixed order. A platform with no
+// adapter yet is drawn as a placeholder rather than left out: the legend is the map of
+// what this graph can hold, and a missing row reads as "this platform does not exist"
+// instead of "not built yet". `PLANNED_PLATFORMS` in tools.py is the single source of
+// truth for which is which — the same list the Utilities modal greys out.
 const LEGEND_PLATFORMS = [
-  "messenger", "telegram", "whatsapp", "linkedin", "email", "outlook",
+  "messenger", "telegram", "whatsapp", "linkedin", "email", "outlook", "sms",
 ];
+
+// Mirrors `tools.PLANNED_PLATFORMS`. Kept as a literal because the UI has no build-time
+// access to the Python module; the Utilities modal is the authority and this only
+// decides whether a swatch is drawn hollow. Empty means every platform in the legend
+// has an adapter.
+const PLANNED_PLATFORMS = new Set([]);
 
 const GraphCanvas = forwardRef(function GraphCanvas(
   { data, theme, onNodeClick, onBackgroundClick, onLayoutDone },
@@ -70,6 +81,10 @@ const GraphCanvas = forwardRef(function GraphCanvas(
   // sliders felt broken. `themeRef` is read for the rest, so the values are still
   // current without being a dependency.
   const sizeKey = JSON.stringify(theme.tiers.sizes);
+  const platformKey = (theme.filter.platforms || []).join(",");
+  // `hideSilent` is read inside the elements memo, so it MUST be a dependency —
+  // without it the toggle changed the theme and nothing on screen, because the memo
+  // never re-ran. Same class of bug as the stale `tiers.edge` theme.
   const elements = useMemo(() => {
     const theme = themeRef.current; // eslint-disable-line no-shadow
     if (!data) return [];
@@ -78,7 +93,27 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     // same scale (theme.js §tiers). Threads may only be A/C/E and correspondents
     // B/D/F, so the two ladders interleave and a thread always outranks the
     // correspondent of the same band.
-    const allNodes = data.nodes || [];
+    // View-only filters. The server already applied the *node type* filter; these
+    // are purely visual and never reach a query, which is why they live here rather
+    // than in `loadGraph`.
+    //
+    // An empty `platforms` list means "every platform on", so a platform added later
+    // appears without the user ticking it.
+    const chosen = theme.filter.platforms || [];
+    const hiddenPlatforms = chosen.length ? new Set(
+      (data.nodes || [])
+        .map((node) => node.platform)
+        .filter((platform) => !chosen.includes(platform)),
+    ) : new Set();
+    const hideSilent = !!theme.filter.hideSilent;
+    const allNodes = (data.nodes || []).filter((node) => {
+      if (hiddenPlatforms.has(node.platform)) return false;
+      // A thread the owner never spoke in. `message_count` is the only signal the
+      // canvas has, so a thread with no messages is not hidden by this — it is
+      // already invisible for other reasons.
+      if (hideSilent && node.type === "Thread" && node.is_silent) return false;
+      return true;
+    });
     const threadLetters = assignBands(
       allNodes.filter((node) => node.type === "Thread"),
       "message_count",
@@ -107,28 +142,34 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       const tier = theme.tiers.sizes[letter] || theme.tiers.sizes.F;
 
       const base = platformColor(node.platform);
-      // The icon is a flat platform colour, so an icon node drops its shaded circle —
-      // otherwise the two fight. Threads use the source glyph, correspondents the
-      // person glyph; each has its own toggle.
-      const icon = isThread
-        ? theme.visual.nodeIcons
-          ? platformIcon(node.platform)
-          : null
-        : theme.visual.correspondentIcons
-          ? personIcon(node.platform)
-          : null;
+      // Icons are the only node look — there is no circle mode. A thread draws its
+      // source's glyph, a correspondent draws the person glyph. The glyph is a flat
+      // platform colour baked into the SVG, so an icon node drops its shaded fill:
+      // a shaded circle behind a flat-coloured icon reads as a mistake.
+      //
+      // The URL is applied by a static per-platform style rule, never as a data
+      // field — `background-image: data(x)` throws inside Cytoscape when the value
+      // is an empty string, which killed the whole render once.
+      //
+      // A platform with no icon file needs no special case: the base `node` rule is
+      // a filled circle, and the `node.icon` override is the only thing that removes
+      // it. A node with no glyph simply never matches an icon rule, so it stays a
+      // visible circle. That is the whole reason the icon styling is an override
+      // layer rather than the base.
+      const glyph = isThread
+        ? platformIcon(node.platform)
+        : personIcon(node.platform);
 
       return {
         group: "nodes",
         // A CLASS, not a data field. Cytoscape's `[key]` selector tests whether the
         // field EXISTS, so `image: null` matched every node and stripped the fill
         // from the whole graph. A class is unambiguous.
-        classes: icon ? (isThread ? "icon" : "icon person") : "",
+        classes: glyph ? (isThread ? "icon" : "icon person") : "",
         data: {
           id: node.id,
           // One line, same as every other node. The source is already carried by
-          // the node's colour and, when on, its icon — a SOURCE line above the
-          // title was redundant.
+          // the node's icon — a SOURCE line above the title was redundant.
           label: isThread
             ? truncateLabel(node.label || node.id, 34)
             : truncateLabel(node.label || node.id, 28),
@@ -178,8 +219,11 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       });
 
     return [...nodes, ...edges];
+    // `platformKey` and `hideSilent` are dependencies because hiding a cluster or a
+    // silent thread must rebuild the elements; the rest of the theme stays out of it
+    // so a slider move does not throw away the layout.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, sizeKey]);
+  }, [data, sizeKey, platformKey, hideSilent]);
 
   /* ------------------------------------------------------------------- create */
 
@@ -354,17 +398,30 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       <div id="cy" ref={hostRef} />
       {/* Derived from the config, never hardcoded: the legend drifted out of sync
           with PLATFORM_COLORS once already, and a legend that lies is worse than
-          none. One row per distinct label, so the four email keys collapse. */}
+          none. One row per distinct label, so the three IMAP keys collapse onto
+          `Email` while `Outlook` keeps its own row. A platform with no adapter yet
+          is drawn hollow rather than omitted. */}
       <div className="canvas-legend">
-        {LEGEND_PLATFORMS.map((platform) => (
-          <div className="legend-row" key={platform}>
-            <span
-              className="legend-swatch"
-              style={{ background: platformColor(platform) }}
-            />
-            {platformLabel(platform)}
-          </div>
-        ))}
+        {LEGEND_PLATFORMS.map((platform) => {
+          const planned = PLANNED_PLATFORMS.has(platform);
+          return (
+            <div
+              className={`legend-row${planned ? " planned" : ""}`}
+              key={platform}
+              title={planned ? "Adapter not built yet" : undefined}
+            >
+              <span
+                className="legend-swatch"
+                style={
+                  planned
+                    ? { border: `1px dashed ${platformColor(platform)}` }
+                    : { background: platformColor(platform) }
+                }
+              />
+              {platformLabel(platform)}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -377,8 +434,28 @@ export default GraphCanvas;
 function buildStylesheet(theme) {
   const { palette, labels, visual } = theme;
 
+  /**
+   * The thread glyph's fill fraction, corrected per platform.
+   *
+   * The base `iconScale` is one number for every glyph, but the artwork inside each
+   * 24x24 viewBox does not occupy the same share of it — an envelope is wide and
+   * reads large, a speech bubble is compact and reads small. `iconScaleByPlatform`
+   * is the optical correction, and 1.0 is the default so a new platform needs no
+   * entry.
+   */
+  const iconScaleFor = (visual, platform) =>
+    visual.iconScale * (visual.iconScaleByPlatform?.[platform] ?? 1);
+
   return [
     {
+      // The base rule is a FILLED CIRCLE, and it stays that way. Icons are an
+      // override layer on top of it, not a replacement for it.
+      //
+      // That layering is what makes the fallback free: a node whose platform has no
+      // icon file simply never matches an icon rule, so it keeps this fill and stays
+      // visible. Making the icon styling the base instead would leave every node
+      // with no fill and no border, and an unknown platform would draw as nothing at
+      // all — an invisible node, which is the one failure this app must never have.
       selector: "node",
       style: {
         "background-color": "data(color)",
@@ -411,9 +488,12 @@ function buildStylesheet(theme) {
       },
     },
     {
-      // An icon node drops its fill: the glyph IS the mark, and a shaded circle
-      // behind a flat-coloured icon reads as a mistake. `background-opacity` affects
-      // only the colour — `background-image-opacity` keeps the glyph visible.
+      // The icon override. A glyph IS the mark, so the shaded circle behind it goes:
+      // a flat-coloured icon on a shaded disc reads as a mistake. `background-opacity`
+      // affects only the colour — `background-image-opacity` keeps the glyph visible.
+      //
+      // This is the ONLY thing that removes the base fill, which is why a platform
+      // with no icon file is still drawn as a circle rather than vanishing.
       selector: "node.icon",
       style: {
         "background-opacity": 0,
@@ -428,9 +508,16 @@ function buildStylesheet(theme) {
     //
     // `node.icon` (threads) and `node.icon.person` (correspondents) are separate
     // selectors, so a platform's two glyphs never collide.
+    // `iconScaleByPlatform` is the optical correction: the SVGs share a 24x24 box,
+    // but a wide envelope and a compact speech bubble do not read as the same size at
+    // the same scale. A platform with no entry keeps the base scale.
     ...Object.entries(PLATFORM_ICONS).map(([platform, url]) => ({
       selector: `node.icon[platform = "${platform}"]`,
-      style: { "background-image": `url("${url}")` },
+      style: {
+        "background-image": `url("${url}")`,
+        "background-width": `${Math.round(iconScaleFor(visual, platform) * 100)}%`,
+        "background-height": `${Math.round(iconScaleFor(visual, platform) * 100)}%`,
+      },
     })),
     ...Object.entries(PERSON_ICONS).map(([platform, url]) => ({
       selector: `node.icon.person[platform = "${platform}"]`,
@@ -442,16 +529,14 @@ function buildStylesheet(theme) {
     })),
     {
       // Selector grammar needs spaces around the operator: `[type = "x"]`.
-      // Correspondents are circles with a border and glow in their OWN source
-      // colour — the glow is the whole point, so it is strong and the border matches
-      // the fill rather than the generic blue outline. With the person glyph on, the
-      // fill goes away and the glow carries the class distinction instead.
+      // A correspondent keeps a permanent glow in its OWN source colour — that glow
+      // is what makes it read as a different class of thing from a thread, now that
+      // both are glyphs. The fill and border are left to the base rule and the icon
+      // override; only the glow is added here.
       selector: 'node[type = "Correspondent"]',
       style: {
         shape: "ellipse",
         color: labels.correspondentColor,
-        "background-opacity": 1,
-        "border-width": 1.5,
         "border-color": "data(color)",
         "border-opacity": 1,
         "shadow-blur": visual.correspondentGlow,

@@ -24,17 +24,25 @@ def graph(
         description="Comma-separated edge types. Omit for WITH.",
     ),
     limit: int = Query(default=2000, ge=1, le=20000),
+    sort: str = Query(
+        default="messages",
+        description="Which nodes survive `limit`: messages | recent | quiet",
+    ),
 ) -> dict:
     """Nodes and edges, already shaped for graphology.
 
     The UI's toggles are sent **explicitly** here when the user changes them. They
     are never applied implicitly: a hidden toggle must not narrow what an agent can
     query, so the default is everything the canvas draws.
+
+    `sort` is not a display preference — `limit` truncates, so the ordering decides
+    which nodes the user can never reach.
     """
     return tools.graph_slice(
         node_types=_split(nodes),
         edge_types=_split(edges),
         limit=limit,
+        sort=sort,
     )
 
 

@@ -27,7 +27,7 @@ Five words mean five specific things in this app. Everything else is prose.
 |---|---|---|
 | **Owner** | The account owner — whose archives these are. One per platform, stored in `store/profile/identity.json`. | Not a node. Not shown in the UI except as "you" in a message body. |
 | **Correspondent** | The other party in a conversation, **on one platform**. A fact from the export, keyed `<platform>:<name>`. | Not a person across platforms. Not an extracted entity. |
-| **Platform** | The social network: `telegram`, `messenger`, `email`, `linkedin`, `whatsapp`, `sms`. Shown as Telegram, Fcbk Mssgr, Email, LinkedIn, WhatsApp, SMS. | Not the file you ingested. Not the user's download. |
+| **Platform** | The source: `telegram`, `messenger`, `email`, `linkedin`, `whatsapp`, `outlook`, `sms`. Shown as Telegram, Fcbk Mssgr, Email, LinkedIn, WhatsApp, Outlook, SMS. | Not the file you ingested. Not the user's download. Not the provider — Outlook-over-IMAP is **Email**. |
 | **Thread** | One conversation. | Not a message. |
 | **Message** | One message. | Not a thread. |
 
@@ -48,6 +48,18 @@ nor a Correspondent. Nothing in the store, the code or the UI uses them today.
 which reads as "a message". The mapping lives in one place,
 `PLATFORM_LABELS` in `app/ui/src/config/nodeTypes.js`.
 
+**Outlook is its own platform, not a variant of Email.** The same Outlook account can
+arrive two ways and lands on two different lines:
+
+| route | platform | shown as | colour |
+|---|---|---|---|
+| `.pst` export dropped in the spool | `outlook` | Outlook | purple |
+| live IMAP (`--email outlook`) | `email` | Email | red |
+
+That is deliberate. A `.pst` is a file exported at a point in time; IMAP is a live
+mailbox. Different provenance, different keys, and merging them would make "where did
+this come from" unanswerable.
+
 ## Why a graph, why local
 
 | | |
@@ -65,7 +77,7 @@ records, and merged into that single file.
 
 ```
 spool/
-  real/     telegram/  whatsapp/  messenger/  linkedin/  sms/  imap/  gmail/
+  real/     telegram/  whatsapp/  messenger/  linkedin/  outlook/  sms/  imap/  gmail/
   sample/   the same folders, for generated demo data
 store/
   graph.rl      the graph — every message, every correspondent
@@ -136,11 +148,12 @@ Per-platform download instructions live in
 | **Telegram** | **A** | Desktop export → `result.json` (officially documented schema) |
 | **Email (Gmail)** | **A** | IMAP read-only, App Password. Verified live |
 | **Email (Hostinger / cPanel)** | **A** | IMAP read-only, `INBOX` + `INBOX.Sent`. Verified live |
-| **Email (Outlook)** | **A file / F live** | Basic auth is dead. Use the `.pst` export button |
+| **Outlook (`.pst`)** | **A** | Export to a `.pst` and drop it in. Verified against a real file |
+| **Outlook (live IMAP)** | **F** | Basic auth is dead; needs OAuth2. Lands on the **Email** line |
 | **WhatsApp** | B | Per-chat `.txt`/`.zip`. No all-chats export; media placeholders only |
 | **LinkedIn** | **A data / F automation** | *Basic* archive → `messages.csv`. Export only |
 | **Facebook Messenger** | B/C | *Download your information* → HTML archive. Slow, no API |
-| **SMS** | — | Adapter not built. Will read *SMS Backup & Restore* XML |
+| **SMS** | — | Adapter not built. Will read *SMS Backup & Restore* XML (payload measured, see `HANDOVER.md`) |
 | **Slack** | C | Export needs workspace admin. Not viable |
 | **Instagram** | — | Out of scope. Export names no sender |
 
@@ -156,6 +169,10 @@ write → verify → prune, 10-tool layer, FastAPI, and the UI.
 one human across platforms is unsolved), body-entity extraction (`Person`, `Place`,
 `Organization`, `Product`), SMS, semantic search (Relate supports vector indexes; none
 exists in this store yet).
+
+**Outlook is built and proven** — `adapters/outlook_pst.py`, 19 tests, run against a real
+`.pst`. It is not yet in the store above because that store was ingested before the leg
+existed.
 
 `pytest tests -q` → **137 passed, 2 skipped**.
 

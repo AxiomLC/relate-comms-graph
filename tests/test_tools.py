@@ -164,6 +164,47 @@ def test_graph_slice_rejects_an_unknown_type(store):
         tools.graph_slice(node_types=["Person"])
 
 
+def test_graph_slice_reports_the_total_it_truncated(store):
+    """The canvas must be able to say "showing 2 of 12" rather than implying it is all."""
+    small = tools.graph_slice(limit=2)
+    assert small["counts"]["nodes"] == 2
+    assert small["total"] > small["counts"]["nodes"]
+    assert small["truncated"] is True
+
+
+def test_graph_slice_total_matches_an_unlimited_slice(store):
+    """`total` is the count the limit hid, so it must equal the untruncated count."""
+    full = tools.graph_slice(limit=20000)
+    small = tools.graph_slice(limit=1)
+    assert small["total"] == full["counts"]["nodes"]
+
+
+def test_sort_decides_which_nodes_survive_the_cutoff(store):
+    """The cutoff is real, so the ordering is what makes a node unreachable.
+
+    `messages` keeps the biggest threads, `quiet` keeps the ones that went silent.
+    They must not return the same first node.
+    """
+    biggest = tools.graph_slice(node_types=["Thread"], limit=1, sort="messages")
+    quietest = tools.graph_slice(node_types=["Thread"], limit=1, sort="quiet")
+    assert biggest["nodes"][0]["id"] != quietest["nodes"][0]["id"]
+
+    # And the ordering is genuinely by the stated quantity.
+    assert biggest["nodes"][0]["message_count"] >= 1
+    assert quietest["nodes"][0]["last_ts"] <= biggest["nodes"][0]["last_ts"]
+
+
+def test_recent_sort_is_by_last_activity(store):
+    recent = tools.graph_slice(node_types=["Thread"], limit=3, sort="recent")
+    stamps = [node["last_ts"] for node in recent["nodes"] if node["last_ts"]]
+    assert stamps == sorted(stamps, reverse=True)
+
+
+def test_graph_slice_rejects_an_unknown_sort(store):
+    with pytest.raises(tools.ToolError, match="unknown sort"):
+        tools.graph_slice(sort="loudest")
+
+
 def test_graph_slice_can_draw_messages_on_request(store):
     slice_ = tools.graph_slice(node_types=["Message"], edge_types=["IN"], limit=5)
     assert {node["type"] for node in slice_["nodes"]} == {"Message"}
