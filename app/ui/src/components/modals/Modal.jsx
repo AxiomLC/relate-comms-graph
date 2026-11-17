@@ -58,14 +58,17 @@ export function Check({ label, checked, onChange, hint }) {
 }
 
 /** A labelled text input, for the few values a slider cannot express. */
-export function TextField({ label, value, onChange, placeholder, hint }) {
+export function TextField({
+  label, value, onChange, placeholder, hint, type = "text", autoComplete,
+}) {
   return (
     <div className="field" title={hint || ""}>
       <label>{label}</label>
       <input
-        type="text"
+        type={type}
         value={value}
         placeholder={placeholder}
+        autoComplete={autoComplete}
         onChange={(event) => onChange(event.target.value)}
       />
     </div>

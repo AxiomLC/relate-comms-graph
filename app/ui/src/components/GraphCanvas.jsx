@@ -85,6 +85,12 @@ const GraphCanvas = forwardRef(function GraphCanvas(
   // `hideSilent` is read inside the elements memo, so it MUST be a dependency —
   // without it the toggle changed the theme and nothing on screen, because the memo
   // never re-ran. Same class of bug as the stale `tiers.edge` theme.
+  //
+  // It is declared HERE, outside the memo, because a dependency array is evaluated in
+  // the enclosing scope: a `const` declared inside the callback is not visible to it,
+  // and referencing it there throws `hideSilent is not defined` on every render —
+  // which blanks the whole app.
+  const hideSilent = !!theme.filter.hideSilent;
   const elements = useMemo(() => {
     const theme = themeRef.current; // eslint-disable-line no-shadow
     if (!data) return [];
@@ -105,7 +111,6 @@ const GraphCanvas = forwardRef(function GraphCanvas(
         .map((node) => node.platform)
         .filter((platform) => !chosen.includes(platform)),
     ) : new Set();
-    const hideSilent = !!theme.filter.hideSilent;
     const allNodes = (data.nodes || []).filter((node) => {
       if (hiddenPlatforms.has(node.platform)) return false;
       // A thread the owner never spoke in. `message_count` is the only signal the

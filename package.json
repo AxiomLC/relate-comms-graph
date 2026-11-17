@@ -7,6 +7,7 @@
   "scripts": {
     "build": "esbuild app/ui/src/main.jsx --bundle --outfile=app/static/dist/app.js --jsx=automatic --loader:.css=css --define:process.env.NODE_ENV='\"production\"' --log-level=warning",
     "watch": "esbuild app/ui/src/main.jsx --bundle --outfile=app/static/dist/app.js --jsx=automatic --loader:.css=css --define:process.env.NODE_ENV='\"development\"' --log-level=warning --watch",
+    "dev": "npm run watch",
     "vendor": "node scripts/vendor.mjs"
   },
   "dependencies": {

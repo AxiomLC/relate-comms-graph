@@ -1,75 +1,35 @@
-import { useRef, useState } from "react";
-import { Loader2, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { FileUp, Loader2, Upload } from "lucide-react";
 
 import { api } from "../../lib/api.js";
+import { formatBytes } from "../../lib/format.js";
 import Modal, { Check, TextField } from "./Modal.jsx";
 
 /**
- * Ingest: one button, one modal (TECHREADME.md §6).
+ * Ingest: one modal, one tab, top to bottom.
  *
- * The modal is the product's honesty surface. It states what each platform actually
- * demands instead of pretending a magic import exists, and it is the same text as
- * `archive_docs/MssgDownloadInstructs.md` so the two cannot drift. **The modal is now the
- * only copy in the live tree** — if you edit one, edit the other.
+ *   ┌ drop box ────────────────────────────────────────────────┐
+ *   │ pick one or many files, or paste a path                  │
+ *   ├ IMAP ────────────────────────────────────────────────────┤
+ *   │ email / password / host / port, saved to ./.env          │
+ *   ├ ── separator ────────────────────────────────────────────┤
+ *   │ window · silent groups · spam threads · prune            │
+ *   └ [ Close ]                        [ Preview ]  [ Ingest ] ┘
  *
- * Two rules the UI must not break:
+ * Three rules the UI must not break:
  *
  *  - **Stage copies, never moves.** A failed parse must not relocate the user's only
- *    download. The server does the copying; the browser only sends paths.
+ *    download. The server does the copying; the browser only sends contents or paths.
  *  - **Write is a toggle.** Ingest is a WRITE tool, so `write_enabled` is sent
  *    explicitly with every request and is never remembered server-side.
+ *  - **Alerts appear only after Ingest is pressed.** Before that the modal is silent
+ *    except for the preview counts.
+ *
+ * The drop box is a real file picker: the browser can hand over file *contents* but
+ * never a filesystem path, so `POST /api/ingest/upload` copies them into the spool.
+ * A pasted path is the escape hatch for a folder export (Telegram writes a directory,
+ * not a file) and for a file too large to upload.
  */
-/*
- * The ingest flow is THREE steps, not one, and the middle one is the point:
- *
- *   1. **Inspect** — read headers only. No bodies, no writes. Answers "how much is
- *      in here, and spread over which months?"
- *   2. **Decide** — the user sees the counts and picks a window. This is the only
- *      place a big export is allowed to be narrowed, and it happens before anything
- *      is written.
- *   3. **Ingest** — parse with the chosen window and write.
- *
- * Why not just cap during ingest: by the time a cap fires, the file is already
- * parsed and the time is already spent. Inspecting first means the user chooses with
- * real numbers in front of them instead of discovering the size afterwards.
- *
- * **`api.inspect` does not exist yet.** It is a placeholder contract — see the
- * function below. Until the server side lands, `inspect()` returns `null` and the
- * modal falls back to the old one-step behaviour, so nothing is broken by the gap.
- */
-
-/**
- * Pre-inspect the chosen inputs. PLACEHOLDER — the server route is not built.
- *
- * The contract this must satisfy when it lands:
- *
- *   POST /api/ingest/inspect  { paths: [...], email: [...] }
- *   -> {
- *        legs: [{
- *          platform: "whatsapp",
- *          path: "…",
- *          total: 124000,          // rows the file states or a header pass counts
- *          months: {"2026-05": 9000, …},   // for the window slider
- *          estimated: true,        // false when the count is exact
- *        }],
- *        total: 137000,
- *      }
- *
- * Cost per format, so the estimate is honest:
- *   - SMS      free — `<smses count="…">` is in the first 4 KB.
- *   - IMAP     cheap — SEARCH per folder, no FETCH, so no bodies are downloaded.
- *   - Telegram streaming pass over `result.json`; timestamps only.
- *   - PST      folder walk; `number_of_sub_messages` per folder.
- *   - WhatsApp must read the whole `chat.txt` — there is no header count.
- */
-async function inspect({ paths, email }) {
-  if (!api.inspect) return null;
-  try {
-    return await api.inspect({ paths, email });
-  } catch {
-    return null; // a failed inspection must never block an ingest
-  }
-}
 
 /** The window presets. `null` means "everything". */
 const WINDOWS = [
@@ -87,82 +47,118 @@ function windowStart(months) {
   return date.toISOString().slice(0, 10);
 }
 
-/** How many messages a window would keep, from the pre-inspect histogram. */
-function countInWindow(legs, months) {
-  if (!months) return legs.reduce((sum, leg) => sum + (leg.total || 0), 0);
-  const cutoff = windowStart(months);
-  return legs.reduce((sum, leg) => {
-    const months_ = leg.months || {};
-    return sum + Object.entries(months_)
-      .filter(([month]) => month >= cutoff.slice(0, 7))
-      .reduce((inner, [, n]) => inner + n, 0);
-  }, 0);
+/** Which IMAP host a mail domain implies. Mirrors the server's table. */
+const HOSTS = {
+  "gmail.com": "imap.gmail.com",
+  "googlemail.com": "imap.gmail.com",
+  "outlook.com": "outlook.office365.com",
+  "hotmail.com": "outlook.office365.com",
+  "live.com": "outlook.office365.com",
+  "yahoo.com": "imap.mail.yahoo.com",
+  "icloud.com": "imap.mail.me.com",
+  "me.com": "imap.mail.me.com",
+  "zoho.com": "imap.zoho.com",
+  "fastmail.com": "imap.fastmail.com",
+  "gmx.com": "imap.gmx.com",
+  "gmx.net": "imap.gmx.com",
+  "yandex.com": "imap.yandex.com",
+  "aol.com": "imap.aol.com",
+  "hostinger.com": "imap.hostinger.com",
+};
+
+function hostFor(email) {
+  const domain = (email.split("@")[1] || "").toLowerCase();
+  if (!domain) return "";
+  return HOSTS[domain] || `mail.${domain}`;
+}
+
+/** A provider name for the request, from the address. `custom` for anything else. */
+function providerFor(email) {
+  const domain = (email.split("@")[1] || "").toLowerCase();
+  if (!domain) return "";
+  const known = {
+    "gmail.com": "gmail", "googlemail.com": "gmail",
+    "outlook.com": "outlook", "hotmail.com": "outlook", "live.com": "outlook",
+    "yahoo.com": "yahoo", "icloud.com": "icloud", "me.com": "icloud",
+    "zoho.com": "zoho", "fastmail.com": "fastmail",
+    "gmx.com": "gmx", "gmx.net": "gmx", "yandex.com": "yandex",
+    "aol.com": "aol", "hostinger.com": "hostinger",
+  };
+  return known[domain] || "custom";
 }
 
 export default function IngestModal({ onClose, onIngested }) {
+  // --- drop box ------------------------------------------------------------
   const [paths, setPaths] = useState("");
-  const [email, setEmail] = useState("");
+  const [picked, setPicked] = useState([]);
+  const [staged, setStaged] = useState([]);
+  const dropRef = useRef(null);
+  const fileRef = useRef(null);
+  const folderRef = useRef(null);
+
+  // --- IMAP ----------------------------------------------------------------
+  const [imapEmail, setImapEmail] = useState("");
+  const [imapPassword, setImapPassword] = useState("");
+  const [imapHost, setImapHost] = useState("");
+  const [imapPort, setImapPort] = useState("993");
+  const [envStatus, setEnvStatus] = useState(null);
+  const [envSaved, setEnvSaved] = useState(null);
+
+  // --- settings ------------------------------------------------------------
   const [tzOffset, setTzOffset] = useState("");
+  const [window_, setWindow] = useState("all");
+  const [silentGroups, setSilentGroups] = useState(true);
+  const [silentPlatforms, setSilentPlatforms] = useState({
+    telegram: true, whatsapp: true, messenger: true,
+  });
+  const [spamThreads, setSpamThreads] = useState(true);
+  const [spamPlatforms, setSpamPlatforms] = useState({ email: true, outlook: true });
+  const [spamGroups, setSpamGroups] = useState(false);
+  // "off" | "0" | "1" | "2" — the prune policy. A string so the buttons can be a
+  // plain list; `Number()` only happens on the way out.
+  const [pruneKeep, setPruneKeep] = useState("off");
+
+
+  // --- run state -----------------------------------------------------------
   const [writeEnabled, setWriteEnabled] = useState(false);
-  const [prune, setPrune] = useState(false);
-  const [noSpamGroups, setNoSpamGroups] = useState(false);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState(null);
   const [error, setError] = useState(null);
-  const [tab, setTab] = useState("drop");
-  const [window_, setWindow] = useState("all");
-  const [inspection, setInspection] = useState(null);
-  const dropRef = useRef(null);
+  const [preview, setPreview] = useState(null);
+  const [log, setLog] = useState([]);
+  const [halted, setHalted] = useState(null);
+
+  // Double confirm: `wipeStep` 0 = idle, 1 = "are you sure", 2 = "type nothing, press
+  // the second button". Two deliberate clicks, because there is no undo.
+  const [wipeStep, setWipeStep] = useState(0);
+  const [wipeResult, setWipeResult] = useState(null);
+
+  useEffect(() => {
+    api.envStatus().then(setEnvStatus).catch(() => setEnvStatus(null));
+    refreshPreview();
+  }, []);
+
+  /** Newest first, so the last thing that happened is the first thing read. */
+  const note = (level, text) =>
+    setLog((prev) => [{ level, text, at: new Date() }, ...prev]);
 
   const pathList = () =>
-    paths
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
+    paths.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
-  const emailList = () =>
-    email
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
+  const ticked = (map) => Object.entries(map).filter(([, on]) => on).map(([key]) => key);
 
-  /** Step 1. Read headers only, then show the user what they are about to write. */
-  const preInspect = async () => {
+  /** Copy picked files into the spool. Nothing is parsed yet. */
+  const stageFiles = async (files) => {
+    // A cancelled dialog fires `change` with an empty list. Sending it would hit the
+    // route's required `files` field and surface a validation error for doing nothing.
+    if (!files.length) return;
     setBusy(true);
     setError(null);
     try {
-      const result = await inspect({ paths: pathList(), email: emailList() });
-      setInspection(result);
-      if (!result) {
-        // No server route yet: say so plainly rather than pretending.
-        setError(
-          "Pre-inspection is not wired yet, so the size of this export is unknown " +
-            "until it is parsed. Ingest will run with the window you chose.",
-        );
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const run = async () => {
-    setBusy(true);
-    setError(null);
-    setReport(null);
-    try {
-      const months = WINDOWS.find((w) => w.key === window_)?.months ?? null;
-      const result = await api.ingest({
-        which: "real",
-        paths: pathList(),
-        email: emailList(),
-        since: windowStart(months),
-        tz_offset_hours: tzOffset === "" ? null : Number(tzOffset),
-        exclude_spam_groups: noSpamGroups,
-        prune,
-        write_enabled: writeEnabled,
-      });
-      setReport(result);
-      onIngested?.(result);
+      const result = await api.upload(files, { writeEnabled });
+      setStaged((prev) => [...prev, ...(result.staged || [])]);
+      setPicked([]);
+      if (fileRef.current) fileRef.current.value = "";
     } catch (err) {
       setError(err.message);
     } finally {
@@ -173,11 +169,161 @@ export default function IngestModal({ onClose, onIngested }) {
   const onDrop = (event) => {
     event.preventDefault();
     dropRef.current?.classList.remove("over");
-    // A browser cannot hand us a filesystem path, and the server must not scan
-    // ~/Downloads. So the drop zone explains the one thing that works: paste the
-    // path. This is a deliberate limitation, not an oversight.
-    setTab("paths");
+    stageFiles(Array.from(event.dataTransfer?.files || []));
   };
+
+  /**
+   * Read-only pass: what is in the spool, and what has already been ingested.
+   *
+   * Runs on open and after every stage, so the log can say "already ingested" before
+   * the user commits to a parse. Nothing is written.
+   */
+  const refreshPreview = async () => {
+    try {
+      const result = await api.preview("real");
+      setPreview(result);
+      return result;
+    } catch {
+      setPreview(null);
+      return null;
+    }
+  };
+
+  /** Write IMAP credentials to `./.env`. Its own button, never a side effect. */
+  const saveCredentials = async () => {
+    setBusy(true);
+    setError(null);
+    setEnvSaved(null);
+    try {
+      const result = await api.saveEnv({
+        email: imapEmail.trim(),
+        password: imapPassword,
+        host: imapHost.trim() || null,
+        port: Number(imapPort) || 993,
+        write_enabled: writeEnabled,
+      });
+      setEnvSaved(result);
+      setImapPassword("");
+      api.envStatus().then(setEnvStatus).catch(() => {});
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * One ingest run.
+   *
+   * `skip` is a set of platform names to leave out — that is how "exclude this leg and
+   * continue" is expressed. The run is **restarted** rather than resumed: every write
+   * is a MERGE on a stable key, so a second run over the same spool adds nothing and
+   * costs only the parse. Resuming mid-pipeline would mean holding a half-written
+   * batch across a user decision, which is a far worse thing to get wrong.
+   */
+  const run = async ({ skip = new Set() } = {}) => {
+    setBusy(true);
+    setError(null);
+    setReport(null);
+    setHalted(null);
+    note("info", "Ingesting…");
+    try {
+      const months = WINDOWS.find((w) => w.key === window_)?.months ?? null;
+      const result = await api.ingest({
+        which: "real",
+        paths: pathList(),
+        email: imapEmail.trim() && !skip.has("email") ? [providerFor(imapEmail)] : [],
+        since: windowStart(months),
+        tz_offset_hours: tzOffset === "" ? null : Number(tzOffset),
+        exclude_silent_groups: silentGroups,
+        silent_group_platforms: silentGroups ? ticked(silentPlatforms) : null,
+        exclude_spam_threads: spamThreads,
+        spam_thread_platforms: spamThreads ? ticked(spamPlatforms) : null,
+        exclude_spam_groups: spamGroups,
+        prune: pruneKeep !== "off",
+        prune_keep: pruneKeep === "off" ? null : Number(pruneKeep),
+        write_enabled: writeEnabled,
+      });
+
+      // A leg that failed is the one thing worth stopping on: the rest landed, and the
+      // user has to decide whether to retry without it.
+      const failed = (result.batches || []).filter(
+        (batch) => batch.error && !skip.has(batch.platform),
+      );
+      for (const batch of result.batches || []) {
+        if (batch.error) {
+          note("warn", `${batch.platform}: ${batch.error}`);
+        } else {
+          note(
+            "ok",
+            `${batch.platform}: ${batch.messages} msgs · ${batch.attachments} attachments` +
+              (batch.verified ? " · verified" : " · NOT verified"),
+          );
+        }
+      }
+
+      setReport(result);
+      onIngested?.(result);
+      refreshPreview();
+
+      if (failed.length) {
+        setHalted({ failed, skip });
+        note("warn", `${failed.length} leg(s) failed — choose to exclude and continue, or cancel`);
+      } else {
+        note("ok", "done");
+      }
+    } catch (err) {
+      setError(err.message);
+      note("warn", err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Wipe the graph. Two clicks, and the manifest always goes with it. */
+  const truncate = async () => {
+    setBusy(true);
+    setError(null);
+    setWipeResult(null);
+    try {
+      const result = await api.truncate({
+        write_enabled: writeEnabled,
+        confirm: true,
+      });
+      setWipeResult(result);
+      setWipeStep(0);
+      setReport(null);
+      note("warn", `store truncated — ${result.removed.length} file(s) removed`);
+      refreshPreview();
+      onIngested?.({});
+    } catch (err) {
+      setError(err.message);
+      note("warn", err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Exclude the failed legs and run again. Nothing is rolled back — MERGE is idempotent. */
+  const continueWithout = () => {
+    const next = new Set(halted?.skip || []);
+    for (const batch of halted?.failed || []) next.add(batch.platform);
+    note("info", `continuing without ${[...next].join(", ")}`);
+    run({ skip: next });
+  };
+
+  /**
+   * Cancel. The store is not rolled back, and it does not need to be: every write is a
+   * MERGE on a stable key, so re-running the same export later adds nothing. What was
+   * written stays written and is correct.
+   */
+  const cancelRun = () => {
+    note("warn", "cancelled — anything already written stays, and re-running is safe");
+    setHalted(null);
+  };
+
+  const stagedCount = staged.length;
+  const hasInput = stagedCount > 0 || pathList().length > 0 || imapEmail.trim() !== "";
 
   return (
     <Modal
@@ -186,254 +332,407 @@ export default function IngestModal({ onClose, onIngested }) {
       wide
       footer={
         <>
+          {/* The one gate before the button. Ingest writes to the store, so it is
+              armed explicitly and never remembered — a remembered toggle is a toggle
+              nobody remembers turning on. */}
           <Check
-            label="Allow writes"
+            label="Ingest Ready"
             checked={writeEnabled}
             onChange={setWriteEnabled}
-            hint="Ingest is a WRITE tool. The toggle is per-surface and is never remembered."
+            hint="Arms the Ingest button. Ingest writes to the store, so it is a deliberate second step and is never remembered."
           />
           <span className="spacer" />
           <button className="ghost" onClick={onClose}>
             Close
           </button>
-          {/* Step 1. Read-only, so it does not need the write toggle. */}
-          <button className="ghost" onClick={preInspect} disabled={busy}>
-            {busy ? <Loader2 size={13} className="spin" /> : null}
-            Inspect first
-          </button>
-          <button onClick={run} disabled={busy || !writeEnabled}>
+          <button onClick={run} disabled={busy || !writeEnabled || !hasInput}>
             {busy ? <Loader2 size={13} className="spin" /> : <Upload size={13} />}
             Ingest
           </button>
         </>
       }
     >
-      <div className="tabs">
-        <button className={`tab${tab === "drop" ? " active" : ""}`} onClick={() => setTab("drop")}>
-          What to download
-        </button>
-        <button className={`tab${tab === "paths" ? " active" : ""}`} onClick={() => setTab("paths")}>
-          Paste a path
-        </button>
+      {/* ------------------------------------------------------------ truncate */}
+      {/* At the top, because it is the one control that changes what the whole app is
+          looking at. Two clicks, no undo. */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "8px 10px",
+          marginBottom: 14,
+          border: "1px solid var(--hairline)",
+          borderRadius: "var(--radius-sm)",
+        }}
+      >
+        {wipeStep === 0 && (
+          <>
+            <span className="pager-info" style={{ flex: 1 }}>
+              {wipeResult
+                ? `store truncated · ${wipeResult.removed.length} file(s) removed`
+                : "Wipe the graph and start again. The dedup record goes with it."}
+            </span>
+            <button className="ghost" onClick={() => setWipeStep(1)} disabled={busy}>
+              Truncate Relate DB
+            </button>
+          </>
+        )}
+        {wipeStep === 1 && (
+          <>
+            <span className="pager-info" style={{ flex: 1, color: "var(--orange-text)" }}>
+              This deletes <code>store/graph.rl</code> and the list of files already
+              ingested. Your exports in <code>spool/real/</code> are kept. There is no
+              undo.
+            </span>
+            <button className="ghost" onClick={() => setWipeStep(0)} disabled={busy}>
+              Keep it
+            </button>
+            <button onClick={() => setWipeStep(2)} disabled={busy}>
+              Yes, delete
+            </button>
+          </>
+        )}
+        {wipeStep === 2 && (
+          <>
+            <span className="pager-info" style={{ flex: 1, color: "var(--orange-text)" }}>
+              Last chance. Pressing this empties the graph.
+            </span>
+            <button className="ghost" onClick={() => setWipeStep(0)} disabled={busy}>
+              Cancel
+            </button>
+            <button onClick={truncate} disabled={busy || !writeEnabled}>
+              {busy ? <Loader2 size={13} className="spin" /> : null}
+              Delete everything
+            </button>
+          </>
+        )}
       </div>
 
-      {tab === "drop" && (
-        <>
-          <div
-            className="dropzone"
-            ref={dropRef}
-            onDragOver={(event) => {
-              event.preventDefault();
-              dropRef.current?.classList.add("over");
-            }}
-            onDragLeave={() => dropRef.current?.classList.remove("over")}
-            onDrop={onDrop}
-          >
-            <strong>Drop your export onto this area.</strong>
-            <br />
-            Everything stays on this machine. Nothing is uploaded.
-            <br />
-            <br />
-            A browser cannot read a file path, so dropping switches to the path tab —
-            paste where the file actually is and the server copies it into the spool.
-          </div>
+      {/* ---------------------------------------------------------- drop box */}
+      {/* The inputs are SIBLINGS of the dropzone, not children. Nested, a click on the
+          zone opens the dialog, the input's own click bubbles back to the zone, and the
+          dialog opens again — which is how a selection could arrive empty. */}
+      <input
+        ref={fileRef}
+        type="file"
+        multiple
+        style={{ display: "none" }}
+        onChange={(event) => {
+          const files = Array.from(event.target.files || []);
+          // Clear first, so picking the same file twice still fires `change`.
+          event.target.value = "";
+          stageFiles(files);
+        }}
+      />
+      {/* A folder pick, for Telegram (a directory holding `result.json`) and for a
+          LinkedIn or Messenger archive that arrives unzipped. `webkitdirectory` is
+          non-standard but is the only way a browser can hand over a directory. */}
+      <input
+        ref={folderRef}
+        type="file"
+        multiple
+        webkitdirectory=""
+        directory=""
+        style={{ display: "none" }}
+        onChange={(event) => {
+          const files = Array.from(event.target.files || []);
+          event.target.value = "";
+          stageFiles(files);
+        }}
+      />
+      <div
+        className="dropzone"
+        ref={dropRef}
+        onClick={() => fileRef.current?.click()}
+        onDragOver={(event) => {
+          event.preventDefault();
+          dropRef.current?.classList.add("over");
+        }}
+        onDragLeave={() => dropRef.current?.classList.remove("over")}
+        onDrop={onDrop}
+        style={{ cursor: "pointer" }}
+      >
+        <FileUp size={18} style={{ marginBottom: 6 }} />
+        <br />
+        <strong>Drop one or many files here, or click to choose.</strong>
+        <br />
+        Everything stays on this machine. Nothing is uploaded anywhere.
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <button className="ghost" onClick={() => fileRef.current?.click()}>
+          Choose files
+        </button>
+        <button className="ghost" onClick={() => folderRef.current?.click()}>
+          Choose a folder
+        </button>
+        <span className="pager-info" style={{ alignSelf: "center" }}>
+          a folder is for Telegram (a directory holding result.json) or an unzipped archive
+        </span>
+      </div>
 
-          <div className="prose">
-            <h3>Telegram</h3>
-            <ul>
-              <li>
-                Desktop → Settings → Advanced → <em>Export Telegram data</em> → tick{" "}
-                <strong>Personal chats</strong> and <strong>JSON</strong>, media off.
-              </li>
-              <li>
-                One bulk export covers every chat. A single-chat export is a
-                message-for-message subset of it, so there is no reason to click through
-                chats.
-              </li>
-            </ul>
-
-            <h3>WhatsApp</h3>
-            <ul>
-              <li>
-                WhatsApp Web/Desktop → open a chat → ⋮ → <em>Export chat</em> →{" "}
-                <strong>without media</strong>.
-              </li>
-              <li>
-                Per-chat only. The official account-info export contains no messages.
-              </li>
-              <li>
-                <em>Advanced — all chats with a date range:</em> copy{" "}
-                <code>msgstore.db.crypt15</code> off the phone plus your 64-digit backup
-                key, then run <code>wtsexporter --date "YYYY-MM-DD - YYYY-MM-DD"</code>.
-              </li>
-            </ul>
-
-            <h3>Fcbk Mssgr</h3>
-            <ul>
-              <li>
-                Facebook → Settings → <em>Your Facebook information</em> →{" "}
-                <em>Download your information</em> → Messages, <strong>JSON or HTML</strong>,
-                media low.
-              </li>
-              <li>Takes hours to a day. It is a lump, not a sync.</li>
-            </ul>
-
-            <h3>SMS</h3>
-            <ul>
-              <li>
-                <strong>Not built yet.</strong> The adapter is pending; nothing breaks if
-                you have no SMS export.
-              </li>
-              <li>
-                When it lands it will read <em>SMS Backup &amp; Restore</em> XML, which is
-                the only route off an Android phone without root.
-              </li>
-            </ul>
-
-            <h3>LinkedIn</h3>
-            <ul>
-              <li>
-                Settings → <em>Data privacy</em> → <em>Get a copy of your data</em> →{" "}
-                <strong>Want something in particular?</strong> → tick{" "}
-                <strong>Messages</strong>.
-              </li>
-              <li>
-                The <em>Basic</em> export already contains <code>messages.csv</code> — the
-                larger archive and its 24-hour wait are not needed.
-              </li>
-            </ul>
-
-            <h3>Email</h3>
-            <ul>
-              <li>
-                Gmail and Hostinger are read <strong>live over IMAP</strong> — there is no
-                file to drop. Put <code>GOOGLE_EMAIL</code>/<code>GOOGLE_APP_PASSWORD</code>{" "}
-                or <code>HOSTINGER_EMAIL</code>/<code>HOSTINGER_PASSWORD</code> in{" "}
-                <code>.env</code>, then name the mailbox in the field below.
-              </li>
-            </ul>
-
-            <h3>Outlook</h3>
-            <ul>
-              <li>
-                Outlook is its own platform, not a variant of Email — it gets its own
-                colour and cluster.
-              </li>
-              <li>
-                Outlook.com → Settings → General → <em>Privacy and data</em> →{" "}
-                <em>Export mailbox</em>. Microsoft assembles it server-side and mails a
-                link.
-              </li>
-              <li>
-                Classic Outlook → File → <em>Open &amp; Export</em> →{" "}
-                <em>Import/Export</em> → <em>Export to a file</em> →{" "}
-                <strong>Outlook Data File (.pst)</strong>, ticking “Include subfolders”.
-              </li>
-              <li>
-                Microsoft killed basic auth for IMAP, so live IMAP is not available — the
-                <code>.pst</code> is the only route.
-              </li>
-            </ul>
-
-            <h3>Timezone</h3>
-            <ul>
-              <li>
-                Telegram, WhatsApp and Fcbk Mssgr export <strong>wall-clock times with no
-                offset</strong>. Declare the offset the export was written in, or the
-                timeline lies.
-              </li>
-              <li>
-                It is remembered per platform, so a second run can omit it. Changing it on a
-                populated store is refused — it would duplicate every row instead of
-                replacing it.
-              </li>
-            </ul>
-          </div>
-        </>
-      )}
-
-      {tab === "paths" && (
-        <>
-          <TextField
-            label="Export path(s), one per line"
-            value={paths}
-            onChange={setPaths}
-            placeholder="C:/Users/me/Downloads/Telegram Desktop/ChatExport_2026-11-14"
-            hint="Files are COPIED into spool/real/<platform>/, chosen by content, never by filename."
-          />
-          <TextField
-            label="Mailboxes (comma-separated)"
-            value={email}
-            onChange={setEmail}
-            placeholder="hostinger, gmail"
-            hint="Live IMAP. Credentials come from .env; a missing key names the key, never a value."
-          />
-          <TextField
-            label="tz offset (hours)"
-            value={tzOffset}
-            onChange={setTzOffset}
-            placeholder="leave blank to reuse the recorded offset"
-            hint="e.g. -5 for US Eastern. Only Telegram, WhatsApp and Messenger accept it."
-          />
-          <h2 className="section">How far back</h2>
-          <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
-            Applied to every leg at parse time. A message outside the window is counted
-            as skipped, never silently dropped.
-          </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-            {WINDOWS.map((option) => (
-              <button
-                key={option.key}
-                className={window_ === option.key ? "active" : "ghost"}
-                onClick={() => setWindow(option.key)}
-              >
-                {option.label}
-                {inspection ? (
-                  <span className="pager-info" style={{ marginLeft: 6 }}>
-                    ~{countInWindow(inspection.legs || [], option.months).toLocaleString()}
-                  </span>
-                ) : null}
-              </button>
-            ))}
-          </div>
-
-          <Check
-            label="Skip spam group threads (Facebook Messenger)"
-            checked={noSpamGroups}
-            onChange={setNoSpamGroups}
-            hint="Drops group threads that are mostly link-spam and join-events — the 700-message groups nobody actually talks in. Real group chats are kept."
-          />
-          <Check
-            label="Prune verified spool files older than 3 days"
-            checked={prune}
-            onChange={setPrune}
-            hint="Only files whose key set is confirmed present in the store. Unverified files are never pruned."
-          />
-        </>
-      )}
-
-      {inspection && (
-        <>
-          <h2 className="section">What is in here</h2>
-          <dl className="kv">
-            <dt>total</dt>
-            <dd>{Number(inspection.total || 0).toLocaleString()} messages</dd>
-          </dl>
-          {(inspection.legs || []).map((leg, index) => (
+      {stagedCount > 0 && (
+        <div style={{ marginTop: 8 }}>
+          {staged.map((item, index) => (
             <div key={index} className="result-row" style={{ cursor: "default" }}>
-              <div className="result-snippet">
-                {leg.platform || "?"} · {leg.path}
-              </div>
+              <div className="result-snippet">{item.name}</div>
               <div className="result-meta">
-                {Number(leg.total || 0).toLocaleString()} messages
-                {leg.estimated ? " · estimated" : " · exact"}
+                {item.platform}
+                {item.recognised ? "" : " · not recognised, kept"}
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      <TextField
+        label="…or paste a path"
+        value={paths}
+        onChange={setPaths}
+        placeholder="C:/Users/me/Downloads/Telegram Desktop/ChatExport_2026-11-14"
+        hint="One per line. For a folder export (Telegram writes a directory) or a file too large to upload. Files are COPIED into spool/real/<platform>/, chosen by content, never by filename."
+      />
+
+      {/* What is already in the spool. Read-only, and the only place a duplicate is
+          caught before the parse rather than after it. */}
+      {preview && preview.legs.length > 0 && (
+        <>
+          <h2 className="section">Already in the spool</h2>
+          {preview.legs.map((leg, index) => (
+            <div key={index} className="result-row" style={{ cursor: "default" }}>
+              <div className="result-snippet">
+                {leg.platform || "?"} · {leg.path.split(/[\\/]/).slice(-2).join("/")}
+              </div>
+              <div className="result-meta">
+                {formatBytes(leg.bytes)}
+                {leg.duplicate
+                  ? ` · already ingested${leg.ingested_at ? ` ${leg.ingested_at.slice(0, 10)}` : ""}`
+                  : " · new"}
+                {leg.large ? " · large file" : ""}
+                {leg.recognised ? "" : " · not recognised, kept"}
+              </div>
+            </div>
+          ))}
+          {preview.duplicates > 0 && (
+            <div className="pager-info" style={{ marginBottom: 8 }}>
+              {preview.duplicates} file(s) already ingested. Re-running is safe — every
+              write is a MERGE on a stable key — but it costs the parse again.
+            </div>
+          )}
         </>
       )}
 
+      {/* --------------------------------------------------------------- IMAP */}
+      <h2 className="section">IMAP mailbox</h2>
+      <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
+        For a live mailbox. A <code>.pst</code> is a file — drop it above instead.
+        Outlook.com and O365 no longer allow password sign-in over IMAP; export a{" "}
+        <code>.pst</code> for those.
+      </div>
+      <TextField
+        label="email"
+        value={imapEmail}
+        onChange={(value) => {
+          setImapEmail(value);
+          if (!imapHost) setImapHost(hostFor(value));
+        }}
+        placeholder="you@yourdomain.com"
+        autoComplete="off"
+      />
+      <TextField
+        label="password"
+        type="password"
+        value={imapPassword}
+        onChange={setImapPassword}
+        placeholder="app password for Gmail, Yahoo, iCloud"
+        autoComplete="new-password"
+      />
+      <TextField
+        label="host"
+        value={imapHost}
+        onChange={setImapHost}
+        placeholder="filled from the address; edit if wrong"
+      />
+      <TextField
+        label="port"
+        value={imapPort}
+        onChange={setImapPort}
+        placeholder="993"
+      />
+      <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
+        Local app, manual entry. Never read by MCP or AI. Writes to <code>./.env</code>.
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+        <button
+          className="ghost"
+          onClick={saveCredentials}
+          disabled={busy || !writeEnabled || !imapEmail.trim() || !imapPassword}
+        >
+          Save credentials
+        </button>
+        {envSaved && (
+          <span className="pager-info">
+            saved {envSaved.provider} → {envSaved.host}:{envSaved.port}
+          </span>
+        )}
+        {!envSaved && envStatus && (
+          <span className="pager-info">
+            {Object.entries(envStatus.providers || {})
+              .filter(([, row]) => row.email_present && row.password_present)
+              .map(([name]) => name)
+              .join(", ") || "no credentials on disk yet"}
+          </span>
+        )}
+      </div>
+
+      {/* --------------------------------------------------------- separator */}
+      <hr
+        style={{
+          border: "none",
+          borderTop: "1px solid var(--hairline)",
+          margin: "18px 0 14px",
+        }}
+      />
+
+      {/* ---------------------------------------------------------- settings */}
+      <h2 className="section">How far back</h2>
+      <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
+        Applied to every leg at parse time. A message outside the window is counted as
+        skipped, never silently dropped.
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {WINDOWS.map((option) => (
+          <button
+            key={option.key}
+            className={window_ === option.key ? "active" : "ghost"}
+            onClick={() => setWindow(option.key)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <TextField
+        label="tz offset (hours)"
+        value={tzOffset}
+        onChange={setTzOffset}
+        placeholder="leave blank to reuse the recorded offset"
+        hint="e.g. -5 for US Eastern. Only Telegram, WhatsApp and Messenger accept it."
+      />
+
+      <h2 className="section">Groups</h2>
+      <Check
+        label="Exclude groups where the Owner never spoke"
+        checked={silentGroups}
+        onChange={setSilentGroups}
+        hint="Parse time, permanent. A group you were added to and never spoke in is not a conversation you had. Ticked, those threads are dropped before any node is created."
+      />
+      {silentGroups && (
+        <div style={{ display: "flex", gap: 16, margin: "2px 0 10px 22px" }}>
+          {[
+            ["telegram", "Telegram"],
+            ["whatsapp", "WhatsApp"],
+            ["messenger", "Fcbk Mssgr"],
+          ].map(([key, label]) => (
+            <Check
+              key={key}
+              label={label}
+              checked={silentPlatforms[key]}
+              onChange={(value) =>
+                setSilentPlatforms((prev) => ({ ...prev, [key]: value }))
+              }
+            />
+          ))}
+        </div>
+      )}
+      <div className="empty" style={{ paddingTop: 0, paddingBottom: 8, marginLeft: 22 }}>
+        Not the same as the Canvas "hide threads where the owner never sent a message" —
+        that one is a view toggle and is reversible. This one decides what is stored.
+      </div>
+
+      <h2 className="section">Email spam</h2>
+      <Check
+        label="Exclude email threads of 10+ messages with no Owner reply"
+        checked={spamThreads}
+        onChange={setSpamThreads}
+        hint="Parse time, permanent. A long thread you never replied to is almost always a broadcast, a notification chain or a mailing list. A short thread someone started with you is kept."
+      />
+      {/* Both sub-toggles default on: the rule is exclude-based, so "all selected"
+          means every covered platform is filtered. */}
+      {spamThreads && (
+        <div style={{ display: "flex", gap: 16, margin: "2px 0 10px 22px" }}>
+          {[["email", "Email"], ["outlook", "Outlook"]].map(([key, label]) => (
+            <Check
+              key={key}
+              label={label}
+              checked={spamPlatforms[key]}
+              onChange={(value) =>
+                setSpamPlatforms((prev) => ({ ...prev, [key]: value }))
+              }
+            />
+          ))}
+        </div>
+      )}
+
+      <Check
+        label="Exclude Facebook groups with 50%+ non-conversation messages"
+        checked={spamGroups}
+        onChange={setSpamGroups}
+        hint="Fcbk Mssgr only. Drops group threads where at least half the rows are housekeeping — 'sent a link', 'added X to the group', 'left the group'. Real group chats sit far below that ratio."
+      />
+
+      <h2 className="section">Prune prior ingests</h2>
+      <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
+        Deletes spool files from earlier runs once this one has verified. A file that
+        failed to land is never deleted.
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {[
+          ["off", "Off"],
+          ["0", "All"],
+          ["1", "Keep last"],
+          ["2", "Keep last 2"],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            className={pruneKeep === key ? "active" : "ghost"}
+            onClick={() => setPruneKeep(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* ------------------------------------------------------------ report */}
       {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
+
+      {/* --------------------------------------------------------------- halt */}
+      {halted && (
+        <div className="error" style={{ marginTop: 12 }}>
+          <strong>
+            {halted.failed.length} leg(s) could not be ingested.
+          </strong>
+          <div style={{ marginTop: 6 }}>
+            {halted.failed.map((batch) => (
+              <div key={batch.platform}>
+                {batch.platform}: {batch.error}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button onClick={continueWithout} disabled={busy}>
+              Exclude and continue
+            </button>
+            <button className="ghost" onClick={cancelRun} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+          <div className="pager-info" style={{ marginTop: 8 }}>
+            Continuing re-runs the whole ingest without that leg. Every write is a MERGE
+            on a stable key, so nothing already written is duplicated.
+          </div>
+        </div>
+      )}
 
       {report && (
         <>
@@ -464,8 +763,17 @@ export default function IngestModal({ onClose, onIngested }) {
                 {batch.pruned ? " · pruned" : ""}
                 {batch.error ? ` · ${batch.error}` : ""}
               </div>
+              {Object.entries(batch.skipped || {}).map(([reason, count]) => (
+                <div key={reason} className="result-meta">
+                  skipped {count}: {reason}
+                </div>
+              ))}
               {(batch.warnings || []).map((warning, warningIndex) => (
-                <div key={warningIndex} className="result-meta" style={{ color: "var(--orange-text)" }}>
+                <div
+                  key={warningIndex}
+                  className="result-meta"
+                  style={{ color: "var(--orange-text)" }}
+                >
                   {warning}
                 </div>
               ))}
@@ -483,6 +791,43 @@ export default function IngestModal({ onClose, onIngested }) {
             </>
           )}
         </>
+      )}
+
+      {/* ---------------------------------------------------------------- log */}
+      {/* Below the button, newest at the top. This is the run's own record: what was
+          attempted, what landed, what was skipped and why. */}
+      <hr
+        style={{
+          border: "none",
+          borderTop: "1px solid var(--hairline)",
+          margin: "18px 0 10px",
+        }}
+      />
+      <h2 className="section">Ingest log</h2>
+      {log.length === 0 ? (
+        <div className="empty" style={{ paddingTop: 0 }}>
+          Nothing yet. Press Ingest to start.
+        </div>
+      ) : (
+        <div style={{ maxHeight: 220, overflowY: "auto" }}>
+          {log.map((entry, index) => (
+            <div
+              key={index}
+              className="result-meta"
+              style={{
+                color:
+                  entry.level === "warn"
+                    ? "var(--orange-text)"
+                    : entry.level === "ok"
+                      ? "var(--text)"
+                      : "var(--muted)",
+                padding: "2px 0",
+              }}
+            >
+              {entry.at.toLocaleTimeString()} · {entry.text}
+            </div>
+          ))}
+        </div>
       )}
     </Modal>
   );

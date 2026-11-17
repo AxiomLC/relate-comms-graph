@@ -11,7 +11,7 @@ import Viewer from "./components/Viewer.jsx";
 import CanvasModal from "./components/modals/CanvasModal.jsx";
 import IngestModal from "./components/modals/IngestModal.jsx";
 import LogModal from "./components/modals/LogModal.jsx";
-import SetupModal from "./components/modals/SetupModal.jsx";
+
 import UtilitiesModal from "./components/modals/UtilitiesModal.jsx";
 
 /**
@@ -354,7 +354,7 @@ export default function App() {
       {modal === "ingest" && (
         <IngestModal onClose={() => setModal(null)} onIngested={onIngested} />
       )}
-      {modal === "setup" && <SetupModal onClose={() => setModal(null)} />}
+
       {modal === "canvas" && (
         <CanvasModal
           theme={theme}

@@ -23,11 +23,33 @@ async function request(path, options = {}) {
   }
 
   if (!response.ok) {
-    const message =
-      (data && (data.error || data.detail)) || `${response.status} ${response.statusText}`;
-    throw new Error(typeof message === "string" ? message : JSON.stringify(message));
+    throw new Error(readableError(data, response));
   }
   return data;
+}
+
+/**
+ * Turn an error body into one sentence.
+ *
+ * FastAPI's validation failures arrive as `{detail: [{loc, msg, type}]}`, and
+ * `JSON.stringify` on that produced a wall of JSON in the modal. A user needs the
+ * sentence, not the schema.
+ */
+function readableError(data, response) {
+  const detail = data && (data.error || data.detail);
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        const field = Array.isArray(item?.loc) ? item.loc.filter((p) => p !== "body").join(".") : "";
+        const msg = item?.msg || "invalid";
+        return field ? `${field}: ${msg}` : msg;
+      })
+      .filter(Boolean);
+    if (parts.length) return parts.join("; ");
+  }
+  return `${response.status} ${response.statusText}`;
 }
 
 export const api = {
@@ -100,6 +122,35 @@ export const api = {
 
   ingest: (payload) =>
     request("/api/ingest", { method: "POST", body: JSON.stringify(payload) }),
+
+  /**
+   * Copy picked files into the spool. The browser can hand over contents but never a
+   * filesystem path, so this is the only way a drop box can work.
+   *
+   * `write_enabled` is a query parameter because the body is multipart.
+   */
+  upload: (files, { writeEnabled = false } = {}) => {
+    const body = new FormData();
+    for (const file of files) body.append("files", file, file.name);
+    return request(`/api/ingest/upload?write_enabled=${writeEnabled}`, {
+      method: "POST",
+      body,
+    });
+  },
+
+  /** Which `.env` keys exist. Never returns a value — only present/absent. */
+  envStatus: () => request("/api/ingest/env"),
+
+  /** Read-only: what is in the spool, and what has already been ingested. */
+  preview: (which = "real") => request(`/api/ingest/preview?which=${which}`),
+
+  /** Wipe the graph and the dedup manifest. Destructive; needs confirm. */
+  truncate: (payload) =>
+    request("/api/ingest/truncate", { method: "POST", body: JSON.stringify(payload) }),
+
+  /** Write IMAP credentials to `./.env`. The password is never echoed back. */
+  saveEnv: (payload) =>
+    request("/api/ingest/env", { method: "POST", body: JSON.stringify(payload) }),
 
   verify: (which = "real") => request(`/api/ingest/verify?which=${which}`),
 

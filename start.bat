@@ -115,6 +115,13 @@ echo.
 
 REM  `python -m app` runs in THIS console. Closing the window kills it, which is
 REM  the requested behaviour: one window, one process, no orphans.
+REM
+REM  NO `--reload`, deliberately. The editor auto-saves every few seconds, so a
+REM  watcher restarts the server mid-request while you are still typing — and it
+REM  watches the whole repo, so a `pytest` run makes it thrash (one test run took
+REM  38 minutes instead of 39 seconds). Restarting is a two-second manual act:
+REM  close this window, run start.bat again. The UI bundle is a static file, so a
+REM  JS edit only needs `npm run build` and a browser refresh.
 python -m app --port %PORT%
 
 REM --- 7. If the server exits on its own, say so and hold the window ---------

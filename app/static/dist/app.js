@@ -14592,10 +14592,23 @@
     } catch {
     }
     if (!response.ok) {
-      const message = data && (data.error || data.detail) || `${response.status} ${response.statusText}`;
-      throw new Error(typeof message === "string" ? message : JSON.stringify(message));
+      throw new Error(readableError(data, response));
     }
     return data;
+  }
+  function readableError(data, response) {
+    const detail = data && (data.error || data.detail);
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      const parts = detail.map((item) => {
+        if (typeof item === "string") return item;
+        const field = Array.isArray(item?.loc) ? item.loc.filter((p) => p !== "body").join(".") : "";
+        const msg = item?.msg || "invalid";
+        return field ? `${field}: ${msg}` : msg;
+      }).filter(Boolean);
+      if (parts.length) return parts.join("; ");
+    }
+    return `${response.status} ${response.statusText}`;
   }
   var api = {
     health: () => request("/api/health"),
@@ -14654,6 +14667,28 @@
     }),
     chatHealth: () => request("/api/chat/health"),
     ingest: (payload) => request("/api/ingest", { method: "POST", body: JSON.stringify(payload) }),
+    /**
+     * Copy picked files into the spool. The browser can hand over contents but never a
+     * filesystem path, so this is the only way a drop box can work.
+     *
+     * `write_enabled` is a query parameter because the body is multipart.
+     */
+    upload: (files, { writeEnabled = false } = {}) => {
+      const body = new FormData();
+      for (const file of files) body.append("files", file, file.name);
+      return request(`/api/ingest/upload?write_enabled=${writeEnabled}`, {
+        method: "POST",
+        body
+      });
+    },
+    /** Which `.env` keys exist. Never returns a value — only present/absent. */
+    envStatus: () => request("/api/ingest/env"),
+    /** Read-only: what is in the spool, and what has already been ingested. */
+    preview: (which = "real") => request(`/api/ingest/preview?which=${which}`),
+    /** Wipe the graph and the dedup manifest. Destructive; needs confirm. */
+    truncate: (payload) => request("/api/ingest/truncate", { method: "POST", body: JSON.stringify(payload) }),
+    /** Write IMAP credentials to `./.env`. The password is never echoed back. */
+    saveEnv: (payload) => request("/api/ingest/env", { method: "POST", body: JSON.stringify(payload) }),
     verify: (which = "real") => request(`/api/ingest/verify?which=${which}`),
     prune: (payload) => request("/api/ingest/prune", { method: "POST", body: JSON.stringify(payload) })
   };
@@ -15272,18 +15307,25 @@
   __iconData4.node;
   var CornerDownRight = createLucideIcon(__iconData4);
 
-  // node_modules/lucide-react/dist/esm/icons/info.mjs
+  // node_modules/lucide-react/dist/esm/icons/file-up.mjs
   var __iconData5 = {
-    name: "info",
+    name: "file-up",
     size: 24,
     node: [
-      ["circle", { cx: "12", cy: "12", r: "10", key: "1mglay" }],
-      ["path", { d: "M12 16v-4", key: "1dtifu" }],
-      ["path", { d: "M12 8h.01", key: "e9boi3" }]
+      [
+        "path",
+        {
+          d: "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z",
+          key: "1oefj6"
+        }
+      ],
+      ["path", { d: "M14 2v5a1 1 0 0 0 1 1h5", key: "wfsgrz" }],
+      ["path", { d: "M12 12v6", key: "3ahymv" }],
+      ["path", { d: "m15 15-3-3-3 3", key: "15xj92" }]
     ]
   };
   __iconData5.node;
-  var Info = createLucideIcon(__iconData5);
+  var FileUp = createLucideIcon(__iconData5);
 
   // node_modules/lucide-react/dist/esm/icons/loader-circle.mjs
   var __iconData6 = {
@@ -15722,10 +15764,6 @@
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Upload, { size: 13 }),
         " Ingest"
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("button", { className: "ghost", onClick: () => onOpenModal("setup"), title: "What this is", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Info, { size: 13 }),
-        " Setup"
-      ] }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
         "button",
         {
@@ -15882,6 +15920,7 @@
     const stylesheet = (0, import_react7.useMemo)(() => buildStylesheet(theme), [theme]);
     const sizeKey = JSON.stringify(theme.tiers.sizes);
     const platformKey = (theme.filter.platforms || []).join(",");
+    const hideSilent = !!theme.filter.hideSilent;
     const elements = (0, import_react7.useMemo)(() => {
       const theme2 = themeRef.current;
       if (!data) return [];
@@ -15889,10 +15928,9 @@
       const hiddenPlatforms = chosen.length ? new Set(
         (data.nodes || []).map((node) => node.platform).filter((platform) => !chosen.includes(platform))
       ) : /* @__PURE__ */ new Set();
-      const hideSilent2 = !!theme2.filter.hideSilent;
       const allNodes = (data.nodes || []).filter((node) => {
         if (hiddenPlatforms.has(node.platform)) return false;
-        if (hideSilent2 && node.type === "Thread" && node.is_silent) return false;
+        if (hideSilent && node.type === "Thread" && node.is_silent) return false;
         return true;
       });
       const threadLetters = assignBands(
@@ -17137,15 +17175,24 @@
       label
     ] });
   }
-  function TextField({ label, value, onChange, placeholder, hint }) {
+  function TextField({
+    label,
+    value,
+    onChange,
+    placeholder,
+    hint,
+    type = "text",
+    autoComplete
+  }) {
     return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "field", title: hint || "", children: [
       /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("label", { children: label }),
       /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
         "input",
         {
-          type: "text",
+          type,
           value,
           placeholder,
+          autoComplete,
           onChange: (event) => onChange(event.target.value)
         }
       )
@@ -17492,14 +17539,6 @@
   // app/ui/src/components/modals/IngestModal.jsx
   var import_react11 = __toESM(require_react(), 1);
   var import_jsx_runtime7 = __toESM(require_jsx_runtime(), 1);
-  async function inspect({ paths, email }) {
-    if (!api.inspect) return null;
-    try {
-      return await api.inspect({ paths, email });
-    } catch {
-      return null;
-    }
-  }
   var WINDOWS = [
     { key: "3m", label: "3 months", months: 3 },
     { key: "6m", label: "6 months", months: 6 },
@@ -17512,63 +17551,100 @@
     date.setMonth(date.getMonth() - months);
     return date.toISOString().slice(0, 10);
   }
-  function countInWindow(legs, months) {
-    if (!months) return legs.reduce((sum, leg) => sum + (leg.total || 0), 0);
-    const cutoff = windowStart(months);
-    return legs.reduce((sum, leg) => {
-      const months_ = leg.months || {};
-      return sum + Object.entries(months_).filter(([month]) => month >= cutoff.slice(0, 7)).reduce((inner, [, n]) => inner + n, 0);
-    }, 0);
+  var HOSTS = {
+    "gmail.com": "imap.gmail.com",
+    "googlemail.com": "imap.gmail.com",
+    "outlook.com": "outlook.office365.com",
+    "hotmail.com": "outlook.office365.com",
+    "live.com": "outlook.office365.com",
+    "yahoo.com": "imap.mail.yahoo.com",
+    "icloud.com": "imap.mail.me.com",
+    "me.com": "imap.mail.me.com",
+    "zoho.com": "imap.zoho.com",
+    "fastmail.com": "imap.fastmail.com",
+    "gmx.com": "imap.gmx.com",
+    "gmx.net": "imap.gmx.com",
+    "yandex.com": "imap.yandex.com",
+    "aol.com": "imap.aol.com",
+    "hostinger.com": "imap.hostinger.com"
+  };
+  function hostFor(email) {
+    const domain = (email.split("@")[1] || "").toLowerCase();
+    if (!domain) return "";
+    return HOSTS[domain] || `mail.${domain}`;
+  }
+  function providerFor(email) {
+    const domain = (email.split("@")[1] || "").toLowerCase();
+    if (!domain) return "";
+    const known = {
+      "gmail.com": "gmail",
+      "googlemail.com": "gmail",
+      "outlook.com": "outlook",
+      "hotmail.com": "outlook",
+      "live.com": "outlook",
+      "yahoo.com": "yahoo",
+      "icloud.com": "icloud",
+      "me.com": "icloud",
+      "zoho.com": "zoho",
+      "fastmail.com": "fastmail",
+      "gmx.com": "gmx",
+      "gmx.net": "gmx",
+      "yandex.com": "yandex",
+      "aol.com": "aol",
+      "hostinger.com": "hostinger"
+    };
+    return known[domain] || "custom";
   }
   function IngestModal({ onClose, onIngested }) {
     const [paths, setPaths] = (0, import_react11.useState)("");
-    const [email, setEmail] = (0, import_react11.useState)("");
+    const [picked, setPicked] = (0, import_react11.useState)([]);
+    const [staged, setStaged] = (0, import_react11.useState)([]);
+    const dropRef = (0, import_react11.useRef)(null);
+    const fileRef = (0, import_react11.useRef)(null);
+    const folderRef = (0, import_react11.useRef)(null);
+    const [imapEmail, setImapEmail] = (0, import_react11.useState)("");
+    const [imapPassword, setImapPassword] = (0, import_react11.useState)("");
+    const [imapHost, setImapHost] = (0, import_react11.useState)("");
+    const [imapPort, setImapPort] = (0, import_react11.useState)("993");
+    const [envStatus, setEnvStatus] = (0, import_react11.useState)(null);
+    const [envSaved, setEnvSaved] = (0, import_react11.useState)(null);
     const [tzOffset, setTzOffset] = (0, import_react11.useState)("");
+    const [window_, setWindow] = (0, import_react11.useState)("all");
+    const [silentGroups, setSilentGroups] = (0, import_react11.useState)(true);
+    const [silentPlatforms, setSilentPlatforms] = (0, import_react11.useState)({
+      telegram: true,
+      whatsapp: true,
+      messenger: true
+    });
+    const [spamThreads, setSpamThreads] = (0, import_react11.useState)(true);
+    const [spamPlatforms, setSpamPlatforms] = (0, import_react11.useState)({ email: true, outlook: true });
+    const [spamGroups, setSpamGroups] = (0, import_react11.useState)(false);
+    const [pruneKeep, setPruneKeep] = (0, import_react11.useState)("off");
     const [writeEnabled, setWriteEnabled] = (0, import_react11.useState)(false);
-    const [prune, setPrune] = (0, import_react11.useState)(false);
-    const [noSpamGroups, setNoSpamGroups] = (0, import_react11.useState)(false);
     const [busy, setBusy] = (0, import_react11.useState)(false);
     const [report, setReport] = (0, import_react11.useState)(null);
     const [error, setError] = (0, import_react11.useState)(null);
-    const [tab, setTab] = (0, import_react11.useState)("drop");
-    const [window_, setWindow] = (0, import_react11.useState)("all");
-    const [inspection, setInspection] = (0, import_react11.useState)(null);
-    const dropRef = (0, import_react11.useRef)(null);
+    const [preview, setPreview] = (0, import_react11.useState)(null);
+    const [log, setLog] = (0, import_react11.useState)([]);
+    const [halted, setHalted] = (0, import_react11.useState)(null);
+    const [wipeStep, setWipeStep] = (0, import_react11.useState)(0);
+    const [wipeResult, setWipeResult] = (0, import_react11.useState)(null);
+    (0, import_react11.useEffect)(() => {
+      api.envStatus().then(setEnvStatus).catch(() => setEnvStatus(null));
+      refreshPreview();
+    }, []);
+    const note = (level, text) => setLog((prev) => [{ level, text, at: /* @__PURE__ */ new Date() }, ...prev]);
     const pathList = () => paths.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    const emailList = () => email.split(",").map((value) => value.trim()).filter(Boolean);
-    const preInspect = async () => {
+    const ticked = (map) => Object.entries(map).filter(([, on]) => on).map(([key]) => key);
+    const stageFiles = async (files) => {
+      if (!files.length) return;
       setBusy(true);
       setError(null);
       try {
-        const result = await inspect({ paths: pathList(), email: emailList() });
-        setInspection(result);
-        if (!result) {
-          setError(
-            "Pre-inspection is not wired yet, so the size of this export is unknown until it is parsed. Ingest will run with the window you chose."
-          );
-        }
-      } finally {
-        setBusy(false);
-      }
-    };
-    const run = async () => {
-      setBusy(true);
-      setError(null);
-      setReport(null);
-      try {
-        const months = WINDOWS.find((w) => w.key === window_)?.months ?? null;
-        const result = await api.ingest({
-          which: "real",
-          paths: pathList(),
-          email: emailList(),
-          since: windowStart(months),
-          tz_offset_hours: tzOffset === "" ? null : Number(tzOffset),
-          exclude_spam_groups: noSpamGroups,
-          prune,
-          write_enabled: writeEnabled
-        });
-        setReport(result);
-        onIngested?.(result);
+        const result = await api.upload(files, { writeEnabled });
+        setStaged((prev) => [...prev, ...result.staged || []]);
+        setPicked([]);
+        if (fileRef.current) fileRef.current.value = "";
       } catch (err) {
         setError(err.message);
       } finally {
@@ -17578,8 +17654,126 @@
     const onDrop = (event) => {
       event.preventDefault();
       dropRef.current?.classList.remove("over");
-      setTab("paths");
+      stageFiles(Array.from(event.dataTransfer?.files || []));
     };
+    const refreshPreview = async () => {
+      try {
+        const result = await api.preview("real");
+        setPreview(result);
+        return result;
+      } catch {
+        setPreview(null);
+        return null;
+      }
+    };
+    const saveCredentials = async () => {
+      setBusy(true);
+      setError(null);
+      setEnvSaved(null);
+      try {
+        const result = await api.saveEnv({
+          email: imapEmail.trim(),
+          password: imapPassword,
+          host: imapHost.trim() || null,
+          port: Number(imapPort) || 993,
+          write_enabled: writeEnabled
+        });
+        setEnvSaved(result);
+        setImapPassword("");
+        api.envStatus().then(setEnvStatus).catch(() => {
+        });
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setBusy(false);
+      }
+    };
+    const run = async ({ skip = /* @__PURE__ */ new Set() } = {}) => {
+      setBusy(true);
+      setError(null);
+      setReport(null);
+      setHalted(null);
+      note("info", "Ingesting\u2026");
+      try {
+        const months = WINDOWS.find((w) => w.key === window_)?.months ?? null;
+        const result = await api.ingest({
+          which: "real",
+          paths: pathList(),
+          email: imapEmail.trim() && !skip.has("email") ? [providerFor(imapEmail)] : [],
+          since: windowStart(months),
+          tz_offset_hours: tzOffset === "" ? null : Number(tzOffset),
+          exclude_silent_groups: silentGroups,
+          silent_group_platforms: silentGroups ? ticked(silentPlatforms) : null,
+          exclude_spam_threads: spamThreads,
+          spam_thread_platforms: spamThreads ? ticked(spamPlatforms) : null,
+          exclude_spam_groups: spamGroups,
+          prune: pruneKeep !== "off",
+          prune_keep: pruneKeep === "off" ? null : Number(pruneKeep),
+          write_enabled: writeEnabled
+        });
+        const failed = (result.batches || []).filter(
+          (batch) => batch.error && !skip.has(batch.platform)
+        );
+        for (const batch of result.batches || []) {
+          if (batch.error) {
+            note("warn", `${batch.platform}: ${batch.error}`);
+          } else {
+            note(
+              "ok",
+              `${batch.platform}: ${batch.messages} msgs \xB7 ${batch.attachments} attachments` + (batch.verified ? " \xB7 verified" : " \xB7 NOT verified")
+            );
+          }
+        }
+        setReport(result);
+        onIngested?.(result);
+        refreshPreview();
+        if (failed.length) {
+          setHalted({ failed, skip });
+          note("warn", `${failed.length} leg(s) failed \u2014 choose to exclude and continue, or cancel`);
+        } else {
+          note("ok", "done");
+        }
+      } catch (err) {
+        setError(err.message);
+        note("warn", err.message);
+      } finally {
+        setBusy(false);
+      }
+    };
+    const truncate = async () => {
+      setBusy(true);
+      setError(null);
+      setWipeResult(null);
+      try {
+        const result = await api.truncate({
+          write_enabled: writeEnabled,
+          confirm: true
+        });
+        setWipeResult(result);
+        setWipeStep(0);
+        setReport(null);
+        note("warn", `store truncated \u2014 ${result.removed.length} file(s) removed`);
+        refreshPreview();
+        onIngested?.({});
+      } catch (err) {
+        setError(err.message);
+        note("warn", err.message);
+      } finally {
+        setBusy(false);
+      }
+    };
+    const continueWithout = () => {
+      const next = new Set(halted?.skip || []);
+      for (const batch of halted?.failed || []) next.add(batch.platform);
+      note("info", `continuing without ${[...next].join(", ")}`);
+      run({ skip: next });
+    };
+    const cancelRun = () => {
+      note("warn", "cancelled \u2014 anything already written stays, and re-running is safe");
+      setHalted(null);
+    };
+    const stagedCount = staged.length;
+    const hasInput = stagedCount > 0 || pathList().length > 0 || imapEmail.trim() !== "";
     return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
       Modal,
       {
@@ -17590,284 +17784,345 @@
           /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Check,
             {
-              label: "Allow writes",
+              label: "Ingest Ready",
               checked: writeEnabled,
               onChange: setWriteEnabled,
-              hint: "Ingest is a WRITE tool. The toggle is per-surface and is never remembered."
+              hint: "Arms the Ingest button. Ingest writes to the store, so it is a deliberate second step and is never remembered."
             }
           ),
           /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "spacer" }),
           /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: onClose, children: "Close" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("button", { className: "ghost", onClick: preInspect, disabled: busy, children: [
-            busy ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(LoaderCircle, { size: 13, className: "spin" }) : null,
-            "Inspect first"
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("button", { onClick: run, disabled: busy || !writeEnabled, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("button", { onClick: run, disabled: busy || !writeEnabled || !hasInput, children: [
             busy ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(LoaderCircle, { size: 13, className: "spin" }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Upload, { size: 13 }),
             "Ingest"
           ] })
         ] }),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "tabs", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: `tab${tab === "drop" ? " active" : ""}`, onClick: () => setTab("drop"), children: "What to download" }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: `tab${tab === "paths" ? " active" : ""}`, onClick: () => setTab("paths"), children: "Paste a path" })
-          ] }),
-          tab === "drop" && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
-              "div",
-              {
-                className: "dropzone",
-                ref: dropRef,
-                onDragOver: (event) => {
-                  event.preventDefault();
-                  dropRef.current?.classList.add("over");
-                },
-                onDragLeave: () => dropRef.current?.classList.remove("over"),
-                onDrop,
-                children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "Drop your export onto this area." }),
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("br", {}),
-                  "Everything stays on this machine. Nothing is uploaded.",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("br", {}),
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("br", {}),
-                  "A browser cannot read a file path, so dropping switches to the path tab \u2014 paste where the file actually is and the server copies it into the spool."
-                ]
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "prose", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Telegram" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "Desktop \u2192 Settings \u2192 Advanced \u2192 ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Export Telegram data" }),
-                  " \u2192 tick",
-                  " ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "Personal chats" }),
-                  " and ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "JSON" }),
-                  ", media off."
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("li", { children: "One bulk export covers every chat. A single-chat export is a message-for-message subset of it, so there is no reason to click through chats." })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "WhatsApp" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "WhatsApp Web/Desktop \u2192 open a chat \u2192 \u22EE \u2192 ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Export chat" }),
-                  " \u2192",
-                  " ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "without media" }),
-                  "."
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("li", { children: "Per-chat only. The official account-info export contains no messages." }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Advanced \u2014 all chats with a date range:" }),
-                  " copy",
-                  " ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "msgstore.db.crypt15" }),
-                  " off the phone plus your 64-digit backup key, then run ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: 'wtsexporter --date "YYYY-MM-DD - YYYY-MM-DD"' }),
-                  "."
-                ] })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Fcbk Mssgr" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "Facebook \u2192 Settings \u2192 ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Your Facebook information" }),
-                  " \u2192",
-                  " ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Download your information" }),
-                  " \u2192 Messages, ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "JSON or HTML" }),
-                  ", media low."
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("li", { children: "Takes hours to a day. It is a lump, not a sync." })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "SMS" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "Not built yet." }),
-                  " The adapter is pending; nothing breaks if you have no SMS export."
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "When it lands it will read ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "SMS Backup & Restore" }),
-                  " XML, which is the only route off an Android phone without root."
-                ] })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "LinkedIn" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "Settings \u2192 ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Data privacy" }),
-                  " \u2192 ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Get a copy of your data" }),
-                  " \u2192",
-                  " ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "Want something in particular?" }),
-                  " \u2192 tick",
-                  " ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "Messages" }),
-                  "."
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "The ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Basic" }),
-                  " export already contains ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "messages.csv" }),
-                  " \u2014 the larger archive and its 24-hour wait are not needed."
-                ] })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Email" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("ul", { children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                "Gmail and Hostinger are read ",
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "live over IMAP" }),
-                " \u2014 there is no file to drop. Put ",
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "GOOGLE_EMAIL" }),
-                "/",
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "GOOGLE_APP_PASSWORD" }),
-                " ",
-                "or ",
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "HOSTINGER_EMAIL" }),
-                "/",
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "HOSTINGER_PASSWORD" }),
-                " in",
-                " ",
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: ".env" }),
-                ", then name the mailbox in the field below."
-              ] }) }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Outlook" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("li", { children: "Outlook is its own platform, not a variant of Email \u2014 it gets its own colour and cluster." }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "Outlook.com \u2192 Settings \u2192 General \u2192 ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Privacy and data" }),
-                  " \u2192",
-                  " ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Export mailbox" }),
-                  ". Microsoft assembles it server-side and mails a link."
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "Classic Outlook \u2192 File \u2192 ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Open & Export" }),
-                  " \u2192",
-                  " ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Import/Export" }),
-                  " \u2192 ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("em", { children: "Export to a file" }),
-                  " \u2192",
-                  " ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "Outlook Data File (.pst)" }),
-                  ", ticking \u201CInclude subfolders\u201D."
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "Microsoft killed basic auth for IMAP, so live IMAP is not available \u2014 the",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: ".pst" }),
-                  " is the only route."
-                ] })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: "Timezone" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("ul", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("li", { children: [
-                  "Telegram, WhatsApp and Fcbk Mssgr export ",
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "wall-clock times with no offset" }),
-                  ". Declare the offset the export was written in, or the timeline lies."
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("li", { children: "It is remembered per platform, so a second run can omit it. Changing it on a populated store is refused \u2014 it would duplicate every row instead of replacing it." })
-              ] })
-            ] })
-          ] }),
-          tab === "paths" && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
-              TextField,
-              {
-                label: "Export path(s), one per line",
-                value: paths,
-                onChange: setPaths,
-                placeholder: "C:/Users/me/Downloads/Telegram Desktop/ChatExport_2026-11-14",
-                hint: "Files are COPIED into spool/real/<platform>/, chosen by content, never by filename."
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
-              TextField,
-              {
-                label: "Mailboxes (comma-separated)",
-                value: email,
-                onChange: setEmail,
-                placeholder: "hostinger, gmail",
-                hint: "Live IMAP. Credentials come from .env; a missing key names the key, never a value."
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
-              TextField,
-              {
-                label: "tz offset (hours)",
-                value: tzOffset,
-                onChange: setTzOffset,
-                placeholder: "leave blank to reuse the recorded offset",
-                hint: "e.g. -5 for US Eastern. Only Telegram, WhatsApp and Messenger accept it."
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "How far back" }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Applied to every leg at parse time. A message outside the window is counted as skipped, never silently dropped." }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: WINDOWS.map((option) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
-              "button",
-              {
-                className: window_ === option.key ? "active" : "ghost",
-                onClick: () => setWindow(option.key),
-                children: [
-                  option.label,
-                  inspection ? /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "pager-info", style: { marginLeft: 6 }, children: [
-                    "~",
-                    countInWindow(inspection.legs || [], option.months).toLocaleString()
-                  ] }) : null
-                ]
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+            "div",
+            {
+              style: {
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "8px 10px",
+                marginBottom: 14,
+                border: "1px solid var(--hairline)",
+                borderRadius: "var(--radius-sm)"
               },
-              option.key
-            )) }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
-              Check,
-              {
-                label: "Skip spam group threads (Facebook Messenger)",
-                checked: noSpamGroups,
-                onChange: setNoSpamGroups,
-                hint: "Drops group threads that are mostly link-spam and join-events \u2014 the 700-message groups nobody actually talks in. Real group chats are kept."
+              children: [
+                wipeStep === 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "pager-info", style: { flex: 1 }, children: wipeResult ? `store truncated \xB7 ${wipeResult.removed.length} file(s) removed` : "Wipe the graph and start again. The dedup record goes with it." }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: () => setWipeStep(1), disabled: busy, children: "Truncate Relate DB" })
+                ] }),
+                wipeStep === 1 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "pager-info", style: { flex: 1, color: "var(--orange-text)" }, children: [
+                    "This deletes ",
+                    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "store/graph.rl" }),
+                    " and the list of files already ingested. Your exports in ",
+                    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "spool/real/" }),
+                    " are kept. There is no undo."
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: () => setWipeStep(0), disabled: busy, children: "Keep it" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { onClick: () => setWipeStep(2), disabled: busy, children: "Yes, delete" })
+                ] }),
+                wipeStep === 2 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "pager-info", style: { flex: 1, color: "var(--orange-text)" }, children: "Last chance. Pressing this empties the graph." }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: () => setWipeStep(0), disabled: busy, children: "Cancel" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("button", { onClick: truncate, disabled: busy || !writeEnabled, children: [
+                    busy ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(LoaderCircle, { size: 13, className: "spin" }) : null,
+                    "Delete everything"
+                  ] })
+                ] })
+              ]
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            "input",
+            {
+              ref: fileRef,
+              type: "file",
+              multiple: true,
+              style: { display: "none" },
+              onChange: (event) => {
+                const files = Array.from(event.target.files || []);
+                event.target.value = "";
+                stageFiles(files);
               }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
-              Check,
-              {
-                label: "Prune verified spool files older than 3 days",
-                checked: prune,
-                onChange: setPrune,
-                hint: "Only files whose key set is confirmed present in the store. Unverified files are never pruned."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            "input",
+            {
+              ref: folderRef,
+              type: "file",
+              multiple: true,
+              webkitdirectory: "",
+              directory: "",
+              style: { display: "none" },
+              onChange: (event) => {
+                const files = Array.from(event.target.files || []);
+                event.target.value = "";
+                stageFiles(files);
               }
-            )
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+            "div",
+            {
+              className: "dropzone",
+              ref: dropRef,
+              onClick: () => fileRef.current?.click(),
+              onDragOver: (event) => {
+                event.preventDefault();
+                dropRef.current?.classList.add("over");
+              },
+              onDragLeave: () => dropRef.current?.classList.remove("over"),
+              onDrop,
+              style: { cursor: "pointer" },
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(FileUp, { size: 18, style: { marginBottom: 6 } }),
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("br", {}),
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "Drop one or many files here, or click to choose." }),
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("br", {}),
+                "Everything stays on this machine. Nothing is uploaded anywhere."
+              ]
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { style: { display: "flex", gap: 8, marginTop: 8 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: () => fileRef.current?.click(), children: "Choose files" }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: () => folderRef.current?.click(), children: "Choose a folder" }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "pager-info", style: { alignSelf: "center" }, children: "a folder is for Telegram (a directory holding result.json) or an unzipped archive" })
           ] }),
-          inspection && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "What is in here" }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("dl", { className: "kv", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dt", { children: "total" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("dd", { children: [
-                Number(inspection.total || 0).toLocaleString(),
-                " messages"
-              ] })
-            ] }),
-            (inspection.legs || []).map((leg, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
+          stagedCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { marginTop: 8 }, children: staged.map((item, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "result-snippet", children: item.name }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-meta", children: [
+              item.platform,
+              item.recognised ? "" : " \xB7 not recognised, kept"
+            ] })
+          ] }, index)) }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            TextField,
+            {
+              label: "\u2026or paste a path",
+              value: paths,
+              onChange: setPaths,
+              placeholder: "C:/Users/me/Downloads/Telegram Desktop/ChatExport_2026-11-14",
+              hint: "One per line. For a folder export (Telegram writes a directory) or a file too large to upload. Files are COPIED into spool/real/<platform>/, chosen by content, never by filename."
+            }
+          ),
+          preview && preview.legs.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Already in the spool" }),
+            preview.legs.map((leg, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
               /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-snippet", children: [
                 leg.platform || "?",
                 " \xB7 ",
-                leg.path
+                leg.path.split(/[\\/]/).slice(-2).join("/")
               ] }),
               /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-meta", children: [
-                Number(leg.total || 0).toLocaleString(),
-                " messages",
-                leg.estimated ? " \xB7 estimated" : " \xB7 exact"
+                formatBytes(leg.bytes),
+                leg.duplicate ? ` \xB7 already ingested${leg.ingested_at ? ` ${leg.ingested_at.slice(0, 10)}` : ""}` : " \xB7 new",
+                leg.large ? " \xB7 large file" : "",
+                leg.recognised ? "" : " \xB7 not recognised, kept"
               ] })
-            ] }, index))
+            ] }, index)),
+            preview.duplicates > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "pager-info", style: { marginBottom: 8 }, children: [
+              preview.duplicates,
+              " file(s) already ingested. Re-running is safe \u2014 every write is a MERGE on a stable key \u2014 but it costs the parse again."
+            ] })
           ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "IMAP mailbox" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
+            "For a live mailbox. A ",
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: ".pst" }),
+            " is a file \u2014 drop it above instead. Outlook.com and O365 no longer allow password sign-in over IMAP; export a",
+            " ",
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: ".pst" }),
+            " for those."
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            TextField,
+            {
+              label: "email",
+              value: imapEmail,
+              onChange: (value) => {
+                setImapEmail(value);
+                if (!imapHost) setImapHost(hostFor(value));
+              },
+              placeholder: "you@yourdomain.com",
+              autoComplete: "off"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            TextField,
+            {
+              label: "password",
+              type: "password",
+              value: imapPassword,
+              onChange: setImapPassword,
+              placeholder: "app password for Gmail, Yahoo, iCloud",
+              autoComplete: "new-password"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            TextField,
+            {
+              label: "host",
+              value: imapHost,
+              onChange: setImapHost,
+              placeholder: "filled from the address; edit if wrong"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            TextField,
+            {
+              label: "port",
+              value: imapPort,
+              onChange: setImapPort,
+              placeholder: "993"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
+            "Local app, manual entry. Never read by MCP or AI. Writes to ",
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "./.env" }),
+            "."
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+              "button",
+              {
+                className: "ghost",
+                onClick: saveCredentials,
+                disabled: busy || !writeEnabled || !imapEmail.trim() || !imapPassword,
+                children: "Save credentials"
+              }
+            ),
+            envSaved && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "pager-info", children: [
+              "saved ",
+              envSaved.provider,
+              " \u2192 ",
+              envSaved.host,
+              ":",
+              envSaved.port
+            ] }),
+            !envSaved && envStatus && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "pager-info", children: Object.entries(envStatus.providers || {}).filter(([, row]) => row.email_present && row.password_present).map(([name]) => name).join(", ") || "no credentials on disk yet" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            "hr",
+            {
+              style: {
+                border: "none",
+                borderTop: "1px solid var(--hairline)",
+                margin: "18px 0 14px"
+              }
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "How far back" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Applied to every leg at parse time. A message outside the window is counted as skipped, never silently dropped." }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: WINDOWS.map((option) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            "button",
+            {
+              className: window_ === option.key ? "active" : "ghost",
+              onClick: () => setWindow(option.key),
+              children: option.label
+            },
+            option.key
+          )) }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            TextField,
+            {
+              label: "tz offset (hours)",
+              value: tzOffset,
+              onChange: setTzOffset,
+              placeholder: "leave blank to reuse the recorded offset",
+              hint: "e.g. -5 for US Eastern. Only Telegram, WhatsApp and Messenger accept it."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Groups" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Check,
+            {
+              label: "Exclude groups where the Owner never spoke",
+              checked: silentGroups,
+              onChange: setSilentGroups,
+              hint: "Parse time, permanent. A group you were added to and never spoke in is not a conversation you had. Ticked, those threads are dropped before any node is created."
+            }
+          ),
+          silentGroups && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { display: "flex", gap: 16, margin: "2px 0 10px 22px" }, children: [
+            ["telegram", "Telegram"],
+            ["whatsapp", "WhatsApp"],
+            ["messenger", "Fcbk Mssgr"]
+          ].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Check,
+            {
+              label,
+              checked: silentPlatforms[key],
+              onChange: (value) => setSilentPlatforms((prev) => ({ ...prev, [key]: value }))
+            },
+            key
+          )) }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8, marginLeft: 22 }, children: 'Not the same as the Canvas "hide threads where the owner never sent a message" \u2014 that one is a view toggle and is reversible. This one decides what is stored.' }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Email spam" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Check,
+            {
+              label: "Exclude email threads of 10+ messages with no Owner reply",
+              checked: spamThreads,
+              onChange: setSpamThreads,
+              hint: "Parse time, permanent. A long thread you never replied to is almost always a broadcast, a notification chain or a mailing list. A short thread someone started with you is kept."
+            }
+          ),
+          spamThreads && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { display: "flex", gap: 16, margin: "2px 0 10px 22px" }, children: [["email", "Email"], ["outlook", "Outlook"]].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Check,
+            {
+              label,
+              checked: spamPlatforms[key],
+              onChange: (value) => setSpamPlatforms((prev) => ({ ...prev, [key]: value }))
+            },
+            key
+          )) }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Check,
+            {
+              label: "Exclude Facebook groups with 50%+ non-conversation messages",
+              checked: spamGroups,
+              onChange: setSpamGroups,
+              hint: "Fcbk Mssgr only. Drops group threads where at least half the rows are housekeeping \u2014 'sent a link', 'added X to the group', 'left the group'. Real group chats sit far below that ratio."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Prune prior ingests" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Deletes spool files from earlier runs once this one has verified. A file that failed to land is never deleted." }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: [
+            ["off", "Off"],
+            ["0", "All"],
+            ["1", "Keep last"],
+            ["2", "Keep last 2"]
+          ].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            "button",
+            {
+              className: pruneKeep === key ? "active" : "ghost",
+              onClick: () => setPruneKeep(key),
+              children: label
+            },
+            key
+          )) }),
           error && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "error", style: { marginTop: 12 }, children: error }),
+          halted && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "error", style: { marginTop: 12 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("strong", { children: [
+              halted.failed.length,
+              " leg(s) could not be ingested."
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { marginTop: 6 }, children: halted.failed.map((batch) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
+              batch.platform,
+              ": ",
+              batch.error
+            ] }, batch.platform)) }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { style: { display: "flex", gap: 8, marginTop: 10 }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { onClick: continueWithout, disabled: busy, children: "Exclude and continue" }),
+              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: cancelRun, disabled: busy, children: "Cancel" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "pager-info", style: { marginTop: 8 }, children: "Continuing re-runs the whole ingest without that leg. Every write is a MERGE on a stable key, so nothing already written is duplicated." })
+          ] }),
           report && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
             /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Report" }),
             /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("dl", { className: "kv", children: [
@@ -17900,13 +18155,54 @@
                 batch.pruned ? " \xB7 pruned" : "",
                 batch.error ? ` \xB7 ${batch.error}` : ""
               ] }),
-              (batch.warnings || []).map((warning, warningIndex) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "result-meta", style: { color: "var(--orange-text)" }, children: warning }, warningIndex))
+              Object.entries(batch.skipped || {}).map(([reason, count]) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-meta", children: [
+                "skipped ",
+                count,
+                ": ",
+                reason
+              ] }, reason)),
+              (batch.warnings || []).map((warning, warningIndex) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+                "div",
+                {
+                  className: "result-meta",
+                  style: { color: "var(--orange-text)" },
+                  children: warning
+                },
+                warningIndex
+              ))
             ] }, index)),
             (report.unrecognised || []).length > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
               /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Not recognised \u2014 kept, not guessed" }),
               report.unrecognised.map((path, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "mono", style: { color: "var(--orange-text)" }, children: path }, index))
             ] })
-          ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            "hr",
+            {
+              style: {
+                border: "none",
+                borderTop: "1px solid var(--hairline)",
+                margin: "18px 0 10px"
+              }
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Ingest log" }),
+          log.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", style: { paddingTop: 0 }, children: "Nothing yet. Press Ingest to start." }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { maxHeight: 220, overflowY: "auto" }, children: log.map((entry, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+            "div",
+            {
+              className: "result-meta",
+              style: {
+                color: entry.level === "warn" ? "var(--orange-text)" : entry.level === "ok" ? "var(--text)" : "var(--muted)",
+                padding: "2px 0"
+              },
+              children: [
+                entry.at.toLocaleTimeString(),
+                " \xB7 ",
+                entry.text
+              ]
+            },
+            index
+          )) })
         ]
       }
     );
@@ -17982,80 +18278,9 @@
     ] });
   }
 
-  // app/ui/src/components/modals/SetupModal.jsx
-  var import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
-  function SetupModal({ onClose }) {
-    const health = useFetch(() => api.health(), []);
-    const chat = useFetch(() => api.chatHealth(), []);
-    return /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Modal, { title: "Setup", onClose, wide: true, children: /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "prose", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: "A local, private window into every conversation you have had, laid out as one connected graph you can walk and question. It never leaves this machine." }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: "Where the data is" }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("dl", { className: "kv", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "graph" }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("dd", { className: "mono", children: [
-          health.data?.store || "store/graph.rl",
-          health.data ? ` \xB7 ${formatBytes(health.data.store_bytes)}` : ""
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "exports" }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { className: "mono", children: "spool/real/<platform>/" }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "owner identity" }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { className: "mono", children: "store/profile/identity.json" })
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("p", { children: [
-        "One ",
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: ".rl" }),
-        " file holds every message and every person. It is created the first time an ingest runs. Both ",
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: "spool/" }),
-        " and ",
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: "store/" }),
-        " are gitignored."
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: "What leaves the machine" }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("p", { children: [
-        "Nothing. There is no cloud AI, no telemetry, no deployment. The server binds",
-        " ",
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: "127.0.0.1" }),
-        " and the only network peer is Ollama on the same machine."
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: "The AI" }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("dl", { className: "kv", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "host" }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { className: "mono", children: chat.data?.host || "http://127.0.0.1:11434" }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "model" }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { className: "mono", children: chat.data?.model || "lfm2.5:8b" }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "state" }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: chat.loading ? "checking\u2026" : chat.data?.ok ? chat.data.model_available ? "reachable, model present" : "reachable, model not pulled" : "not reachable \u2014 the graph still works" })
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: "The chat binds the same functions as the MCP server and the UI buttons. If a tool works in the chat box it works everywhere, because it is the same function." }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: "The canvas" }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: "Threads and correspondents only. Messages are never drawn \u2014 12,499 nodes is not drawable, 955 is. Every message is still in the store and still visible to the AI. A hidden toggle never narrows what an agent can query." }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: "What is not built yet" }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("ul", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("li", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: "Person" }),
-          " \u2014 merging one human across platforms. Correspondents are facts from the export; a Person is an inference, and it does not exist yet."
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("li", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: "Place / Company / Product" }),
-          " \u2014 schema only, no extractor."
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("li", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: "Semantic search" }),
-          " \u2014 Relate has native vector indexes, but no index exists in this store yet."
-        ] })
-      ] }),
-      health.data && /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("p", { className: "mono", style: { color: "var(--muted)", marginTop: 18 }, children: [
-        formatCount(health.data.store_bytes),
-        " bytes \xB7",
-        " ",
-        health.data.store_exists ? "store present" : "no store"
-      ] })
-    ] }) });
-  }
-
   // app/ui/src/components/modals/UtilitiesModal.jsx
   var import_react12 = __toESM(require_react(), 1);
-  var import_jsx_runtime10 = __toESM(require_jsx_runtime(), 1);
+  var import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
   function UtilitiesModal({ onClose, onChanged }) {
     const [rows, setRows] = (0, import_react12.useState)(null);
     const [enabled, setEnabled] = (0, import_react12.useState)(null);
@@ -18096,27 +18321,27 @@
     };
     const all = (rows || []).map((row) => row.platform);
     const everythingOn = enabled && all.length > 0 && all.every((p) => enabled.includes(p));
-    return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
       Modal,
       {
         title: "Utilities \u2014 platforms",
         onClose,
-        footer: /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(import_jsx_runtime10.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "pager-info", children: [
+        footer: /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(import_jsx_runtime9.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { className: "pager-info", children: [
             enabled ? `${enabled.length} of ${all.length} on` : "\u2026",
-            busy && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(LoaderCircle, { size: 12, className: "spin", style: { marginLeft: 6 } })
+            busy && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(LoaderCircle, { size: 12, className: "spin", style: { marginLeft: 6 } })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("button", { className: "ghost", onClick: () => apply([]), disabled: busy, children: "None" }),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("button", { className: "ghost", onClick: () => apply(null), disabled: busy, children: "All" }),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("button", { onClick: onClose, children: "Done" })
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { className: "ghost", onClick: () => apply([]), disabled: busy, children: "None" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { className: "ghost", onClick: () => apply(null), disabled: busy, children: "All" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { onClick: onClose, children: "Done" })
         ] }),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "empty", style: { paddingTop: 0 }, children: "Unticking a platform removes its threads, correspondents and messages from the graph \u2014 and from search and the AI chat. The store is untouched; this is a view, and it is reversible." }),
-          error && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "error", children: error }),
-          !rows && !error && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "empty", children: "Reading the store\u2026" }),
-          (rows || []).map((row) => /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("label", { className: "check", style: { marginBottom: 8 }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "empty", style: { paddingTop: 0 }, children: "Unticking a platform removes its threads, correspondents and messages from the graph \u2014 and from search and the AI chat. The store is untouched; this is a view, and it is reversible." }),
+          error && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "error", children: error }),
+          !rows && !error && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "empty", children: "Reading the store\u2026" }),
+          (rows || []).map((row) => /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("label", { className: "check", style: { marginBottom: 8 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
               "input",
               {
                 type: "checkbox",
@@ -18125,7 +18350,7 @@
                 disabled: busy || !row.built
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
               "span",
               {
                 className: "legend-swatch",
@@ -18136,11 +18361,11 @@
                 }
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { style: { minWidth: 90 }, children: platformLabel(row.platform) }),
-            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "pager-info", children: row.built ? `${formatCount(row.count)} messages` : "not built yet" })
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { style: { minWidth: 90 }, children: platformLabel(row.platform) }),
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "pager-info", children: row.built ? `${formatCount(row.count)} messages` : "not built yet" })
           ] }, row.platform)),
-          rows?.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "empty", children: "No messages in the store yet \u2014 ingest something first." }),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { style: { marginTop: 14 }, children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+          rows?.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "empty", children: "No messages in the store yet \u2014 ingest something first." }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { style: { marginTop: 14 }, children: /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
             Check,
             {
               label: "Everything on (no filter)",
@@ -18155,7 +18380,7 @@
   }
 
   // app/ui/src/App.jsx
-  var import_jsx_runtime11 = __toESM(require_jsx_runtime(), 1);
+  var import_jsx_runtime10 = __toESM(require_jsx_runtime(), 1);
   function App() {
     const [theme, setTheme] = (0, import_react13.useState)(loadTheme);
     const [chatOpen, setChatOpen] = (0, import_react13.useState)(true);
@@ -18328,8 +18553,8 @@
       }
       return { nodeType: "search results", label: entry.query };
     }, [viewer.current]);
-    return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "shell", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "shell", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
         CommandBar,
         {
           onSearch: runSearch,
@@ -18345,8 +18570,8 @@
           totalPlatforms: platforms.total
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "columns", children: [
-        chatOpen && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("aside", { className: `pane chat${chatExpanded ? " expanded" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "columns", children: [
+        chatOpen && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("aside", { className: `pane chat${chatExpanded ? " expanded" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
           ChatPanel,
           {
             theme,
@@ -18356,8 +18581,8 @@
             onToggleExpand: () => setChatExpanded((value) => !value)
           }
         ) }),
-        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("main", { style: { flex: 1, position: "relative", minWidth: 0, display: "flex" }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("main", { style: { flex: 1, position: "relative", minWidth: 0, display: "flex" }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
             GraphCanvas_default,
             {
               ref: canvasRef,
@@ -18367,7 +18592,7 @@
               onBackgroundClick: () => canvasRef.current?.clearHalo()
             }
           ),
-          graphError && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+          graphError && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
             "div",
             {
               className: "error",
@@ -18375,7 +18600,7 @@
               children: graphError
             }
           ),
-          !graph && !graphError && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+          !graph && !graphError && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
             "div",
             {
               className: "empty",
@@ -18383,8 +18608,8 @@
               children: "Loading the graph\u2026"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "canvas-overlay", children: [
-            graph && /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("span", { className: "canvas-chip", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "canvas-overlay", children: [
+            graph && /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "canvas-chip", children: [
               graph.counts.nodes.toLocaleString(),
               " nodes \xB7",
               " ",
@@ -18392,10 +18617,10 @@
               " edges",
               graph.truncated ? " \xB7 truncated" : ""
             ] }),
-            searchBusy && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "canvas-chip", children: "searching\u2026" })
+            searchBusy && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "canvas-chip", children: "searching\u2026" })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("aside", { className: `pane viewer${viewerExpanded ? " expanded" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("aside", { className: `pane viewer${viewerExpanded ? " expanded" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
           Viewer,
           {
             entry: viewer.current,
@@ -18409,10 +18634,9 @@
           }
         ) })
       ] }),
-      modal === "log" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(LogModal, { onClose: () => setModal(null) }),
-      modal === "ingest" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(IngestModal, { onClose: () => setModal(null), onIngested }),
-      modal === "setup" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(SetupModal, { onClose: () => setModal(null) }),
-      modal === "canvas" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+      modal === "log" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(LogModal, { onClose: () => setModal(null) }),
+      modal === "ingest" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(IngestModal, { onClose: () => setModal(null), onIngested }),
+      modal === "canvas" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
         CanvasModal,
         {
           theme,
@@ -18424,14 +18648,14 @@
           onReload: (overrides) => loadGraph(theme.filter.nodeTypes, overrides)
         }
       ),
-      modal === "utilities" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(UtilitiesModal, { onClose: () => setModal(null), onChanged: onPlatformsChanged })
+      modal === "utilities" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(UtilitiesModal, { onClose: () => setModal(null), onChanged: onPlatformsChanged })
     ] });
   }
 
   // app/ui/src/main.jsx
-  var import_jsx_runtime12 = __toESM(require_jsx_runtime(), 1);
+  var import_jsx_runtime11 = __toESM(require_jsx_runtime(), 1);
   (0, import_client.createRoot)(document.getElementById("root")).render(
-    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(import_react14.StrictMode, { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(App, {}) })
+    /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(import_react14.StrictMode, { children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(App, {}) })
   );
 })();
 /*! Bundled license information:
@@ -18507,7 +18731,7 @@ lucide-react/dist/esm/icons/arrow-left.mjs:
 lucide-react/dist/esm/icons/arrow-right.mjs:
 lucide-react/dist/esm/icons/braces.mjs:
 lucide-react/dist/esm/icons/corner-down-right.mjs:
-lucide-react/dist/esm/icons/info.mjs:
+lucide-react/dist/esm/icons/file-up.mjs:
 lucide-react/dist/esm/icons/loader-circle.mjs:
 lucide-react/dist/esm/icons/palette.mjs:
 lucide-react/dist/esm/icons/rotate-ccw.mjs:

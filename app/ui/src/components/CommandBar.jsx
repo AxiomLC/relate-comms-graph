@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
   Braces,
-  Info,
   Palette,
   Search,
   SlidersHorizontal,
@@ -90,9 +89,7 @@ export default function CommandBar({
       <button className="ghost" onClick={() => onOpenModal("ingest")} title="Bring in an export">
         <Upload size={13} /> Ingest
       </button>
-      <button className="ghost" onClick={() => onOpenModal("setup")} title="What this is">
-        <Info size={13} /> Setup
-      </button>
+
 
       <button
         className="ghost"
