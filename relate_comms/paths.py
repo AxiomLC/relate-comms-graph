@@ -24,24 +24,25 @@ def data_root() -> Path:
 
 
 def spool_dir() -> Path:
-    """The queue ingest drains. Two sub-folders, never mixed."""
+    """The queue ingest drains. **One queue.**
+
+    There used to be `spool/real/` and `spool/sample/`, on the theory that a demo must
+    never mix with the user's own exports. That was answered better by the Truncate
+    button: test with samples, wipe, ingest the real thing. A sample is just a file
+    dropped in the spool — `ingest` cannot tell it from a real export and does not need
+    to. One queue means one discovery path and one set of docs.
+    """
     return data_root() / "spool"
 
 
 def real_dir() -> Path:
-    """The user's own exports. Real messages: never committed, pruned on verify."""
+    """The one queue. Named `real/` for continuity with existing spools."""
     return spool_dir() / "real"
 
 
-def sample_dir() -> Path:
-    """Generated demo exports. Regenerable, so they may be wiped freely."""
-    return spool_dir() / "sample"
-
-
-# One folder per platform, in both `real/` and `sample/`. The list is fixed rather
-# than derived from what happens to be present, so the shape of the spool is the same
-# on every clone — including platforms that have no file to drop (email is read over
-# IMAP; SMS has no adapter yet).
+# One folder per platform. The list is fixed rather than derived from what happens to
+# be present, so the shape of the spool is the same on every clone — including
+# platforms that have no file to drop (email is read over IMAP).
 PLATFORM_FOLDERS = (
     "telegram",
     "whatsapp",
@@ -82,11 +83,7 @@ def ensure_layout() -> None:
 
     `spool/` and `store/` are gitignored; each ship a `.gitkeep` so the shape exists
     after a clone while the contents never reach version control.
-
-    Every platform folder is created in **both** `real/` and `sample/`, so the spool
-    looks the same on day one regardless of what the user has downloaded.
     """
-    for root in (real_dir(), sample_dir()):
-        for platform in PLATFORM_FOLDERS:
-            (root / platform).mkdir(parents=True, exist_ok=True)
+    for platform in PLATFORM_FOLDERS:
+        (real_dir() / platform).mkdir(parents=True, exist_ok=True)
     store_dir().mkdir(parents=True, exist_ok=True)

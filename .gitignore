@@ -17,6 +17,17 @@ spool/*
 *.zip
 *.result.json
 
+# sample_writer reads REAL downloads from in/ and writes fake ones to out/.
+# `in/` holds the user's own history (801 MB on this machine, including an 825 MB
+# SMS export) and must never be committed. `out/` is generated, contains no real
+# data, and is reproducible from `python -m sample_writer` — so it is ignored too,
+# to keep diffs readable.
+sample_writer/in/*
+!sample_writer/in/.gitkeep
+sample_writer/out/
+sample_writer/schemas/
+!sample_writer/schemas/.gitkeep
+
 # ...except the scrubbed test fixtures, which hold no real data and must ship
 !tests/fixtures/**/result.json
 # The Outlook fixture is the Aspose sample mailbox — 11 demo messages from 2011,

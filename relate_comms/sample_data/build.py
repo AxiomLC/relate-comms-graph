@@ -55,10 +55,11 @@ FIXTURES = ROOT / "tests" / "fixtures"
 # developer happens to have them; the minimal fallback works without them.
 from ..paths import real_dir  # noqa: E402
 
-# Generated demo data lands in the same queue shape as real data (§6).
-from ..paths import sample_dir  # noqa: E402
-
-SAMPLE = sample_dir()
+# Where `main()` writes the generated Telegram payloads. This is a **build output**,
+# not a second ingest queue: `sample_writer/` is the dummy leg now, and its output is
+# dropped into the one spool like any real export. Kept only because
+# `tests/test_ingest_pipeline.py` builds its spool from here.
+SAMPLE = GENERATED / "telegram"
 
 _SINGLE_CANDIDATES = [
     real_dir() / "ChatExport_2026-11-14 (1)" / "result.json",
@@ -333,8 +334,8 @@ def main(argv: list[str] | None = None) -> int:
     bulk, model_bulk = build(BULK_EXPORT, args.seed)
     bulk = shrink(bulk)
 
-    # `spool/sample/telegram/` mirrors `spool/real/telegram/`, so the two queues have
-    # the same shape and `--source sample` exercises the same discovery code path.
+    # A build output, not a queue. `sample_writer/` is the dummy leg now; this exists
+    # because `tests/test_ingest_pipeline.py` builds its spool from here.
     platform_root = target_root / "telegram" if args.dest == "generated" else target_root
     single_path = platform_root / "telegram_single" / "result.json"
     bulk_path = platform_root / "telegram_bulk" / "result.json"
