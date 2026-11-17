@@ -153,28 +153,30 @@ Per-platform download instructions live in
 | **WhatsApp** | B | Per-chat `.txt`/`.zip`. No all-chats export; media placeholders only |
 | **LinkedIn** | **A data / F automation** | *Basic* archive → `messages.csv`. Export only |
 | **Facebook Messenger** | B/C | *Download your information* → HTML archive. Slow, no API |
-| **SMS** | — | Adapter not built. Will read *SMS Backup & Restore* XML (payload measured, see `HANDOVER.md`) |
+| **SMS** | — | Adapter built and verified; reads *SMS Backup & Restore* XML. Not yet in the live store (see `HANDOVER.md`) |
 | **Slack** | C | Export needs workspace admin. Not viable |
 | **Instagram** | — | Out of scope. Export names no sender |
 
 ## Status
 
-**Ingested:** 12,499 messages, 955 threads, 591 correspondents, 86 attachments across five
-platforms (Facebook Messenger 10,605 · Telegram 1,212 · LinkedIn 292 · Email 221 · WhatsApp 169).
+**Ingested:** 12,164 messages, 620 threads, 591 correspondents across five platforms
+(Facebook Messenger 10,605 · Telegram 877 · LinkedIn 292 · Email 221 · WhatsApp 169).
+Outlook and SMS adapters are built but not yet in the live store.
 
-**Built:** five file adapters + live IMAP, parallel parse → resolve → scrub → serialised
+**Built:** seven file adapters + live IMAP, parallel parse → resolve → scrub → serialised
 write → verify → prune, 10-tool layer, FastAPI, and the UI.
 
 **Not built:** cross-platform identity (a `Correspondent` is a per-platform fact; merging
 one human across platforms is unsolved), body-entity extraction (`Person`, `Place`,
-`Organization`, `Product`), SMS, semantic search (Relate supports vector indexes; none
-exists in this store yet).
+`Organization`, `Product`), semantic search (Relate supports vector indexes; none exists
+in this store yet).
 
-**Outlook is built and proven** — `adapters/outlook_pst.py`, 19 tests, run against a real
-`.pst`. It is not yet in the store above because that store was ingested before the leg
-existed.
+**Outlook and SMS are built and proven** — `adapters/outlook_pst.py` (19 tests, run
+against a real `.pst`) and `adapters/sms.py` (33 tests, verified against the real 825 MB
+export). Neither is in the store above because that store was ingested before those legs
+were finished.
 
-`pytest tests -q` → **137 passed, 2 skipped**.
+`pytest tests -q` → **204 passed, 2 skipped**.
 
 ## Docs
 
