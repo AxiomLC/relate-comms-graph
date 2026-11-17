@@ -120,6 +120,60 @@ def test_sender_with_an_id_and_no_name_is_named_by_its_id(tmp_path):
     assert result.chats[0].participant_names == ("user999",)
 
 
+def test_silent_group_is_dropped_only_when_asked(tmp_path):
+    """A group the owner never spoke in is not a conversation they had.
+
+    The gate is group-scoped: a 1:1 thread the owner never replied to is still a
+    conversation someone had with them, and hiding it is a view toggle, not a drop.
+    The rows are already parsed when the gate runs, so a drop must clear them too —
+    otherwise they land with no thread to hang from.
+    """
+    document = {
+        "personal_information": {"user_id": 1},
+        "chats": {"list": [
+            {
+                "name": "Silent group", "type": "private_group", "id": 10,
+                "messages": [
+                    {"id": 1, "type": "message", "date_unixtime": "1700000000",
+                     "from_id": "user2", "text": "hello"},
+                    {"id": 2, "type": "message", "date_unixtime": "1700000060",
+                     "from_id": "user3", "text": "hi"},
+                ],
+            },
+            {
+                "name": "Mine", "type": "private_group", "id": 11,
+                "messages": [
+                    {"id": 3, "type": "message", "date_unixtime": "1700000100",
+                     "from_id": "user2", "text": "yo"},
+                    {"id": 4, "type": "message", "date_unixtime": "1700000160",
+                     "from_id": "user1", "text": "hey"},
+                ],
+            },
+            {
+                "name": "One to one", "type": "personal_chat", "id": 12,
+                "messages": [
+                    {"id": 5, "type": "message", "date_unixtime": "1700000200",
+                     "from_id": "user4", "text": "only them"},
+                ],
+            },
+        ]},
+    }
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    kept = telegram.parse(path)
+    assert len(kept.chats) == 3, "off by default: the store is whole"
+    assert len(kept.messages) == 5
+
+    trimmed = telegram.parse(path, exclude_silent_groups=True)
+    assert [c.chat_id for c in trimmed.chats] == ["11", "12"]
+    # The silent group's two rows are gone, not orphaned.
+    assert len(trimmed.messages) == 3
+    assert {m.chat_id for m in trimmed.messages} == {"11", "12"}
+    # Never silently: the drop is counted with its reason.
+    assert trimmed.skipped.get("group thread the owner never spoke in") == 1
+
+
 # ----------------------------------------------------------------- synthetic e2e
 
 def test_dummy_download_parses_without_dropping_service_rows():

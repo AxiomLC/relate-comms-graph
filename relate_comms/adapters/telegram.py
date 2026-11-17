@@ -190,6 +190,7 @@ def parse(
     include_service: bool = True,
     profile_dir: str | Path | None = None,
     tz_offset_hours: float = 0,
+    exclude_silent_groups: bool = False,
 ) -> IngestResult:
     """Parse one Telegram export file (or an export directory) into Messages.
 
@@ -201,6 +202,11 @@ def parse(
     `personal_information` in this file -> infer from this file (and persist if
     `profile_dir` was given). Passing `self_id` or reusing a profile keeps
     `is_self` identical across exports of the same account.
+
+    `exclude_silent_groups=True` drops group chats the owner never sent a message in.
+    Off by default — the store is whole unless the user asks otherwise — and counted
+    in `skipped`, never silently lost. On the real export this is a no-op: all 9
+    groups are ones the owner spoke in.
     """
     path = Path(export_path)
     if path.is_dir():
@@ -213,7 +219,8 @@ def parse(
         for candidate in candidates:
             part = parse(candidate, since=since, until=until,
                          self_id=self_id, include_service=include_service,
-                         profile_dir=profile_dir, tz_offset_hours=tz_offset_hours)
+                         profile_dir=profile_dir, tz_offset_hours=tz_offset_hours,
+                         exclude_silent_groups=exclude_silent_groups)
             merged.chats.extend(part.chats)
             merged.messages.extend(part.messages)
             merged.attachments.extend(part.attachments)
@@ -266,6 +273,23 @@ def parse(
             if m.get("from") or m.get("actor") or m.get("from_id") or m.get("actor_id")
         }
         is_group = chat_kind not in {"personal_chat", "bot_chat", "saved_messages"}
+
+        # Silent-group gate. A group the owner was added to and never spoke in is not
+        # a conversation they had. Decided BEFORE the `Chat` is appended, so a dropped
+        # group leaves no orphan messages behind — the same ordering Messenger uses.
+        #
+        # Only groups are affected: a 1:1 thread someone messaged once is still a
+        # conversation the owner had, and hiding it is a view toggle, not a drop.
+        #
+        # The rows for this chat are already in `result.messages`, so a drop has to
+        # truncate them back to `before` — skipping only the Chat would leave orphan
+        # messages with no thread to hang from.
+        if exclude_silent_groups and is_group and not any(
+                m.is_self for m in result.messages[before:]):
+            result.note_skip("group thread the owner never spoke in")
+            del result.messages[before:]
+            continue
+
         result.chats.append(Chat(
             platform=PLATFORM,
             chat_id=chat_id,

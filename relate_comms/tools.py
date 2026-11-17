@@ -156,8 +156,8 @@ def store_path() -> Path:
 # node-type filter cannot express.
 #
 # This is the declared set, not the observed set. A platform with no adapter yet
-# (`sms`) stays listed so the UI can show it as "not built" rather than silently
-# omitting it — and so adding the adapter needs no change here.
+# stays listed so the UI can show it as "not built" rather than silently omitting
+# it — and so adding the adapter needs no change here.
 KNOWN_PLATFORMS: tuple[str, ...] = (
     "messenger", "telegram", "linkedin", "email", "outlook", "whatsapp", "sms",
 )
@@ -1052,7 +1052,11 @@ def ingest(
     tz_offset_hours: float | None = None,
     exclude_spam_groups: bool = False,
     exclude_silent_groups: bool = False,
+    silent_group_platforms: Sequence[str] | None = None,
+    exclude_spam_threads: bool = False,
+    spam_thread_platforms: Sequence[str] | None = None,
     prune: bool = False,
+    prune_keep: int | None = None,
     write_enabled: bool = False,
 ) -> dict[str, Any]:
     """Parse exports into the store: stage, parse, resolve, scrub, write, verify.
@@ -1069,13 +1073,23 @@ def ingest(
     rows are mostly housekeeping (`sent a link`, `added X to the group`) is dropped
     rather than written. Off by default — the store is whole unless asked otherwise.
 
-    `exclude_silent_groups` also applies to Messenger only: a group thread the owner
-    never sent a message in is dropped. A group you never spoke in is not a
-    conversation you had, and on the real export these are 70 threads holding 9,513
-    of 10,605 Messenger messages.
+    `exclude_silent_groups` applies to Telegram, WhatsApp and Messenger: a group
+    thread the owner never sent a message in is dropped. A group you never spoke in is
+    not a conversation you had, and on the real export Messenger's 70 groups hold
+    9,513 of 10,605 messages. `silent_group_platforms` narrows it to the platforms the
+    user ticked; `None` means all three.
 
-    `prune` deletes spool files older than 3 days **only after verification**.
-    It is off by default and is not the same thing as `prune_spool`.
+    `exclude_spam_threads` applies to Email and Outlook: a thread with more than 10
+    messages where the owner never replied is dropped as likely spam. Separate from
+    the group gate on purpose — different scope, different threshold.
+    `spam_thread_platforms` narrows it the same way.
+
+    `prune` deletes spool files **only after verification**. It is off by default and
+    is not the same thing as `prune_spool`.
+
+    `prune_keep` selects the policy: `None` is the age rule (older than 3 days), `0`
+    keeps nothing, `1` keeps the newest run's files, `2` keeps the newest two. Applied
+    after the whole run, because "the last ingest" is a property of the run.
     """
     require(Access.WRITE, write_enabled=write_enabled)
 
@@ -1099,7 +1113,11 @@ def ingest(
         until=_iso(until),
         exclude_spam_groups=bool(exclude_spam_groups),
         exclude_silent_groups=bool(exclude_silent_groups),
+        silent_group_platforms=silent_group_platforms,
+        exclude_spam_threads=bool(exclude_spam_threads),
+        spam_thread_platforms=spam_thread_platforms,
         prune=bool(prune),
+        prune_keep=None if prune_keep is None else int(prune_keep),
         tz_offset_hours=None if tz_offset_hours is None else float(tz_offset_hours),
         extra_results=extra_results,
     )
@@ -1107,6 +1125,86 @@ def ingest(
     payload["staged"] = staged
     payload["ok"] = report.ok
     return payload
+
+
+def preview_ingest(which: str = "real") -> dict[str, Any]:
+    """What is in the spool, and what has already been ingested. Read-only.
+
+    The modal runs this before the Ingest button so the user is not asked to commit to
+    an unknown quantity. It reports size and duplicate status per file; it does **not**
+    count messages, because that needs the full parse this exists to avoid.
+    """
+    from . import ingest as ingest_module
+
+    return ingest_module.preview(which=str(which))
+
+
+def truncate_store(
+    *,
+    write_enabled: bool = False,
+    confirm: bool = False,
+    also_identity: bool = False,
+    also_spool: bool = False,
+) -> dict[str, Any]:
+    """Delete the graph, and the record of what was ingested into it.
+
+    Destructive: needs write access **and** `confirm=true` in the call itself, so a
+    model cannot wipe the store on its own initiative.
+
+    **The manifest goes with the graph, always.** `store/profile/ingested.json` says
+    "this file is already in the store"; leaving it behind after a wipe would make the
+    next ingest skip every file it had ever seen and produce an empty graph that looks
+    like a successful run. That is the one thing this function must not allow.
+
+    `also_identity` removes `store/profile/identity.json` — the per-platform owners and
+    tz offsets. Kept by default, because re-ingesting the same account needs them: the
+    tz offset is part of every wall-clock message key. Drop it when switching accounts,
+    or a stale owner silently marks every row `is_self=False`.
+
+    `also_spool` removes the exports themselves from `spool/real/`. Off by default —
+    the spool is the user's own downloads, and a wipe of the graph is not a request to
+    delete them. It exists because sample files dropped in for a test will otherwise be
+    re-ingested alongside the real ones.
+    """
+    require(Access.DESTRUCTIVE, write_enabled=write_enabled, confirmed=confirm)
+
+    from . import manifest
+
+    removed: list[str] = []
+    kept: list[str] = []
+
+    store = paths.store_path()
+    if store.exists():
+        store.unlink()
+        removed.append(str(store))
+    else:
+        kept.append(f"{store} (did not exist)")
+
+    # Always, and not optional: see the docstring.
+    record = paths.profile_dir() / manifest.MANIFEST_FILE
+    if record.exists():
+        record.unlink()
+        removed.append(str(record))
+
+    identity_file = paths.profile_dir() / "identity.json"
+    if also_identity and identity_file.exists():
+        identity_file.unlink()
+        removed.append(str(identity_file))
+    elif identity_file.exists():
+        kept.append(str(identity_file))
+
+    if also_spool:
+        root = paths.real_dir()
+        for entry in sorted(root.rglob("*")):
+            if entry.is_file() and entry.name != ".gitkeep":
+                entry.unlink()
+                removed.append(str(entry))
+
+    return {
+        "removed": removed,
+        "kept": kept,
+        "store_exists": paths.store_path().exists(),
+    }
 
 
 def verify_ingest(which: str = "real") -> dict[str, Any]:
@@ -1118,9 +1216,7 @@ def verify_ingest(which: str = "real") -> dict[str, Any]:
     """
     from . import ingest as ingest_module
 
-    batches = [b for b in ingest_module.discover(
-        paths.sample_dir() if which == "sample" else paths.real_dir()
-    ) if b.recognised]
+    batches = [b for b in ingest_module.discover(paths.real_dir()) if b.recognised]
 
     if not batches:
         return {"which": which, "files": [], "ok": True, "missing": 0,
@@ -1202,6 +1298,8 @@ def _register_all() -> None:
         (evidence_counts, Access.READ),
         (run_cypher, Access.READ),
         (ingest, Access.WRITE),
+        (preview_ingest, Access.READ),
+        (truncate_store, Access.DESTRUCTIVE),
         (verify_ingest, Access.READ),
         (prune_spool, Access.DESTRUCTIVE),
     ):

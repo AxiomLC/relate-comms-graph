@@ -40,9 +40,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import identity, paths, resolution, scrub, writer
+from . import identity, manifest, paths, resolution, scrub, writer
 from .adapters import (email_imap, linkedin, messenger, outlook_pst, sms, telegram,
-                       whatsapp)
+                       whatsapp, whatsapp_html)
 from .schema import IngestResult
 
 # Files this module will consider. Suffix is a cheap filter only; the platform is
@@ -50,17 +50,31 @@ from .schema import IngestResult
 _JSON_SUFFIXES = {".json"}
 _ARCHIVE_SUFFIXES = {".zip"}
 _TEXT_SUFFIXES = {".txt", ".md"}
+# WhatsApp's browser-extension exporter writes standalone `.html` pages.
+_HTML_SUFFIXES = {".html"}
 _MAIL_SUFFIXES = {".pst", ".ost"}
 # SMS Backup & Restore writes `.xml`, or `.xml.zip` when "compress backup" is on.
 _XML_SUFFIXES = {".xml"}
 _CONSIDER_SUFFIXES = (_JSON_SUFFIXES | _ARCHIVE_SUFFIXES | _TEXT_SUFFIXES
-                      | _MAIL_SUFFIXES | _XML_SUFFIXES)
+                      | _MAIL_SUFFIXES | _XML_SUFFIXES | _HTML_SUFFIXES)
 
 # Parse functions by platform. Adding an adapter means adding one line here.
 # Parsers that read wall-clock times with no offset. Only these accept
 # `tz_offset_hours`; passing it to others (LinkedIn states UTC) is a TypeError, which
 # is the correct behaviour — the adapter refuses to be told a lie about its data.
 _TZ_AWARE_PLATFORMS = {telegram.PLATFORM, whatsapp.PLATFORM, messenger.PLATFORM}
+
+# Platforms whose adapters accept `exclude_silent_groups`. A group the owner was added
+# to and never spoke in is not a conversation they had; the rule is group-scoped, so a
+# platform without groups must not be handed the keyword.
+_SILENT_GROUP_PLATFORMS = {telegram.PLATFORM, whatsapp.PLATFORM, messenger.PLATFORM}
+
+# Platforms the long-silent-thread spam rule applies to. A mailbox thread the owner
+# never replied to and that runs past `SPAM_THREAD_MIN_MESSAGES` is a broadcast, a
+# notification chain or a mailing list — the shape spam takes in email. It is NOT the
+# group gate: different scope, different threshold, and the two must not be merged.
+_SPAM_THREAD_PLATFORMS = {email_imap.PLATFORM, outlook_pst.PLATFORM}
+SPAM_THREAD_MIN_MESSAGES = 10
 
 _PARSERS: dict[str, Callable[..., IngestResult]] = {
     telegram.PLATFORM: telegram.parse,
@@ -70,6 +84,40 @@ _PARSERS: dict[str, Callable[..., IngestResult]] = {
     outlook_pst.PLATFORM: outlook_pst.parse,
     sms.PLATFORM: sms.parse,
 }
+
+# WhatsApp has two dialects and one platform key. The parser is chosen per FILE, not
+# per platform, because both report `whatsapp` — see `_parser_for`.
+_DIALECT_PARSERS: dict[str, Callable[..., IngestResult]] = {
+    "whatsapp_html": whatsapp_html.parse,
+}
+
+
+def _parser_for(path: Path, platform: str) -> Callable[..., IngestResult]:
+    """The parser for one file. WhatsApp is the only platform with two dialects."""
+    if platform == whatsapp.PLATFORM and whatsapp_html.detect(path):
+        return _DIALECT_PARSERS["whatsapp_html"]
+    return _PARSERS[platform]
+
+
+def _parse_root(path: Path, platform: str) -> Path:
+    """The path an adapter should be handed.
+
+    **A safety net, not the main path.** `discover()` now emits a recognised directory as
+    one batch, so a Messenger folder reaches the adapter as a folder. This exists for the
+    case where a caller hands a loose `message_N.html` straight to `parse()` — Messenger
+    resolves thread ids from the archive-relative path, so a bare file has no thread to
+    belong to and would parse the whole export once per file.
+
+    Everything else is handed the path it was discovered as.
+    """
+    if platform != messenger.PLATFORM or path.suffix.lower() != ".html":
+        return path
+    for parent in path.parents:
+        if parent.name == "your_facebook_activity":
+            # The folder *containing* `your_facebook_activity`, so `_thread_members`
+            # builds the same relative paths it builds from a zip.
+            return parent.parent
+    return path
 
 # A file older than this, once verified, may be deleted. Nothing younger is touched,
 # so a user who is still copying a download into the spool is never racing us.
@@ -114,6 +162,7 @@ class BatchOutcome:
     skipped: dict[str, int] = field(default_factory=dict)
     withheld: str = ""
     identities: int = 0
+    fingerprint: str = ""
     who_matched: int = 0
     correspondents: int = 0
 
@@ -134,6 +183,7 @@ class BatchOutcome:
             "kinds": self.kinds,
             "skipped": self.skipped,
             "withheld": self.withheld,
+            "fingerprint": self.fingerprint,
             # Warnings are potentially numerous; the CLI prints them, the JSON
             # summary keeps them so nothing is lost between surfaces.
             "warnings": self.warnings,
@@ -155,6 +205,9 @@ class Report:
     # back to the persisted value says so here rather than looking like a default.
     tz_offsets: dict[str, float] = field(default_factory=dict)
     tz_note: str = ""
+    # The profile this run wrote to. Needed by the prune policy, which reads the
+    # manifest — and the manifest follows a redirected store.
+    profile_dir: str = ""
 
     @property
     def written(self) -> int:
@@ -231,7 +284,27 @@ def looks_like_telegram(path: Path) -> bool:
 
 
 def detect_platform(path: Path) -> str | None:
-    """Which adapter owns this file? None means 'unrecognised, report and keep'."""
+    """Which adapter owns this path? None means 'unrecognised, report and keep'.
+
+    A **directory** is a valid answer, not just a file: Messenger and Telegram both ship
+    a folder tree, and `discover()` needs to know whether to emit the folder as one batch
+    or walk into it. Only the adapters that can read a folder are consulted.
+    """
+    if path.is_dir():
+        if messenger.detect(path):
+            return messenger.PLATFORM
+        if linkedin.detect(path):
+            return linkedin.PLATFORM
+        if whatsapp_html.detect(path):
+            return whatsapp.PLATFORM
+        # `whatsapp` has no `detect()` of its own — its shape check lives in
+        # `_detect_whatsapp`, which reads a `chat.txt` from a zip or a bare text file.
+        if _detect_whatsapp(path) is not None:
+            return whatsapp.PLATFORM
+        # Telegram's folder holds `result.json`; the file branch below handles it once
+        # `discover()` has walked in, so a folder is not claimed here.
+        return None
+
     suffix = path.suffix.lower()
 
     if suffix in _MAIL_SUFFIXES:
@@ -242,15 +315,21 @@ def detect_platform(path: Path) -> str | None:
         # reported and kept, never guessed at.
         return sms.PLATFORM if sms.detect(path) else None
 
-    if suffix in {".zip", ".txt", ".md"}:
-        # Four zip-shaped platforms. Detection is by content, never by filename:
-        # a user renames downloads.
+    if suffix in {".zip", ".txt", ".md", ".html"}:
+        # Zip-shaped platforms, plus the HTML exporter. Detection is by content, never
+        # by filename: a user renames downloads.
         if linkedin.detect(path):
             return linkedin.PLATFORM
         if messenger.detect(path):
             return messenger.PLATFORM
         if sms.detect(path):
             return sms.PLATFORM
+        # WhatsApp has two dialects: the native `chat.txt` and the browser extension's
+        # HTML pages. Both report `whatsapp`, because they are the same platform and
+        # the same chat — `_chat_id()` hashes the chat title, so a chat downloaded both
+        # ways lands in one Thread.
+        if whatsapp_html.detect(path):
+            return whatsapp.PLATFORM
         return _detect_whatsapp(path)
 
     if suffix not in _JSON_SUFFIXES:
@@ -265,10 +344,17 @@ def _detect_whatsapp(path: Path) -> str | None:
     try:
         if path.suffix.lower() == ".zip":
             with zipfile.ZipFile(path) as archive:
-                names = {Path(n).name for n in archive.namelist()}
-                if "chat.txt" not in names and "_chat.txt" not in names:
+                # WhatsApp packs the chat inside a folder named after the conversation
+                # (`WhatsApp Chat with X/chat.txt`), so the member must be matched by
+                # basename and then opened by its FULL name. Opening the bare
+                # "chat.txt" raises KeyError on every real export.
+                members = archive.namelist()
+                candidates = [n for n in members
+                              if Path(n).name in {"chat.txt", "_chat.txt"}]
+                if not candidates:
                     return None
-                member = "chat.txt" if "chat.txt" in names else "_chat.txt"
+                preferred = [n for n in candidates if Path(n).name == "chat.txt"]
+                member = (preferred or candidates)[0]
                 with archive.open(member) as handle:
                     head = handle.read(4096).decode("utf-8-sig", errors="replace")
         else:
@@ -284,10 +370,17 @@ def _detect_whatsapp(path: Path) -> str | None:
 
 
 def discover(root: Path) -> list[Batch]:
-    """Every candidate file under `root`, in deterministic order.
+    """Every candidate export under `root`, in deterministic order.
 
-    Directories named `result.json` are the normal case; a spool entry that is a
-    folder of exports (Telegram's own layout) is descended into for the same file.
+    **A recognised directory is one batch, not one per file inside it.** Messenger and
+    Telegram both ship a folder tree, and their adapters resolve thread ids from the
+    archive-relative path — so handing them a single `message_1.html` makes each batch
+    parse the *whole* export. Measured before this rule: a 29-thread Messenger folder
+    produced 29 batches and parsed 18,330 messages to write 611.
+
+    So a directory is offered to `detect_platform()` first. If it is recognised, it is
+    emitted once and not descended into. Only an unrecognised directory is walked, which
+    is the case for a spool folder holding several unrelated exports.
     """
     found: list[Batch] = []
     if not root.exists():
@@ -296,6 +389,10 @@ def discover(root: Path) -> list[Batch]:
     candidates: list[Path] = []
     for entry in sorted(root.iterdir()):
         if entry.is_dir():
+            # One batch for the folder when an adapter claims it as a whole.
+            if detect_platform(entry) is not None:
+                candidates.append(entry)
+                continue
             nested = sorted(entry.rglob("*"))
             candidates.extend(p for p in nested if p.is_file()
                               and p.suffix.lower() in _CONSIDER_SUFFIXES)
@@ -329,11 +426,22 @@ def _kwargs_for(platform: str, parse_kwargs: dict[str, Any]) -> dict[str, Any]:
     if owner_platform is not None and platform != owner_platform:
         trimmed.pop("self_id", None)
 
-    # `exclude_spam_groups` and `exclude_silent_groups` are Messenger-only. They are
-    # popped here rather than passed to every adapter, so adding a platform never
-    # means adding a no-op argument.
+    # `exclude_spam_groups` is Messenger-only: the noise heuristic (`sent a link`,
+    # `added X to the group`) is a Facebook shape and means nothing elsewhere.
     if platform != messenger.PLATFORM:
         trimmed.pop("exclude_spam_groups", None)
+
+    # `exclude_silent_groups` is a *group* rule, so it belongs to the three platforms
+    # that have groups. Email, LinkedIn, Outlook and SMS have no group concept in the
+    # sense the gate means — a group MMS is a thread the owner is a participant in by
+    # construction — so the keyword is popped rather than passed as a no-op.
+    #
+    # `silent_group_platforms` narrows it further: the UI offers one toggle per
+    # platform, so a user who leaves Messenger ticked and Telegram unticked must get
+    # Telegram's groups. `None` means "all three", which is the CLI's behaviour.
+    wanted = trimmed.pop("silent_group_platforms", None)
+    if platform not in _SILENT_GROUP_PLATFORMS or (
+            wanted is not None and platform not in wanted):
         trimmed.pop("exclude_silent_groups", None)
 
     # A spool can hold platforms that were exported in different timezones, and the
@@ -356,7 +464,9 @@ def _parse_in_worker(payload: tuple[Path, str, dict[str, Any]]) -> tuple[str, An
     """
     path, platform, parse_kwargs = payload
     try:
-        result = _PARSERS[platform](path, **_kwargs_for(platform, parse_kwargs))
+        parser = _parser_for(path, platform)
+        result = parser(_parse_root(path, platform),
+                        **_kwargs_for(platform, parse_kwargs))
     except Exception as exc:  # noqa: BLE001 - report, never crash the run
         return "error", f"{type(exc).__name__}: {exc}"
     return "ok", result
@@ -407,8 +517,12 @@ def ingest(
     include_service: bool = True,
     exclude_spam_groups: bool = False,
     exclude_silent_groups: bool = False,
+    silent_group_platforms: Iterable[str] | None = None,
+    exclude_spam_threads: bool = False,
+    spam_thread_platforms: Iterable[str] | None = None,
     prune: bool = False,
     prune_after: timedelta = PRUNE_AFTER,
+    prune_keep: int | None = None,
     workers: int | None = None,
     self_id: str | None = None,
     profile_dir: str | Path | None = None,
@@ -418,13 +532,21 @@ def ingest(
 ) -> Report:
     """Parse everything in the spool, write it, verify it, and optionally prune.
 
-    `root` is the directory to read; if omitted, `which` picks one of the two
-    standard queues (`"real"` or `"sample"`). Both go through the same code path, so
-    the sample proves the ingest rather than being a special case.
+    `root` is the directory to read; if omitted it is the one spool queue. `which` is
+    accepted for compatibility and no longer selects a second queue — see `paths.py`.
+
+    `store` redirects the graph. **The profile follows it** unless `profile_dir` is
+    given explicitly — a throwaway store must not write its manifest or tz offsets
+    into the live `store/profile/`.
 
     `prune=False` is the default everywhere. Deleting a spool file is a user
     decision (§9.1.3: `prune` needs `confirm=true`), and the CLI gates it the same
     way the tool layer does.
+
+    `prune_keep` is the "keep the last N ingests" policy. `None` means the age rule
+    (`prune_after`); `0` means keep nothing; `1` keeps the newest run's files. It is
+    applied **after** the whole run, not per batch, because "the last ingest" is a
+    property of the run rather than of a file.
     """
     if since is not None and since.tzinfo is None:
         raise ValueError("since must be timezone-aware")
@@ -437,19 +559,32 @@ def ingest(
     paths.ensure_layout()
 
     if root is None:
-        # Two queues, never mixed: `spool/real/` holds the user's own exports,
-        # `spool/sample/` holds generated demo data (§6). Re-ingest is idempotent, so
-        # whichever is chosen is read whole — never "most recent only", which would
-        # silently skip a file and hide a bug.
-        root = paths.sample_dir() if which == "sample" else paths.real_dir()
+        # One queue. `which` is kept as a parameter because the CLI and the tool layer
+        # pass it, but both values now mean the same directory: a sample is just a file
+        # dropped in the spool, and `ingest` cannot tell it from a real export. Re-ingest
+        # is idempotent, so the queue is read whole — never "most recent only", which
+        # would silently skip a file and hide a bug.
+        root = paths.real_dir()
     root = Path(root)
 
     store_path = Path(store) if store else paths.store_path()
-    profile = Path(profile_dir) if profile_dir else paths.profile_dir()
+    # A caller that redirects the store almost always means "a throwaway store", and
+    # the profile must follow it. Without this, every test that passed `store=tmp/x.rl`
+    # still wrote its manifest and tz offsets into the REAL `store/profile/` — 27
+    # entries from pytest temp dirs accumulated in the live `ingested.json`, and the
+    # live tz offsets could be overwritten by a test.
+    #
+    # An explicit `profile_dir` still wins, so a caller can separate them on purpose.
+    if profile_dir is not None:
+        profile = Path(profile_dir)
+    elif store is not None:
+        profile = store_path.parent / "profile"
+    else:
+        profile = paths.profile_dir()
 
     workers = default_workers() if workers is None else max(1, workers)
 
-    report = Report(store=str(store_path), workers=workers)
+    report = Report(store=str(store_path), workers=workers, profile_dir=str(profile))
     started = time.perf_counter()
 
     # One alias map for the whole run: the same phone must get the same alias across
@@ -532,11 +667,16 @@ def ingest(
         if note:
             report.owner_note = note
 
-    # Messenger-only, and dropped for every other platform by `_kwargs_for`.
+    # `exclude_spam_groups` is Messenger-only and `exclude_silent_groups` covers the
+    # three group platforms; `_kwargs_for` pops whichever an adapter cannot take, so
+    # both are set unconditionally here. `silent_group_platforms` narrows the group
+    # gate to the platforms the user actually ticked.
     if exclude_spam_groups:
         parse_kwargs["exclude_spam_groups"] = True
     if exclude_silent_groups:
         parse_kwargs["exclude_silent_groups"] = True
+        if silent_group_platforms is not None:
+            parse_kwargs["silent_group_platforms"] = set(silent_group_platforms)
 
     parsed = parse_batches(batches, parse_kwargs=parse_kwargs, workers=workers)
 
@@ -546,6 +686,15 @@ def ingest(
     for extra in extra_results:
         parsed.append((Batch(path=Path(extra.export_path), platform=extra.platform),
                        extra, ""))
+
+    # The long-silent-thread rule runs here, not inside an adapter, because IMAP hands
+    # rows over one FETCH at a time — a thread is only countable once the whole mailbox
+    # has been read. It is a post-pass over the parsed rows, before anything is written,
+    # so a dropped thread still leaves no orphan messages.
+    if exclude_spam_threads:
+        for _batch, result, _error in parsed:
+            if result is not None:
+                _drop_spam_threads(result, spam_thread_platforms)
 
     # One connection, one writer, in discovery order. Concurrent writers to one `.rl`
     # is corruption, not a speed-up (§9.1.4).
@@ -599,7 +748,29 @@ def ingest(
             outcome.verified = ok
             outcome.verification = verification
 
-            if prune and ok and _older_than(batch.path, prune_after):
+            # Recorded only after verification said yes. A file that did not fully
+            # land must not be remembered, or the next run would skip a parse that
+            # never actually wrote anything.
+            if ok:
+                try:
+                    digest = manifest.fingerprint(batch.path)
+                    manifest.record(
+                        profile, digest,
+                        platform=batch.platform or "unrecognised",
+                        path=str(batch.path),
+                        messages=written["messages"],
+                        threads=len(result.chats),
+                        bytes_=batch.path.stat().st_size,
+                    )
+                    outcome.fingerprint = digest
+                except OSError as exc:
+                    outcome.warnings.append(f"not recorded in the manifest: {exc}")
+
+            # The age rule is per batch: a file is old or it is not. The "keep the
+            # last N" rule is per RUN and is applied below, once every batch has
+            # landed — a file cannot know whether it belongs to the newest run until
+            # the run is over.
+            if prune and prune_keep is None and ok and _older_than(batch.path, prune_after):
                 try:
                     batch.path.unlink()
                     outcome.pruned = True
@@ -611,8 +782,177 @@ def ingest(
     finally:
         conn.close()
 
+    if prune and prune_keep is not None:
+        _prune_keep_last(report, root, prune_keep)
+
     report.elapsed_s = time.perf_counter() - started
     return report
+
+
+def _prune_keep_last(report: Report, root: Path, keep: int) -> None:
+    """Delete verified spool files from all but the newest `keep` ingests.
+
+    "Ingest" here means a **run**, and a run is identified by the files it touched.
+    The manifest already records `ingested_at` per file, so the newest runs are the
+    distinct timestamps in it, newest first. A file whose timestamp is not among the
+    newest `keep` is deleted — but only if this run verified it, because an unverified
+    file is never pruned.
+
+    `keep=0` deletes everything verified. A file with no manifest entry (never
+    recorded, or recorded before the manifest existed) is left alone: it cannot be
+    placed in a run, and guessing is worse than keeping.
+    """
+    from . import manifest
+
+    # The profile this RUN used, not the global one. `ingest()` may have been given a
+    # throwaway store, in which case its manifest lives beside that store — reading the
+    # global profile here would find nothing and silently prune nothing.
+    profile = report.profile_dir or paths.profile_dir()
+    recorded = manifest.load(profile)
+
+    # Newest run first. A run is a distinct `ingested_at`; several files share one.
+    runs = sorted({entry.get("ingested_at") for entry in recorded.values()
+                   if entry.get("ingested_at")}, reverse=True)
+    keep_runs = set(runs[:keep]) if keep > 0 else set()
+
+    for outcome in report.batches:
+        if not outcome.verified or outcome.pruned:
+            continue
+        entry = recorded.get(outcome.fingerprint or "")
+        if entry is None:
+            continue
+        if entry.get("ingested_at") in keep_runs:
+            continue
+        path = Path(outcome.path)
+        try:
+            path.unlink()
+            outcome.pruned = True
+            _remove_empty_parents(path, root)
+        except OSError as exc:
+            outcome.warnings.append(f"verified but not pruned: {exc}")
+
+
+# ---------------------------------------------------------------------- preview
+
+# A file this big is worth a warning before the parse, not after. Not a refusal: the
+# adapters never read media, so a 4 GB WhatsApp zip with videos parses as fast as a
+# 40 MB one — the cost is the copy and the disk, not the parse.
+LARGE_FILE_BYTES = 500 * 1024 * 1024
+
+
+def preview(
+    *,
+    root: str | Path | None = None,
+    which: str = "real",
+    profile_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """What is in the spool, and what has already been ingested.
+
+    Read-only: nothing is parsed, nothing is written, nothing is deleted. This is the
+    pass the modal runs before the Ingest button so the user is not asked to commit to
+    an unknown quantity.
+
+    It answers two questions and deliberately not a third:
+
+    1. **Is this file already in the store?** A sampled fingerprint is compared against
+       `store/profile/ingested.json`. That is the dedup the UI needs.
+    2. **Is it large enough to warn about?** Size only — see `LARGE_FILE_BYTES`.
+
+    It does **not** count messages. A message count needs a full parse, which is the
+    work the preview exists to avoid; the report after the run is where real counts
+    come from.
+    """
+    paths.ensure_layout()
+    if root is None:
+        root = paths.real_dir()
+    root = Path(root)
+    profile = Path(profile_dir) if profile_dir else paths.profile_dir()
+
+    known = manifest.load(profile)
+    legs: list[dict[str, Any]] = []
+    total_bytes = 0
+
+    for batch in discover(root):
+        try:
+            size = batch.path.stat().st_size
+        except OSError:
+            size = 0
+        total_bytes += size
+
+        digest = ""
+        seen: dict[str, Any] | None = None
+        if batch.recognised:
+            try:
+                digest = manifest.fingerprint(batch.path)
+                seen = known.get(digest)
+            except OSError:
+                digest = ""
+
+        legs.append({
+            "platform": batch.platform,
+            "path": str(batch.path),
+            "bytes": size,
+            "recognised": batch.recognised,
+            "reason": batch.reason,
+            "fingerprint": digest,
+            "duplicate": seen is not None,
+            "ingested_at": (seen or {}).get("ingested_at"),
+            "previous_messages": (seen or {}).get("messages"),
+            "large": size >= LARGE_FILE_BYTES,
+        })
+
+    return {
+        "root": str(root),
+        "legs": legs,
+        "total_bytes": total_bytes,
+        "large_file_bytes": LARGE_FILE_BYTES,
+        "duplicates": sum(1 for leg in legs if leg["duplicate"]),
+        "unrecognised": sum(1 for leg in legs if not leg["recognised"]),
+    }
+
+
+def _drop_spam_threads(
+    result: IngestResult,
+    platforms: Iterable[str] | None = None,
+) -> None:
+    """Drop long threads the owner never replied to, in place.
+
+    The rule: **more than `SPAM_THREAD_MIN_MESSAGES` messages and no `is_self` row**.
+    A 1:1 thread someone started with you is a real conversation, so "owner never
+    spoke" alone is not enough to drop mail. A *long* thread the owner never
+    contributed to is almost always a broadcast, a notification chain or a mailing
+    list — the shape spam takes in a mailbox.
+
+    Applies to Email and Outlook only. It is deliberately **not** the group gate:
+    different scope (all threads, not groups), different threshold, and merging the
+    two would make one toggle mean two things.
+
+    Runs after parsing and before writing, so a dropped thread leaves no orphan
+    messages. Counted in `skipped`, never silently lost.
+    """
+    allowed = set(platforms) if platforms is not None else _SPAM_THREAD_PLATFORMS
+    if result.platform not in allowed:
+        return
+
+    spoke: set[str] = set()
+    per_thread: dict[str, int] = {}
+    for message in result.messages:
+        per_thread[message.chat_id] = per_thread.get(message.chat_id, 0) + 1
+        if message.is_self:
+            spoke.add(message.chat_id)
+
+    doomed = {
+        chat_id for chat_id, count in per_thread.items()
+        if count > SPAM_THREAD_MIN_MESSAGES and chat_id not in spoke
+    }
+    if not doomed:
+        return
+
+    result.messages = [m for m in result.messages if m.chat_id not in doomed]
+    result.attachments = [a for a in result.attachments if a.chat_id not in doomed]
+    result.chats = [c for c in result.chats if c.chat_id not in doomed]
+    for _ in doomed:
+        result.note_skip("spam thread (long, owner silent)")
 
 
 def _resolve_owner_once(
@@ -718,10 +1058,6 @@ def _remove_empty_parents(path: Path, root: Path) -> None:
             return
         parent = parent.parent
 
-
-def _sample_root() -> Path:
-    from .sample_data import build as build_module
-    return build_module.SAMPLE
 
 
 def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> list[Path]:
@@ -871,7 +1207,9 @@ def prune_spool(
             if stored_offset is not None:
                 kwargs["tz_offset_hours"] = stored_offset
             try:
-                result = _PARSERS[batch.platform or ""](batch.path, **kwargs)
+                platform = batch.platform or ""
+                result = _parser_for(batch.path, platform)(
+                    _parse_root(batch.path, platform), **kwargs)
             except Exception:  # noqa: BLE001 - cannot verify => cannot delete
                 continue
             ok, _ = writer.verify_present(conn, result)

@@ -59,6 +59,27 @@ PLATFORM = "whatsapp"
 # Owner marker in the text. The only statement of identity WhatsApp makes.
 SELF_NAME = "You"
 
+# Group evidence in `chat.txt`. WhatsApp writes no participant list, so group-ness has
+# to be inferred from what the file actually contains:
+#
+#   `- Alice added Bob`            a membership change — only a group has these
+#   `- Alice changed the group name to 'X'`
+#   `- Alice removed Bob`
+#   `- Alice turned off disappearing messages`
+#
+# A 1:1 chat has no such rows. This is the signal that makes the silent-group gate work
+# for a group the Owner never spoke in — `SELF_NAME` alone cannot, because a group the
+# Owner never wrote in has no `You:` line at all.
+_GROUP_SYSTEM = re.compile(
+    r"\b(?:added|removed|changed the group|created group|turned (?:on|off) "
+    r"disappearing|joined using this group's invite)\b",
+    re.I,
+)
+
+# `[9/4/26, 10:29:35 AM] - Alice changed the group name to 'X'` — the `- ` form is a
+# system row, and its text is the evidence.
+_SYSTEM_ROW = re.compile(r"^\[([^\]]+)\]\s*-\s*(?P<text>.+)$")
+
 # `[5/22/26, 8:45:50 AM] ` — must match the whole prefix, see gotcha #1.
 _HEADER = re.compile(
     r"^\[(?P<a>\d{1,2})/(?P<b>\d{1,2})/(?P<year>\d{2,4}),\s*"
@@ -250,19 +271,34 @@ def _system_kind(body: str) -> str:
 def message_key(chat_id: str, ts: datetime, sender: str, body: str, ordinal: int = 0) -> str:
     """Content fingerprint — the only stable id a `.txt` export allows.
 
-    Includes chat, second-resolution timestamp, sender, exact body **and the ordinal
-    within that second**. The ordinal is not decoration: a photo album exports seven
-    bullet-identical `<image omitted>` rows in one second, and without it six real
-    messages would collapse into one row.
+    Includes chat, **minute**-resolution timestamp, sender, exact body **and the
+    ordinal within that minute**. The ordinal is not decoration: a photo album exports
+    seven bullet-identical `<image omitted>` rows in one second, and without it six
+    real messages would collapse into one row.
+
+    **Why the minute, not the second.** WhatsApp has two export routes and they do not
+    agree on precision: the native `chat.txt` writes `[11/16/26, 11:09:15 PM]`, while
+    the HTML exporter writes a day separator plus `23:09`. Hashing the second meant the
+    same message got two different keys depending on which route produced it, so a user
+    who downloaded a chat both ways got every message twice inside one thread — the
+    thread key already matches, because `_chat_id()` hashes the chat *title*.
+
+    Truncating to the minute makes both routes agree, and `MERGE` collapses them for
+    free. `ts_utc` on the stored row keeps its full precision; only the identity hash is
+    coarser.
 
     Why the ordinal is safe: WhatsApp writes the file in chronological order, so a
     re-export reproduces the same position for the same message. It would only drift
-    if someone deleted one of a set of same-second duplicates upstream — in which
-    case the surviving rows still merge correctly and the deleted one becomes an
-    orphan, which is the correct outcome.
+    if someone deleted one of a set of same-minute duplicates upstream — in which case
+    the surviving rows still merge correctly and the deleted one becomes an orphan,
+    which is the correct outcome.
     """
+    # Whitespace is collapsed for the KEY only; the stored body keeps its formatting.
+    # The two export routes disagree on trailing spaces (`'Thad here \n'` vs
+    # `'Thad here\n'`), which is not a difference in what was said.
     material = "\x1f".join((
-        chat_id, ts.strftime("%Y-%m-%dT%H:%M:%SZ"), sender, body, str(ordinal),
+        chat_id, ts.strftime("%Y-%m-%dT%H:%MZ"),
+        " ".join(sender.split()), " ".join(body.split()), str(ordinal),
     ))
     return f"{PLATFORM}:{chat_id}:{hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]}"
 
@@ -282,6 +318,7 @@ def parse(
     profile_dir: str | Path | None = None,
     tz_offset_hours: float = 0,
     month_first: bool | None = None,
+    exclude_silent_groups: bool = False,
 ) -> IngestResult:
     """Parse one WhatsApp export (`.zip`, `chat.txt`, or the folder holding it).
 
@@ -294,6 +331,11 @@ def parse(
     `self_id` / `profile_dir` follow `identity.py`: who is "me" must not change
     between exports. For WhatsApp the owner is the literal `You`, so `self_id` is
     only used to *name* that identity, not to find it.
+
+    `exclude_silent_groups=True` drops group chats the owner never sent a message in.
+    Off by default, counted in `skipped` when on. **Untested against a real group
+    export** — the current store holds no WhatsApp group threads, so this gate has
+    only fixture coverage.
     """
     for bound, label in ((since, "since"), (until, "until")):
         if bound is not None and bound.tzinfo is None:
@@ -325,8 +367,14 @@ def parse(
         result.note_skip("preamble before first message")
 
     senders: set[str] = set()
+    # The ordinal slot is keyed on the **minute**, matching `message_key()`. Keying it on
+    # the full timestamp while the fingerprint used minutes meant two rows in the same
+    # minute both got ordinal 0, produced identical keys, and the second was dropped —
+    # the same class of bug that cost 31 rows in the SMS adapter.
     seen_keys: dict[tuple[datetime, str, str], int] = {}
     collisions = 0
+    # Group evidence, collected while walking. See `_GROUP_SYSTEM`.
+    group_evidence = False
 
     for match, remainder, continuation in groups:
         ts = _to_utc(match, month_first=month_first, tz_offset_hours=tz_offset_hours)
@@ -356,13 +404,19 @@ def parse(
                 body = body[stripped.end():]
 
         if sender is None:
+            # A system row is the only group evidence `chat.txt` carries. Checked
+            # before the `include_service` gate, because the evidence is a fact about
+            # the chat, not a message we are choosing to keep.
+            if _GROUP_SYSTEM.search(body or ""):
+                group_evidence = True
             if not include_service:
                 result.note_skip("service excluded by request")
                 continue
             kind = _system_kind(body)
             result.note_kind(kind)
-            ordinal = seen_keys.get((ts, "", body), 0)
-            seen_keys[(ts, "", body)] = ordinal + 1
+            slot = ts.replace(second=0, microsecond=0)
+            ordinal = seen_keys.get((slot, "", body), 0)
+            seen_keys[(slot, "", body)] = ordinal + 1
             key = message_key(chat_id, ts, "", body, ordinal)
             message = Message(
                 key=key, platform=PLATFORM, chat_id=chat_id,
@@ -397,10 +451,11 @@ def parse(
         if raw_kind != "text":
             result.note_kind(raw_kind)
 
-        ordinal = seen_keys.get((ts, sender, body), 0)
-        seen_keys[(ts, sender, body)] = ordinal + 1
+        slot = ts.replace(second=0, microsecond=0)
+        ordinal = seen_keys.get((slot, sender, body), 0)
+        seen_keys[(slot, sender, body)] = ordinal + 1
         if ordinal:
-            # A same-second repeat is normal for media albums, not an error. Count
+            # A same-minute repeat is normal for media albums, not an error. Count
             # it so the number is visible without treating it as data loss.
             collisions += 1
 
@@ -415,13 +470,40 @@ def parse(
         )
         result.messages.append(message)
 
-    is_group = any(s == SELF_NAME for s in senders) and len(senders) > 3
-    result.chats.append(Chat(
-        platform=PLATFORM, chat_id=chat_id, title=title,
-        kind="group_chat" if is_group else "personal_chat",
-        is_group=is_group,
-        participant_names=tuple(sorted(senders)),
-    ))
+    # Group-ness. **`SELF_NAME` alone is not enough**, and requiring it was a bug: a
+    # group the Owner never wrote in has no `You:` line at all, so it was classified
+    # `personal_chat` and the silent-group gate could never fire on it — exactly the
+    # case the gate exists to catch. Verified against a real native export
+    # (`Local Community Events (OSA).zip`): 6 senders, 21 membership system rows, no
+    # `You:` line, and the old rule called it a 1:1.
+    #
+    # Two independent signals, either of which is enough:
+    #   1. a membership system row (`added`, `removed`, `changed the group name`, …)
+    #      — a 1:1 chat has none, because there is nobody to add
+    #   2. the Owner plus more than three senders — the old rule, kept because it is
+    #      the only signal when a group has no system rows at all
+    is_group = group_evidence or (
+        any(s == SELF_NAME for s in senders) and len(senders) > 3)
+
+    # Silent-group gate. Decided BEFORE the `Chat` is appended, so a dropped group
+    # leaves no orphan messages behind. `is_self` is `sender == SELF_NAME`, so the
+    # check is the same fact the Chat would carry.
+    #
+    # The rows are already parsed at this point, so a drop has to clear them as well
+    # as skip the Chat — otherwise the messages land with no thread to hang from.
+    # Falling through rather than returning keeps the collision warning below.
+    if exclude_silent_groups and is_group and not any(
+            m.is_self for m in result.messages):
+        result.note_skip("group thread the owner never spoke in")
+        result.messages.clear()
+        result.attachments.clear()
+    else:
+        result.chats.append(Chat(
+            platform=PLATFORM, chat_id=chat_id, title=title,
+            kind="group_chat" if is_group else "personal_chat",
+            is_group=is_group,
+            participant_names=tuple(sorted(senders)),
+        ))
 
     if collisions:
         result.note_kind("same-second repeats")

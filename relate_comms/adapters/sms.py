@@ -73,6 +73,7 @@ from __future__ import annotations
 import hashlib
 import re
 import zipfile
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -145,6 +146,34 @@ def _stable(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
+def _canon_digits(raw: str) -> str | None:
+    """Digits, with the NANP country code removed when it is redundant.
+
+    `norm_phone` alone is not enough: the same phone writes `+19174004025` on one row
+    and `9174004025` on the next, and both are 11 and 10 digits respectively, so they
+    compare unequal. On the real file that splits **76 people into two identities** —
+    including the owner, which is why excluding them from a group key silently failed.
+
+    A leading `1` on an 11-digit number is the NANP country code and is dropped. No
+    other length is touched: `27840258710` is South Africa and keeps its `27`.
+    """
+    digits = norm_phone(raw)
+    if digits and len(digits) == 11 and digits.startswith("1"):
+        return digits[1:]
+    return digits
+
+
+def _norm_addr(raw: str) -> str:
+    """The comparison form of an address: digits for a phone, lowercased text otherwise.
+
+    This is the *unhashed* twin of `_address_key`, for set arithmetic — deciding
+    whether two `<addr>` values are the same participant. `+1 (917) 400-4025`,
+    `917-400-4025` and `+19174004025` must all compare equal.
+    """
+    digits = _canon_digits(raw)
+    return digits if digits else raw.strip().lower()
+
+
 def _address_key(raw: str) -> str:
     """A stable, non-PII chat id for one address.
 
@@ -153,7 +182,7 @@ def _address_key(raw: str) -> str:
     addresses, RCS ids — is keyed by its own text. The result is hashed because the
     address is personal data and it lands in every `Message.key`.
     """
-    digits = norm_phone(raw)
+    digits = _canon_digits(raw)
     if digits:
         return f"sms_{_stable('p:' + digits)}"
     return f"sms_{_stable('n:' + raw.strip().lower())}"
@@ -162,10 +191,15 @@ def _address_key(raw: str) -> str:
 def _group_key(participants: set[str]) -> str:
     """A group thread is keyed by its participant set, so both sides agree.
 
-    The owner is excluded by the caller: a group keeps one thread whether the message
-    was sent or received, and the owner is in the set on one side only.
+    Addresses are normalised before hashing: the same group writes `+14147950006` on
+    one row and `4147950006` on the next, and hashing the raw text splits one
+    conversation into two threads.
+
+    The owner is excluded by the caller — see `_emit_mms`. A group keeps one thread
+    whether the message was sent or received, and the owner is in `<addrs>` on one
+    side only.
     """
-    return f"sms_g_{_stable('|'.join(sorted(participants)))}"
+    return f"sms_g_{_stable('|'.join(sorted(_norm_addr(a) for a in participants)))}"
 
 
 def _display(raw: str, contact_name: str) -> str:
@@ -205,7 +239,7 @@ def _open_xml(path: Path) -> tuple[Path, Any]:
         raise ValueError(f"no .xml inside {path.name}; is this a compressed backup?")
     # The XML is the first entry by construction; sorting keeps that true even if the
     # archive also holds a stylesheet.
-    member = sorted(members, key=lambda n: archive.namelist().index(n))[0]
+    member = min(members, key=archive.namelist().index)
     try:
         data = archive.read(member)
     except RuntimeError as exc:  # encrypted zip
@@ -339,8 +373,8 @@ def parse(
     `since` / `until` bound the window by `date` and must be timezone-aware.
 
     `self_id` / `profile_dir` follow `identity.py`. SMS states direction explicitly, so
-    `is_self` is correct without them; the owner is derived only to name them and to
-    keep them out of the participant list.
+    `is_self` is correct without them; the owner is resolved only to name them, to
+    keep them out of the participant list, and to key group threads.
     """
     for bound, label in ((since, "since"), (until, "until")):
         if bound is not None and bound.tzinfo is None:
@@ -349,9 +383,16 @@ def parse(
     path = Path(export_path)
     result = IngestResult(platform=PLATFORM, export_path=str(path))
 
+    # Resolved *before* the walk when it can be, because group thread keys depend on
+    # it. Only when neither the caller nor the profile names the owner does the walk
+    # have to derive it, which it does after the last row.
+    owner = (self_id or "").strip() or None
+    if owner is None and profile_dir:
+        owner = identity.load_owner(profile_dir, PLATFORM)
+
     xml_path, cleanup = _open_xml(path)
     try:
-        _parse_rows(xml_path, result, since, until)
+        derived = _parse_rows(xml_path, result, since, until, owner)
     finally:
         if cleanup is not None:
             try:
@@ -359,8 +400,30 @@ def parse(
             except OSError:
                 pass
 
-    _apply_owner(result, self_id, profile_dir)
+    _apply_owner(result, self_id, profile_dir, derived)
     return result
+
+
+@dataclass
+class _MmsRow:
+    """One `<mms>` held back until the owner is known.
+
+    Only the attributes and the two child lists are kept — never the element. Holding
+    the element would keep the whole `<parts>` subtree alive, including the base64
+    `data` of every attachment, and the point of streaming an 825 MB file is that
+    nothing large is retained.
+    """
+
+    date: str | None
+    date_sent: str | None
+    msg_box: str | None
+    address: str | None
+    contact_name: str | None
+    everyone: set[str] = field(default_factory=set)
+    senders: set[str] = field(default_factory=set)
+    recipients: set[str] = field(default_factory=set)
+    body: str = ""
+    attachments: list[tuple[str, str | None]] = field(default_factory=list)
 
 
 def _parse_rows(
@@ -368,8 +431,19 @@ def _parse_rows(
     result: IngestResult,
     since: datetime | None,
     until: datetime | None,
-) -> None:
-    """The streaming walk. Split out so `parse()` can own the temp-file cleanup."""
+    owner: str | None,
+) -> str | None:
+    """The streaming walk. Split out so `parse()` can own the temp-file cleanup.
+
+    Returns the owner address derived from the file, or `None`.
+
+    **`<sms>` is emitted inline; `<mms>` is deferred.** An SMS row's chat id is its
+    own address, so it needs nothing but itself. An MMS row's chat id is the
+    participant set *minus the owner*, so it cannot be keyed until the owner is
+    known — and the owner is only derivable from the MMS rows themselves. So the
+    cheap rows stream out and the MMS rows are held as small dataclasses, then
+    emitted once the owner is settled.
+    """
     chats: dict[str, Chat] = {}
     seen: set[str] = set()
     ordinals: dict[tuple[str, datetime, str, str], int] = {}
@@ -378,6 +452,7 @@ def _parse_rows(
     from_sent: dict[str, int] = {}
     to_received: dict[str, int] = {}
     owner_token_seen = False
+    deferred: list[_MmsRow] = []
 
     for elem in _iter_rows(xml_path):
         if elem.tag == "sms":
@@ -404,8 +479,22 @@ def _parse_rows(
             for address in recipients:
                 to_received[address] = to_received.get(address, 0) + 1
 
-        _parse_mms(elem, result, chats, seen, ordinals, since, until,
-                   everyone=everyone, is_self=is_self)
+        body, attachments = _mms_parts(elem)
+        deferred.append(_MmsRow(
+            date=elem.get("date"), date_sent=elem.get("date_sent"),
+            msg_box=elem.get("msg_box"), address=elem.get("address"),
+            contact_name=elem.get("contact_name"),
+            everyone=everyone, senders=senders, recipients=recipients,
+            body=body, attachments=attachments,
+        ))
+
+    derived = None
+    if owner is None:
+        derived, _count = _derive_owner(from_sent, to_received)
+        owner = derived
+
+    for row in deferred:
+        _emit_mms(row, result, chats, seen, ordinals, since, until, owner)
 
     result.chats.extend(chats.values())
 
@@ -417,6 +506,8 @@ def _parse_rows(
         result.warnings.append(
             "no MMS participants, so the owner's number is unknown; "
             "is_self is still correct because SMS states direction")
+
+    return derived
 
 
 def _parse_sms(
@@ -475,19 +566,29 @@ def _parse_sms(
         )
 
 
-def _parse_mms(
-    elem: ET.Element,
+def _emit_mms(
+    row: _MmsRow,
     result: IngestResult,
     chats: dict[str, Chat],
     seen: set[str],
     ordinals: dict[tuple[str, datetime, str, str], int],
     since: datetime | None,
     until: datetime | None,
-    *,
-    everyone: set[str],
-    is_self: bool,
+    owner: str | None,
 ) -> None:
-    ts = _epoch(elem.get("date")) or _epoch(elem.get("date_sent"))
+    """Emit one deferred `<mms>` row, now that the owner is known.
+
+    **The owner is removed before the thread key is built.** `<addrs>` lists the owner
+    on every row — as `From` on sent, as `To` on received — so a set that keeps them
+    differs between the two directions and the same group gets two thread ids. On the
+    real file that is 760 group rows collapsing into 152 threads instead of 164.
+
+    Removing the owner also turns a two-person set into a one-person one, which is
+    the common case: 110 of the 123 two-person MMS are ordinary 1:1 conversations.
+    Those must key on the *address*, not on a group hash, or the same conversation
+    splits in two — its SMS rows under `sms_…` and its MMS rows under `sms_g_…`.
+    """
+    ts = _epoch(row.date) or _epoch(row.date_sent)
     if ts is None:
         result.note_skip("no usable timestamp")
         return
@@ -498,22 +599,27 @@ def _parse_mms(
         result.note_skip("after window")
         return
 
+    everyone = set(row.everyone)
     if not everyone:
         # Older RCS backups can omit `<addrs>` entirely; the `address` attribute is
         # the documented fallback, and it may be a `~`-joined list.
-        fallback = _text(elem.get("address"))
+        fallback = _text(row.address)
         if fallback:
             everyone = {part for part in fallback.split("~") if part.strip()}
     if not everyone:
         result.note_skip("no participants")
         return
 
-    body, attachments = _mms_parts(elem)
-    contact_name = elem.get("contact_name") or ""
+    owner_norm = _norm_addr(owner) if owner else None
+    if owner_norm:
+        others = {a for a in everyone if _norm_addr(a) != owner_norm}
+        # A note to self has no other participant; keep the row rather than dropping
+        # it, and let it key on the owner's own address.
+        everyone = others or everyone
 
-    # The owner is not a participant. Which address that is gets resolved after the
-    # walk, so the group key is built from the full set here and corrected in
-    # `_apply_owner` — see the note there.
+    is_self = _text(row.msg_box) == _SENT
+    contact_name = row.contact_name or ""
+
     if len(everyone) > 1:
         chat_id = _group_key(everyone)
         is_group = True
@@ -521,18 +627,26 @@ def _parse_mms(
         chat_id = _address_key(next(iter(everyone)))
         is_group = False
 
-    sender = "" if is_self else _display(sorted(everyone)[0], contact_name)
-    message_id = _message_id(chat_id, ts, sender, body, _next_ordinal(
-        ordinals, chat_id, ts, sender, body))
+    # Who spoke, for a received row. `<addr type="137">` is the `From` and is the
+    # authority; the old code took `sorted(everyone)[0]`, which is alphabetical order,
+    # not the sender. 374 rows carry no `From` at all, so a fallback is still needed.
+    sender_addr = ""
+    if not is_self:
+        froms = {a for a in row.senders if not owner_norm or _norm_addr(a) != owner_norm}
+        sender_addr = min(froms) if froms else min(everyone)
+    sender = "" if is_self else _display(sender_addr, contact_name)
+
+    message_id = _message_id(chat_id, ts, sender, row.body, _next_ordinal(
+        ordinals, chat_id, ts, sender, row.body))
     key = f"{PLATFORM}:{chat_id}:{message_id}"
     if key in seen:
         result.note_skip("duplicate within run")
         return
     seen.add(key)
 
-    if attachments and not body:
+    if row.attachments and not row.body:
         raw_kind = "mms_attachment"
-    elif body:
+    elif row.body:
         raw_kind = "mms"
     else:
         raw_kind = "empty"
@@ -540,20 +654,39 @@ def _parse_mms(
 
     result.messages.append(Message(
         key=key, platform=PLATFORM, chat_id=chat_id, message_id=message_id,
-        ts_utc=ts, sender_name=sender, sender_id=None if is_self else sender or None,
-        body=body, reply_to=None, has_attachments=bool(attachments),
+        ts_utc=ts, sender_name=sender,
+        sender_id=None if is_self else (sender_addr or None),
+        body=row.body, reply_to=None, has_attachments=bool(row.attachments),
         is_self=is_self, raw_kind=raw_kind,
     ))
-    for filename, mime in attachments:
+    for filename, mime in row.attachments:
         result.attachments.append(AttachmentRef(
             platform=PLATFORM, chat_id=chat_id, message_id=message_id,
             path=filename, mime=mime, size=None))
 
     if chat_id not in chats:
-        names = tuple(sorted(_display(a, contact_name) for a in everyone))
+        # `contact_name` is **not** a per-participant name, and applying it to every
+        # member is what produced 15 threads whose participants were all called the
+        # same thing (`Sec AO Base, Sec AO Base`).
+        #
+        # What it actually is, measured on the file:
+        # - 1:1 (either direction): the other party's name. 467 of 467 sent MMS agree
+        #   with that address's own name from the `<sms>` rows; none disagree.
+        # - group: a comma-joined label of the members, but unreliable — 130 of 636
+        #   are truncated to one name (`Jonathan K` on a 17-person thread) or list
+        #   fewer members than `<addrs>` holds.
+        #
+        # So it may name the *single* other party, and never a group member.
+        if not is_group and len(everyone) == 1:
+            names = (_display(next(iter(everyone)), contact_name),)
+        else:
+            names = tuple(sorted(_display(a, "") for a in everyone))
+        # A note to self has no other participant once the owner is removed. The
+        # thread is real and its messages are kept; it simply has nobody to name.
+        title = ", ".join(names[:3]) + ("…" if len(names) > 3 else "")
         chats[chat_id] = Chat(
             platform=PLATFORM, chat_id=chat_id,
-            title=", ".join(names[:3]) + ("…" if len(names) > 3 else ""),
+            title=title or "(no participants)",
             kind="group_chat" if is_group else "personal_chat",
             is_group=is_group, participant_names=names,
         )
@@ -570,8 +703,14 @@ def _next_ordinal(
 
     Media albums and carrier retries produce these legitimately; the ordinal keeps
     them as separate rows instead of silently merging them.
+
+    **The slot is truncated to the second, matching `_message_id`.** Keying it on the
+    full microsecond timestamp while the fingerprint used whole seconds meant two
+    rows 292 ms apart both got ordinal 0, produced the same fingerprint, and the
+    second was skipped as a duplicate — 31 rows on the real file, all of them
+    carrier notices repeated within one second.
     """
-    slot = (chat_id, ts, sender, body)
+    slot = (chat_id, ts.replace(microsecond=0), sender, body)
     ordinal = ordinals.get(slot, 0)
     ordinals[slot] = ordinal + 1
     return ordinal
@@ -581,36 +720,40 @@ def _apply_owner(
     result: IngestResult,
     self_id: str | None,
     profile_dir: str | Path | None,
+    derived: str | None,
 ) -> None:
-    """Resolve the owner and keep them out of every participant list.
+    """Persist the owner and keep them out of every participant list.
 
     Precedence follows `identity.py`: an explicit `self_id`, then the persisted owner
-    for this platform, then what the file states. Persisting it is what makes a second
-    backup of the same phone agree with the first.
+    for this platform, then what the file states (`derived`, from `_derive_owner`).
+    Persisting it is what makes a second backup of the same phone agree with the first.
 
     `is_self` is **not** touched here — SMS states direction, so it is already right.
+
+    Thread keys are already correct by this point: `_parse_rows` resolved the owner
+    before emitting any MMS row. This function only cleans up the display side.
     """
     owner = (self_id or "").strip() or None
     if owner is None and profile_dir:
         owner = identity.load_owner(profile_dir, PLATFORM)
-
     if owner is None:
-        # Nothing in `<sms>` names the owner, and `<mms>` only does so indirectly. The
-        # evidence is collected during the walk and passed through the result's
-        # warnings by `_parse_rows`; deriving it here would need a second pass.
+        owner = derived
+    if owner is None:
         return
 
     if profile_dir:
         try:
-            identity.save_owner(profile_dir, owner, evidence="sms self_id",
-                                platform=PLATFORM)
+            identity.save_owner(
+                profile_dir, owner,
+                evidence="sms self_id" if self_id else "sms mms from/to",
+                platform=PLATFORM)
         except ValueError as exc:
             result.warnings.append(f"owner conflict: {exc}")
 
-    owner_key = _address_key(owner)
+    owner_norm = _norm_addr(owner)
     for chat in result.chats:
         kept = tuple(name for name in chat.participant_names
-                     if _address_key(name) != owner_key)
+                     if _norm_addr(name) != owner_norm)
         chat.participant_names = kept
 
     result.warnings.append(f"owner: {owner}")
@@ -622,11 +765,15 @@ def detect(path: Path) -> bool:
     Reads the first 4 KB and looks for the `<smses>` root with a `backup_set`
     attribute. A `<calls` document is a call log, not messages, and is refused — the
     two are written by the same app and a user can easily grab the wrong one.
+
+    **`.xml.zip` is read, not refused.** SyncTech's "compress backup" option writes
+    exactly that, and `parse()` already unwraps it. Reading the zip's raw bytes and
+    looking for `<smses` in them always failed, because the bytes are compressed — so
+    the one format the parser supports was the one the detector could never route to
+    it. The member is opened and the same head check runs on the decompressed text.
     """
-    try:
-        with open(path, "rb") as handle:
-            head = handle.read(4096).decode("utf-8", errors="replace")
-    except OSError:
+    head = _head_text(path)
+    if head is None:
         return False
 
     if "<calls" in head:
@@ -636,3 +783,28 @@ def detect(path: Path) -> bool:
     # `backup_set` is written by every version; `count` alone also appears in other
     # tools' exports, so it is not enough on its own.
     return "backup_set" in head or "<sms " in head
+
+
+def _head_text(path: Path, size: int = 4096) -> str | None:
+    """The first `size` bytes of the XML, decompressed when the file is a zip.
+
+    Returns None when the file cannot be read, holds no `.xml` member, or is
+    password-protected — all of which mean "not ours", not "crash".
+    """
+    try:
+        if path.suffix.lower() != ".zip":
+            with open(path, "rb") as handle:
+                return handle.read(size).decode("utf-8", errors="replace")
+
+        with zipfile.ZipFile(path) as archive:
+            members = [n for n in archive.namelist() if n.lower().endswith(".xml")]
+            if not members:
+                return None
+            member = min(members, key=archive.namelist().index)
+            try:
+                with archive.open(member) as handle:
+                    return handle.read(size).decode("utf-8", errors="replace")
+            except RuntimeError:  # encrypted zip
+                return None
+    except (OSError, zipfile.BadZipFile):
+        return None

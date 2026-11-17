@@ -60,6 +60,26 @@ def test_multiline_body_is_joined_not_orphaned(tmp_path):
     assert last.raw_kind == "text"
 
 
+def test_detection_handles_the_folder_layout(tmp_path):
+    """WhatsApp packs the chat inside a folder named after the conversation.
+
+    `archive.open("chat.txt")` raised `KeyError` on every real export, because the
+    membership test used basenames while `open()` needs the full member path. Detection
+    crashed rather than returning None, so the standard layout was unreadable.
+    """
+    import zipfile
+
+    from relate_comms import ingest as ingest_module
+
+    path = tmp_path / "WhatsApp Chat with X.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("WhatsApp Chat with X/123@s.whatsapp.net/chat.txt", BASIC)
+
+    assert ingest_module.detect_platform(path) == "whatsapp"
+    # And the parser reads the same member.
+    assert whatsapp.parse(path).messages
+
+
 def test_header_must_match_the_whole_prefix():
     lines = ["[not a header", "[5/22/26, 8:45:50 AM] You: ok"]
     groups = whatsapp.split_lines("\n".join(lines))
@@ -161,6 +181,81 @@ def test_window_filter_counts_skips(tmp_path):
     result = whatsapp.parse(export, since=since)
     assert result.skipped.get("before window", 0) == 2
     assert all(m.ts_utc >= since for m in result.messages)
+
+
+def test_a_one_to_one_is_never_dropped_by_the_group_gate(tmp_path):
+    """The rule is about *groups*. A 1:1 the Owner never replied to is still a
+    conversation someone had with them, and hiding it is a view toggle, not a drop."""
+    export = _zip(tmp_path, "One to one", BASIC)
+
+    kept = whatsapp.parse(export)
+    assert len(kept.chats) == 1
+    assert kept.chats[0].is_group is False
+
+    trimmed = whatsapp.parse(export, exclude_silent_groups=True)
+    assert len(trimmed.chats) == 1, "a 1:1 thread is never dropped by the group gate"
+    assert "group thread the owner never spoke in" not in trimmed.skipped
+
+
+def test_a_membership_row_proves_group_ness(tmp_path):
+    """`SELF_NAME` alone cannot classify a group the Owner never spoke in.
+
+    Verified against a real native export (`Local Community Events (OSA).zip`): six
+    senders, 21 membership system rows, **no `You:` line at all**. The old rule
+    (`You in senders and len(senders) > 3`) called it a 1:1, so the silent-group gate
+    could never fire on exactly the case it exists to catch.
+
+    A membership row is proof: a 1:1 chat has nobody to add or remove.
+    """
+    text = (
+        "[8/25/26, 9:40:16 AM] Alice Meiring SO: Hello everyone\n"
+        "[9/4/26, 10:29:35 AM] - +27 82 352 8161 changed the group name to 'Events'\n"
+        "[9/15/26, 11:32:23 AM] - +7 996 195-97-83 added +7 914 279-89-62\n"
+        "[9/27/26, 11:43:09 AM] +27 66 317 9679: <image omitted>\n"
+    )
+    export = _zip(tmp_path, "Local Community Events", text)
+
+    result = whatsapp.parse(export)
+    assert result.chats[0].is_group is True
+    assert not any(m.is_self for m in result.messages)
+
+    trimmed = whatsapp.parse(export, exclude_silent_groups=True)
+    assert trimmed.chats == [], "an owner-silent group must be dropped when asked"
+    assert trimmed.messages == [], "and its rows must go with it"
+    assert trimmed.skipped.get("group thread the owner never spoke in") == 1
+
+
+def test_a_group_the_owner_spoke_in_survives_the_gate(tmp_path):
+    """The gate is about silence, not about being a group."""
+    text = (
+        "[9/4/26, 10:29:35 AM] - Alice changed the group name to 'Events'\n"
+        "[9/5/26, 9:00:00 AM] Alice: anyone coming?\n"
+        "[9/5/26, 9:01:00 AM] You: I am\n"
+    )
+    export = _zip(tmp_path, "Events", text)
+
+    result = whatsapp.parse(export, exclude_silent_groups=True)
+    assert len(result.chats) == 1
+    assert result.chats[0].is_group is True
+    assert any(m.is_self for m in result.messages)
+    assert "group thread the owner never spoke in" not in result.skipped
+
+
+def test_membership_evidence_is_read_even_when_service_rows_are_excluded(tmp_path):
+    """The evidence is a fact about the chat, not a message we chose to keep.
+
+    `include_service=False` drops the system rows from the store; it must not also
+    erase the proof that the chat is a group.
+    """
+    text = (
+        "[9/4/26, 10:29:35 AM] - Alice added Bob\n"
+        "[9/5/26, 9:00:00 AM] Alice: hello\n"
+    )
+    export = _zip(tmp_path, "Events", text)
+
+    result = whatsapp.parse(export, include_service=False)
+    assert result.chats[0].is_group is True
+    assert not any(m.raw_kind.startswith("system:") for m in result.messages)
 
 
 # ---------------------------------------------------------------------- pipeline

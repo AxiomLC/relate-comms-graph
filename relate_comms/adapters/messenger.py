@@ -446,13 +446,35 @@ def _read_member(path: Path, member: str) -> str:
 
 
 def detect(path: Path) -> bool:
-    """Cheap shape check used by `ingest.detect_platform`."""
+    """Cheap shape check used by `ingest.detect_platform`.
+
+    Three forms, because a user can unzip the archive by hand:
+
+    1. **A zip** — the form Facebook ships.
+    2. **A directory** — the same tree unzipped, which `discover()` walks into.
+    3. **A single `message_N.html`** — what `discover()` hands over once it has walked
+       in, since it yields files rather than folders.
+
+    The marker is `facebook_activity` in the path plus a `message_N.html` leaf. A stray
+    HTML file has neither, so it is still reported unrecognised rather than guessed at.
+    """
     try:
         if path.suffix.lower() == ".zip":
             with zipfile.ZipFile(path) as archive:
                 names = archive.namelist()
                 return any("facebook_activity" in n and re.search(r"message_\d+\.html$", n)
                            for n in names[:4000])
+
+        if path.is_dir():
+            return any(re.search(r"message_\d+\.html$", entry.name)
+                       for entry in path.rglob("message_*.html"))
+
+        if path.suffix.lower() == ".html":
+            # `discover()` yields the file, so the folder evidence is in its parents.
+            if not re.search(r"message_\d+\.html$", path.name):
+                return False
+            return "your_facebook_activity" in path.as_posix()
+
         return False
     except (OSError, zipfile.BadZipFile):
         return False

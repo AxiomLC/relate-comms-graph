@@ -56,6 +56,89 @@ def _run(root: Path, store: Path, **kwargs) -> ingest_module.Report:
     )
 
 
+def test_silent_group_gate_reaches_telegram_and_whatsapp():
+    """`_kwargs_for` must keep the flag for the three group platforms only.
+
+    The gate used to be Messenger-only, popped for every other platform. Telegram and
+    WhatsApp compute `is_group` already, so the keyword has to survive the trim.
+    """
+    kwargs = {"exclude_silent_groups": True, "exclude_spam_groups": True}
+
+    for platform in ("telegram", "whatsapp", "messenger"):
+        trimmed = ingest_module._kwargs_for(platform, dict(kwargs))
+        assert trimmed.get("exclude_silent_groups") is True, platform
+
+    for platform in ("email", "outlook", "linkedin", "sms"):
+        trimmed = ingest_module._kwargs_for(platform, dict(kwargs))
+        assert "exclude_silent_groups" not in trimmed, platform
+
+    # The spam-group heuristic stays Messenger-only.
+    assert ingest_module._kwargs_for("telegram", dict(kwargs)).get(
+        "exclude_spam_groups") is None
+
+
+def test_silent_group_platforms_narrows_the_gate():
+    """One toggle per platform: unticking Telegram must not drop its groups."""
+    kwargs = {"exclude_silent_groups": True, "silent_group_platforms": {"messenger"}}
+    assert "exclude_silent_groups" in ingest_module._kwargs_for("messenger", dict(kwargs))
+    assert "exclude_silent_groups" not in ingest_module._kwargs_for("telegram", dict(kwargs))
+    assert "exclude_silent_groups" not in ingest_module._kwargs_for("whatsapp", dict(kwargs))
+
+
+def test_spam_thread_rule_drops_only_long_silent_threads():
+    """Email/Outlook: more than 10 messages and no owner reply.
+
+    A short thread someone started with you is a real conversation, so the size floor
+    is what separates "I did not reply" from "I am on a list".
+    """
+    result = IngestResult(platform="email", export_path="imap://test")
+    for chat_id, count, owner_spoke in (
+        ("long-silent", 12, False),   # dropped
+        ("eleven-silent", 11, False),  # dropped: the first value past the floor
+        ("long-mine", 12, True),      # kept: the owner replied
+        ("short-silent", 3, False),   # kept: too short to be a list
+        ("exactly-ten", 10, False),   # kept: the floor is *more than* 10
+    ):
+        result.chats.append(Chat(platform="email", chat_id=chat_id, title=chat_id,
+                                 kind="personal_chat", is_group=False))
+        for index in range(count):
+            result.messages.append(Message(
+                key=make_key("email", chat_id, str(index)), platform="email",
+                chat_id=chat_id, message_id=str(index),
+                ts_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                sender_name="them", sender_id=None, body="x", reply_to=None,
+                has_attachments=False,
+                is_self=owner_spoke and index == 0, raw_kind="text",
+            ))
+
+    ingest_module._drop_spam_threads(result)
+
+    assert {c.chat_id for c in result.chats} == {
+        "long-mine", "short-silent", "exactly-ten"}
+    assert {m.chat_id for m in result.messages} == {
+        "long-mine", "short-silent", "exactly-ten"}
+    # Two drops: 12 and 11. The 10-message thread is the boundary and is kept.
+    assert result.skipped.get("spam thread (long, owner silent)") == 2
+
+
+def test_spam_thread_rule_ignores_platforms_it_does_not_cover():
+    """The rule is Email/Outlook only — a long silent SMS thread is not spam."""
+    result = IngestResult(platform="sms", export_path="x.xml")
+    result.chats.append(Chat(platform="sms", chat_id="c", title="c",
+                             kind="personal_chat", is_group=False))
+    for index in range(20):
+        result.messages.append(Message(
+            key=make_key("sms", "c", str(index)), platform="sms", chat_id="c",
+            message_id=str(index), ts_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            sender_name="them", sender_id=None, body="x", reply_to=None,
+            has_attachments=False, is_self=False, raw_kind="text",
+        ))
+
+    ingest_module._drop_spam_threads(result)
+    assert len(result.messages) == 20
+    assert not result.skipped
+
+
 def test_detects_and_ingests_both_telegram_shapes(spool, tmp_path):
     report = _run(spool, tmp_path / "g.rl")
     assert report.ok, ingest_module.format_report(report)

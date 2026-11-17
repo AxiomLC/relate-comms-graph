@@ -364,7 +364,7 @@ def test_evidence_counts_reports_the_store_and_the_withheld_aliases(store):
 
 def test_write_tools_are_refused_without_the_toggle(store):
     with pytest.raises(tools.ToolError, match="write access is disabled"):
-        tools.ingest(which="sample")
+        tools.ingest()
 
 
 def test_destructive_tool_needs_write_and_confirm(store):
