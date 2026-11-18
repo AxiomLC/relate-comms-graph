@@ -625,11 +625,7 @@ function CorrespondentView({ entry, onOpen }) {
           </span>
           {isPlaceholder(entry.label) && <span className="pill">placeholder account</span>}
         </div>
-        <div className="arc">
-          A correspondent is a fact: this export named this person on this platform.
-          It is not a <em>Person</em> — merging one human across platforms is a
-          separate, later step.
-        </div>
+
       </div>
 
       <div className="pane-body tight">

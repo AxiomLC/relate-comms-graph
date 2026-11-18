@@ -17000,11 +17000,6 @@
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill kind", children: "Correspondent" }),
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill platform", style: { color: platformColor(entry.platform) }, children: platformLabel(entry.platform) }),
           isPlaceholder(entry.label) && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill", children: "placeholder account" })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "arc", children: [
-          "A correspondent is a fact: this export named this person on this platform. It is not a ",
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("em", { children: "Person" }),
-          " \u2014 merging one human across platforms is a separate, later step."
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "pane-body tight", children: [

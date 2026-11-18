@@ -11,14 +11,18 @@ Durable facts: [`TECHREADME.md`](TECHREADME.md). Human overview: [`README.md`](R
 
 `pytest tests -q` → **356 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
 
-**Live store:** 12,164 messages / 620 threads / 591 correspondents across five platforms —
-messenger 10,605 · telegram 877 · linkedin 292 · email 221 · whatsapp 169. Largest thread
-707 (`Bode Bradshaw`, a Messenger group). **Stale:** built before the canon pipe, so it
-still holds the Owner as a Correspondent in 236 threads. The re-ingest clears it.
+**Live store:** rebuilt 2026-11-18 from the six sample variants — **1,853 messages / 133
+threads / 131 correspondents / 140 `WITH` edges**. messenger 29 · telegram 26 · sms 27 ·
+linkedin 23 · whatsapp 22 · outlook 6. Zero failed, zero unverified, zero unrecognised.
+The Owner is no longer a Correspondent anywhere. Outlook's 0 correspondents is correct: the
+`.pst` fixture is a single-account demo mailbox.
 
 **Legs built:** Telegram, WhatsApp (native `chat.txt` **and** HTML), Messenger, LinkedIn,
-Email (IMAP), Outlook (`.pst`), SMS. Outlook and SMS are built and verified but **not in the
-live store**.
+Email (IMAP **and** saved `.eml`), Outlook (`.pst`), SMS. All seven are in the live store.
+
+**One variant per platform.** `out/` holds several packagings of the same conversations;
+ingesting more than one per platform stores every message twice. The mapping is in the plan
+doc.
 
 **One queue.** `spool/sample/`, `store/spool/` and `paths.sample_dir()` are gone. A sample
 is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
@@ -27,19 +31,19 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 
 ## Next
 
-**The detailed build plan is [`temp-finalBeta-fixes.md`](temp-finalBeta-fixes.md).** It
-carries the four ordered edits (node structure → `tools.py` → UI node types → cross-connect),
-the locked thread-title schema, the knobs, and the naming decisions. Read that before
-starting anything.
+**The detailed build plan is [`temp-finalBeta-fixes.md`](temp-finalBeta-fixes.md).** It is the
+source of truth: the four ordered edits (node structure → `tools.py` → UI node types →
+cross-connect), what is verified versus planned, the locked thread-title schema, the knobs,
+and the naming decisions. Read that before starting anything.
 
 In one line each, what is left after it:
 
-1. **Re-ingest twice** — `sample_writer/in/` (the real exports), then `sample_writer/out/`
-   (the generated samples). Review both, adjust, then wipe and re-ingest for real. The live
-   store was built with every gate off, which is why Messenger's 70 owner-silent groups
-   (9,513 of 10,605 messages) are in it.
-2. **Messenger group titles** — 97 of 97 groups have a `<title>`; the adapter reads a
-   participant's name instead. `sample_writer` also emits participant names as group titles.
+1. **Cross-connect merge (edit 4)** — the one that produces merged Correspondent nodes. The
+   samples are built for it: fuzzed spellings across and within platforms, 8–12% of the cast
+   on more than one platform.
+2. **Messenger group titles** — 117 of 134 real threads are groups; the adapter names each
+   after a participant instead of the `<h1>`. The samples happen to be right for one group
+   and wrong for the rest, so **the samples will not catch this**.
 3. **Body-entity extraction** — `Person`, `Place`, `Organization`, `Product`. Blocked on a
    candidate generator. The schema and canon pipe are already wired for all four.
 4. **UI chat / LLM** — wired, never exercised end to end. Needs a real conversation and a
@@ -65,9 +69,9 @@ In one line each, what is left after it:
 - **The Outlook fingerprint can merge two genuinely distinct messages** — same thread, same
   second, byte-identical body, different senders. Accepted: the alternative is every sent
   message appearing twice, which the real file exhibits.
-- **WhatsApp's minute-resolution key** means the live store's 169 WhatsApp rows have
-  second-resolution keys. A re-ingest would duplicate rather than merge them. The wipe in
-  Next #1 resolves this.
+- **WhatsApp's minute-resolution key** was a hazard for the old store's second-resolution
+  rows. The 2026-11-18 wipe resolved it; the live store is built entirely at minute
+  resolution.
 
 ---
 
@@ -84,7 +88,7 @@ exists twice, with no error and no warning.
 | Platform | `chat_id` derived from | Changes when |
 |---|---|---|
 | **LinkedIn** | `sha256(CONVERSATION ID)[:16]` → `li_…` | LinkedIn re-issues conversation ids on some archive regenerations |
-| **WhatsApp** | `sha256(chat title)[:16]` → `wa_…` | the contact is renamed, or the title is formatted differently by the two dialects |
+| **WhatsApp** | `sha256(chat title)[:16]` → `wa_…` | the contact is renamed. **The two-dialect case is fixed** — `read_export` now strips the `WhatsApp Chat with ` prefix, so `X.zip` and `WhatsApp Chat with X.txt` agree. |
 | **Email** | `Message-ID`, else `uid:<UIDVALIDITY>:<UID>` | the server bumps `UIDVALIDITY` — every key in the mailbox changes at once |
 | Telegram / Messenger | read straight from the export | (stable) |
 
@@ -96,27 +100,23 @@ the export claims. A doubled count with identical titles is this. The fix is a s
 surrogate — persist `(platform, title-or-participants) → chat_id` in `store/profile/` and
 reuse it, the way `identity.json` already persists the Owner — not a change to the hash.
 
-## Known issues in the real store
+## Known issues in the live store
 
-- `Facebook user` spans 31 Messenger threads — a placeholder Correspondent by design.
-- **One thread holds 707 messages** (`Bode Bradshaw`, a Messenger group). The Viewer pages,
-  so this is fine, but it is the test case. The largest `Facebook user` thread is 252.
-- Hostinger sent mail has no `Message-ID` (133 of 221) — keyed by `uid:<UIDVALIDITY>:<UID>`.
-- **147 threads have no Correspondent edge.** 135 are Telegram strangers with a `sender_id`
-  and no name — fixed at the source, so a re-ingest clears them. 12 are Messenger
-  `Facebook user` threads.
-- **Messenger's 70 group threads are all owner-silent** and hold 9,513 of 10,605 messages.
-- **LinkedIn has 205 threads and 0 groups.** The adapter computes `is_group`, but no gate is
+- **6 threads have no Correspondent edge — all Outlook.** Correct by design: the `.pst`
+  fixture is a single-account demo mailbox, so every message is `is_self` and there is no
+  counterparty to attach. Revisit only with a real multi-party `.pst`.
+- **22 owner-silent threads, 90 messages total** — a small, sane tail across five platforms.
+- `Facebook user` spans Messenger threads — a placeholder Correspondent by design, and
+  platform-scoped so it never merges with LinkedIn's `LinkedIn Member`.
+- **Largest thread is 500** (`Telegram; Mary Olver (500)`), then 370 and 200. The Viewer
+  pages, so this is fine.
+- **LinkedIn has 23 threads and 0 groups.** The adapter computes `is_group`, but no gate is
   warranted until a real group export appears.
-- **Email: 68 threads, 44 owner-silent, largest silent thread is 2 messages.** The 10+
-  spam rule drops nothing today; it exists for a real mailbox.
-- **Four LinkedIn Correspondents are whole recipient lists, not people** — 160 to 672
-  characters, e.g. `Nigel Harrison,Anat Malkin,Christian Davis,…`. `_split_recipients()`
-  splits on `;` only, deliberately, because `TO` also contains names with credentials
-  (`Steve Mikano CIA, AIC-M, AINS, SSBB`). A comma-separated list with no semicolons
-  therefore becomes one node. `canon.split_list()` now implements the separator heuristic
-  (comma with no space = list; comma with a space = inside a name), but the LinkedIn
-  adapter does not call it yet.
+- **LinkedIn recipient lists can become one node.** `_split_recipients()` splits on `;` only,
+  deliberately, because `TO` also contains names with credentials (`Steve Mikano CIA, AIC-M,
+  AINS, SSBB`). A comma-separated list with no semicolons therefore becomes one node.
+  `canon.split_list()` implements the separator heuristic but the LinkedIn adapter does not
+  call it yet.
 
 ---
 
@@ -139,6 +139,17 @@ Everything before **2026-11-18** is in `git log`; only the current round is list
   `write_people()` gone, `person_key="owner"` gone. `Person` is a future extraction node
   type, never the Owner.
 - **2026-11-18** — Viewer: the text block above the histogram deleted; the title carries it.
+- **2026-11-18** — `.eml` mailboxes are discoverable. Email was unreachable from the spool;
+  it could only be reached from a test. Owner inferred by breadth, since a saved mailbox
+  states no account.
+- **2026-11-18** — WhatsApp thread dedupe: `WhatsApp Chat with X.txt` and `X.zip` hashed to
+  two `wa_` ids. 48 threads → 24.
+- **2026-11-18** — WhatsApp HTML 1:1 correspondents: the title-derived sender was never
+  added to `participants`, orphaning 16 of 20 threads. Correspondents 5 → 23.
+- **2026-11-18** — Viewer: the "not a Person, merging is a later step" note removed, with
+  its dead `.arc` CSS.
+- **2026-11-18** — Store wiped and rebuilt from the six sample variants: 1,853 messages /
+  133 threads / 131 correspondents.
 
 ---
 
