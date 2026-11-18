@@ -75,7 +75,7 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
             else:
                 say(f"{'':<10} -> {rel}\\  ({len(paths)} files)")
 
-    notes = plan_module.assert_contract(plans, huge=huge)
+    notes = plan_module.assert_contract(plans, huge=huge, world=world)
     for note in notes:
         say(f"{'':<10} - {note}")
 

@@ -337,6 +337,10 @@ class _PersonStub:
     def slug(self) -> str:
         return self.name.lower().replace(" ", "")
 
+    def label(self, platform: str) -> str:
+        """No per-platform spelling: a newsletter has one name everywhere."""
+        return self.name
+
     def email_for(self, domain: str | None = None) -> str:
         return self.email
 
@@ -367,6 +371,7 @@ def _fill_bodies(world: World, thread: Thread, rng: random.Random) -> None:
         thread.group_lines = dialogue.group_chatter(
             world, thread.participants, thread.count, rng,
             owner_name=None if not thread.owner_replies else world.owner,
+            platform=thread.platform,
         )
         return
 
@@ -379,6 +384,7 @@ def _fill_bodies(world: World, thread: Thread, rng: random.Random) -> None:
         polite_open=thread.count > 1,
         owner_replies=thread.owner_replies,
         sender_name=sender,
+        platform=thread.platform,
     )
 
 
@@ -455,8 +461,9 @@ def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False)
 # ------------------------------------------------------------------ contract check
 
 
-def assert_contract(plans: list[Plan], *, huge: bool = False) -> list[str]:
-    """Check §12 row by row. Returns warnings for disabled shapes, raises on a miss."""
+def assert_contract(plans: list[Plan], *, huge: bool = False,
+                    world: World | None = None) -> list[str]:
+    """Check §12 row by row, and the fuzz knobs. Returns notes; raises on a miss."""
     problems: list[str] = []
     notes: list[str] = []
     by_platform = {p.platform: p for p in plans}
@@ -514,6 +521,26 @@ def assert_contract(plans: list[Plan], *, huge: bool = False) -> list[str]:
                 )
     if huge and not any(p.marked("huge_thread") for p in plans):
         problems.append("--huge was requested but no huge thread was planned")
+
+    # Fuzz knobs. A knob that says 2 and silently produces 0 is the failure this
+    # generator exists to prevent, so each is checked against what the world holds.
+    if world is not None:
+        summary = world.fuzz_summary()
+        if config.FUZZ_SENDERS_CROSS and summary["cross"] < config.FUZZ_SENDERS_CROSS:
+            problems.append(
+                f"fuzz: {summary['cross']} cross-platform sender pairs, "
+                f"FUZZ_SENDERS_CROSS={config.FUZZ_SENDERS_CROSS}")
+        if config.FUZZ_SENDERS_INTRA and summary["intra"] < config.FUZZ_SENDERS_INTRA:
+            problems.append(
+                f"fuzz: {summary['intra']} intra-platform sender spellings, "
+                f"FUZZ_SENDERS_INTRA={config.FUZZ_SENDERS_INTRA}")
+        for label, table, knob in (
+                ("org", world.body_orgs, config.FUZZ_BODIES_INTRA),
+                ("place", world.body_places, config.FUZZ_BODIES_INTRA),
+                ("person", world.body_persons, config.FUZZ_BODIES_INTRA)):
+            if knob and not table:
+                problems.append(f"fuzz: no {label} body variants (FUZZ_BODY_KINDS)")
+        notes.extend(config.fuzz_lines(world, summary))
 
     if problems:
         raise AssertionError("UNDESIRABLES §12 not satisfied:\n  " + "\n  ".join(problems))

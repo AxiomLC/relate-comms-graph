@@ -43,7 +43,8 @@ def _rows(plan: Plan, world: World, rng: Random) -> list[dict[str, str]]:
         subject = thread.subject if config.SUBJECT_ON_LINKEDIN else ""
         # §5: `LinkedIn Member` / `LinkedIn Talent Solutions` are senders in real exports
         # that are not people. The placeholder name replaces the correspondent's.
-        sender_name = getattr(thread, "placeholder_sender", "") or person.name
+        sender_name = (getattr(thread, "placeholder_sender", "")
+                       or person.label("linkedin"))
         for is_owner, body in thread.lines:
             sender = world.owner if is_owner else sender_name
             rows.append({
@@ -52,7 +53,7 @@ def _rows(plan: Plan, world: World, rng: Random) -> list[dict[str, str]]:
                 "FROM": sender,
                 "SENDER PROFILE URL": "https://www.linkedin.com/in/mark-jones-fixture"
                 if is_owner else _profile(person),
-                "TO": person.name if is_owner else world.owner,
+                "TO": person.label("linkedin") if is_owner else world.owner,
                 "RECIPIENT PROFILE URLS": _profile(person) if is_owner
                 else "https://www.linkedin.com/in/mark-jones-fixture",
                 "DATE": thread.start.strftime("%Y-%m-%d %H:%M:%S") + " UTC",

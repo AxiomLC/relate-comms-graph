@@ -47,7 +47,8 @@ def _messages(plan: Plan, world: World, rng: Random) -> list[dict]:
         counterpart = person.phone or "+447700900123"
         # §5: real exports carry senders that are not people. `contact_name` is where
         # SMS states that, and "(Unknown)" / "Me" are the two the app sees most.
-        contact = person.name
+        # A contact name is a sender field, so it carries this person's SMS spelling.
+        contact = person.label("sms")
         if placeholders and index % 5 == 4:
             contact = placeholders[index % len(placeholders)]
         moment = thread.start

@@ -115,7 +115,8 @@ def _chat(thread: Thread, world: World, rng: Random, start_id: int) -> tuple[dic
             )
             msg_id += 1
     else:
-        sender_name = getattr(thread, "placeholder_sender", None) or person.name
+        sender_name = (getattr(thread, "placeholder_sender", None)
+                       or person.label("telegram"))
         sender_id = (f"user{_stable_id(sender_name)}"
                      if sender_name != world.owner else "user_fixture_owner")
         for index, (is_owner, body) in enumerate(thread.lines):

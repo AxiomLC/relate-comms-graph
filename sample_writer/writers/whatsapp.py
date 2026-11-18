@@ -74,7 +74,7 @@ def _rows(thread: Thread, world: World, rng: Random) -> list[tuple[datetime, str
         [(name, body) for name, body in thread.group_lines] if thread.is_group
         else [(world.owner if is_owner
                else (getattr(thread, "placeholder_sender", None)
-                     or thread.participants[0].name), body)
+                     or thread.participants[0].label("whatsapp")), body)
               for is_owner, body in thread.lines]
     )
 

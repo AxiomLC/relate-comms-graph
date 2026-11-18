@@ -34,13 +34,17 @@ def _moment(thread: Thread, index: int, total: int):
 def _message(thread: Thread, world: World, is_owner: bool, body: str, index: int,
              rng: Random) -> EmailMessage:
     person = thread.participants[0]
+    # A display name in `From`/`To` is a sender field, so the platform spelling is
+    # used. The address stays derived from the structural name, so the mailbox of a
+    # person does not change when their display name does.
+    label = person.label("email")
+    address = person.email_for("abccorp.example" if person.org else None)
     msg = EmailMessage()
     if is_owner:
         msg["From"] = f"{world.owner} <{OWNER_ADDRESS}>"
-        msg["To"] = f"{person.name} <{person.email_for('abccorp.example' if person.org else None)}>"
+        msg["To"] = f"{label} <{address}>"
     else:
-        msg["From"] = (f"{person.name} <"
-                       f"{person.email_for('abccorp.example' if person.org else None)}>")
+        msg["From"] = f"{label} <{address}>"
         msg["To"] = f"{world.owner} <{OWNER_ADDRESS}>"
     subject = thread.subject or thread.title
     msg["Subject"] = subject if index == 0 else (

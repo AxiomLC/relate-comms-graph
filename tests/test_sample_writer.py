@@ -219,7 +219,11 @@ def test_whatsapp_group_has_membership_row(generated):
     import zipfile
     with zipfile.ZipFile(zips[0]) as archive:
         text = archive.read(archive.namelist()[0]).decode("utf-8")
-    for phrase in ("added", "removed", "changed the group", "created group"):
+    # The phrases `whatsapp._GROUP_SYSTEM` matches, not a hand-picked subset: the
+    # writer may legitimately pick `joined using this group's invite link`, and a
+    # test that omits it fails on a correct build.
+    for phrase in ("added", "removed", "changed the group", "created group",
+                   "joined using this group's invite"):
         if phrase in text:
             return
     raise AssertionError("no membership system row in the owner-silent group")
@@ -367,7 +371,7 @@ def test_a_recognised_directory_is_one_batch_not_one_per_file(generated):
     assert ingest.detect_platform(folder) == "messenger"
 
 
-def test_a_directory_ingest_parses_each_message_once(generated):
+def test_a_directory_ingest_parses_each_message_once(generated, tmp_path):
     """The report must not overstate the work: parsed ≈ written for a folder export."""
     from relate_comms.adapters import messenger
 
@@ -375,14 +379,15 @@ def test_a_directory_ingest_parses_each_message_once(generated):
     expected = len(messenger.parse(folder).messages)
 
     # A root holding only the folder, so the zip cannot contribute a second batch.
-    root = generated.parent / "dir_only_root"
-    root.mkdir(exist_ok=True)
-    target = root / "messenger_dir"
-    if not target.exists():
-        import shutil
-        shutil.copytree(folder, target)
+    # `tmp_path` (not a fixed name next to `generated`) so a leftover tree from an
+    # earlier run cannot be ingested: reusing a persistent folder ingested a stale
+    # copy and the count drifted (611 vs 608).
+    root = tmp_path / "dir_only_root"
+    root.mkdir(parents=True, exist_ok=True)
+    import shutil
+    shutil.copytree(folder, root / "messenger_dir")
 
-    report = ingest.ingest(root=root, store=generated.parent / "dir_only.rl", workers=1)
+    report = ingest.ingest(root=root, store=tmp_path / "dir_only.rl", workers=1)
     messenger_batches = [b for b in report.batches if b.platform == "messenger"]
     assert len(messenger_batches) == 1, (
         f"expected one batch, got {len(messenger_batches)}")
@@ -409,3 +414,130 @@ def test_every_artifact_is_either_detected_or_documented(generated):
         if ingest.detect_platform(path) is None:
             unexpected.append(str(path.relative_to(generated)))
     assert not unexpected, f"unrecognised artifacts: {unexpected}"
+
+
+# --------------------------------------------------------------------------- fuzz
+#
+# The generator manufactures real-world spelling mismatches: one correspondent as
+# `Chris Fowley` on WhatsApp and `Christopher Fowley` on Telegram, an organisation as
+# `Celestica` / `celestica` / `Celstica`, a place as `North Dakota` / `N Dakota`.
+# The Owner is never fuzzed — that is the one invariant every writer depends on.
+
+
+def test_fuzz_quotas_are_met(world):
+    """A knob that says 2 and produces 0 is the failure this generator prevents."""
+    summary = world.fuzz_summary()
+    assert summary["cross"] >= config.FUZZ_SENDERS_CROSS
+    assert summary["intra"] >= config.FUZZ_SENDERS_INTRA
+    assert config.FUZZ_BODIES_INTRA <= (
+        len(world.body_orgs) + len(world.body_places) + len(world.body_persons))
+
+
+def test_owner_is_never_fuzzed(world):
+    """Every writer emits `config.OWNER` verbatim; a fuzzed owner breaks the app."""
+    owner = world_module.norm_person_name(config.OWNER)
+    for person in world.people:
+        if world_module.norm_person_name(person.name) == owner:
+            assert not person.labels, f"owner {person.name} carries labels"
+        for platform, spelling in person.labels.items():
+            assert world_module.norm_person_name(spelling) != owner
+
+
+def test_fuzz_is_deterministic():
+    a = world_module.build(config.SEED)
+    b = world_module.build(config.SEED)
+    assert a.fuzz_summary() == b.fuzz_summary()
+    assert [(p.name, p.labels) for p in a.people] == [(p.name, p.labels) for p in b.people]
+    assert a.body_orgs == b.body_orgs
+    assert a.body_places == b.body_places
+
+
+def test_sender_fuzz_reaches_the_payloads(generated, world):
+    """The label must appear in the export, on the platform it was decided for."""
+    import json
+    import zipfile
+
+    telegram_doc = json.loads(
+        (generated / "telegram" / "telegram_bulk" / "result.json")
+        .read_text(encoding="utf-8"))
+    telegram_text = json.dumps(telegram_doc)
+    whatsapp_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (generated / "whatsapp" / "whatsapp_bare").glob("*.txt"))
+    sms_text = (generated / "sms" / "sms_xml" / "sms-20261116212209.xml") \
+        .read_text(encoding="utf-8", errors="ignore")
+
+    def present(spelling, platform):
+        return {
+            "telegram": telegram_text,
+            "whatsapp": whatsapp_text,
+            "sms": sms_text,
+        }.get(platform, "")
+
+    checked = 0
+    for person in world.people:
+        for platform, spelling in person.labels.items():
+            if spelling == person.name or platform not in {"telegram", "whatsapp", "sms"}:
+                continue
+            checked += 1
+            assert spelling in present(spelling, platform), (
+                f"{spelling!r} decided for {platform} but absent from the export")
+    assert checked, "no sender fuzz reached a checked platform"
+
+
+def test_body_fuzz_reaches_the_payloads(generated, world):
+    """Org/place/person variants must reach the platforms they were decided for.
+
+    Not every variant can be guaranteed: at the default knobs there are more entities
+    per platform than a thread's opening rows can hold, so a few will not surface in a
+    given build. What must hold is that the shape is genuinely exercised — a high share
+    of variants written, on their own platform, and never on the copy-only Outlook.
+    """
+    import zipfile
+
+    blobs = {
+        "sms": (generated / "sms" / "sms_xml" / "sms-20261116212209.xml")
+        .read_text(encoding="utf-8", errors="ignore"),
+        "linkedin": zipfile.ZipFile(
+            generated / "linkedin" / "linkedin_zip"
+            / "Basic_LinkedInDataExport_11-14-2026.zip.zip")
+        .read("messages.csv").decode("utf-8-sig"),
+        "telegram": (generated / "telegram" / "telegram_bulk" / "result.json")
+        .read_text(encoding="utf-8"),
+        "whatsapp": "\n".join(
+            path.read_text(encoding="utf-8", errors="ignore")
+            for path in (generated / "whatsapp" / "whatsapp_bare").glob("*.txt")),
+    }
+    with zipfile.ZipFile(generated / "messenger" / "messenger_zip"
+                         / "facebook-sampleuser-2026-11-14-1G300tUX.zip") as archive:
+        blobs["messenger"] = "\n".join(
+            archive.read(name).decode("utf-8", "ignore")
+            for name in archive.namelist() if name.endswith(".html"))
+
+    # Outlook is a copied .pst, so it must never be handed a variant at all.
+    checked = missing = 0
+    for table in (world.body_orgs, world.body_places, world.body_persons):
+        for canonical, variants in table.items():
+            assert "outlook" not in variants, (
+                f"{canonical} was fuzzed onto the copy-only Outlook export")
+            for platform, spelling in variants.items():
+                if spelling == canonical or platform not in blobs:
+                    continue
+                checked += 1
+                if spelling not in blobs[platform]:
+                    missing += 1
+
+    assert checked, "no body fuzz reached a checked platform"
+    assert missing <= max(1, checked // 4), (
+        f"{missing} of {checked} body variants never reached their platform; "
+        "the fuzz is configured but not being written")
+
+
+def test_fuzz_knobs_at_zero_produce_no_variants(monkeypatch):
+    """0 disables the shape, and nothing leaks through anyway."""
+    for name in ("FUZZ_SENDERS_CROSS", "FUZZ_SENDERS_INTRA",
+                 "FUZZ_BODIES_CROSS", "FUZZ_BODIES_INTRA"):
+        monkeypatch.setattr(config, name, 0)
+    empty = world_module.build(config.SEED)
+    assert empty.fuzz_summary() == {"labelled": 0, "cross": 0, "intra": 0}
+    assert not empty.body_orgs and not empty.body_places and not empty.body_persons

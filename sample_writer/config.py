@@ -116,7 +116,70 @@ VARIANTS = {
     "outlook": ("copy",),
 }
 
-# --------------------------------------------------------------- flavour toggles
+# ----------------------------------------------------------- body & label fuzz knobs
+#
+# Real downloads name the same organisation, place and person differently, on
+# different platforms and even inside one export. These knobs say how many of those
+# mismatches the build must contain. 0 disables a shape; the contract check reports a
+# disabled shape rather than silently dropping it.
+#
+# **The Owner is never fuzzed.** The owner is the app's user and every writer emits
+# their one exact spelling. Only the correspondent label and message bodies vary.
+
+# --- sender fields: the correspondent label
+# One person, two spellings of their name. `FUZZ_SENDERS_INTRA` is how many such
+# people appear with two spellings *inside one export*; the platforms it uses are
+# pinned below so the build is predictable, and `FUZZ_SENDER_INTRA_RATE` is the
+# fallback when you would rather let the seed choose (roughly 15-20% of platforms).
+FUZZ_SENDERS_INTRA = 4
+FUZZ_SENDERS_INTRA_PLATFORMS = ("whatsapp", "telegram", "messenger")
+FUZZ_SENDER_INTRA_RATE = 0.15
+# One person, two spellings across two different platforms (`Chris` / `Christopher`).
+FUZZ_SENDERS_CROSS = 4
+
+# --- message bodies: organisation, place and person names
+# Inside one platform's export. `FUZZ_BODIES_INTRA_PLATFORMS` is roughly half the
+# written platforms at the default 7.
+FUZZ_BODIES_INTRA = 8
+FUZZ_BODIES_INTRA_PLATFORMS = 4
+# The same entity spelled differently across two platforms (`N Dakota` / `North Dakota`).
+FUZZ_BODIES_CROSS = 8
+
+# Which entity kinds may vary in a body. `Thing` is deliberately excluded.
+FUZZ_BODY_KINDS = ("org", "place", "person")
+
+# Abbreviation is places-only: `North Dakota` -> `N Dakota` reads well, while
+# `North Dakota DOT` -> `N Dakota DOT` would collide with the un-abbreviated form.
+FUZZ_ORG_ABBREV = False
+
+# Sentence count per generated body. A thread mixes 1-sentence acknowledgements with
+# 3-sentence paragraphs, which is what real exports look like.
+BODY_SENTENCES = (1, 3)
+
+
+def fuzz_lines(world, summary: dict[str, int]) -> list[str]:
+    """The build log's one-line report of what the fuzz knobs produced.
+
+    Printed rather than silent so a knob set to 0, or one the cast was too small to
+    satisfy, is visible in the run output instead of being discovered from the data.
+    """
+    orgs = sum(len(v) for v in world.body_orgs.values())
+    places = sum(len(v) for v in world.body_places.values())
+    persons = sum(len(v) for v in world.body_persons.values())
+    return [
+        # `intra` is per platform, so the denominator is the platform count times the
+        # per-platform quota. Printed that way rather than as `4/2`, which read as an
+        # over-run when it was exactly on target.
+        f"fuzz: senders cross={summary['cross']}/{FUZZ_SENDERS_CROSS} "
+        f"intra={summary['intra']}/"
+        f"{FUZZ_SENDERS_INTRA * len(FUZZ_SENDERS_INTRA_PLATFORMS)} "
+        f"on {', '.join(FUZZ_SENDERS_INTRA_PLATFORMS)}",
+        f"fuzz: bodies org={orgs} place={places} person={persons} "
+        f"(kinds={','.join(FUZZ_BODY_KINDS)})",
+        "fuzz: outlook is a copied .pst, so its bodies cannot be fuzzed",
+    ]
+
+# ------------------------------------------------------------------ flavour toggles
 
 WRITE_MESSY_VARIANTS = True   # wrong filename / double extension variants
 INCLUDE_MEDIA_ROWS = True     # `<Media omitted>`, photo rows alongside text

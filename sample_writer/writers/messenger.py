@@ -61,7 +61,8 @@ def _sections(thread: Thread, world: World) -> list[str]:
     if thread.is_group:
         rows = [(name, body) for name, body in thread.group_lines]
     else:
-        sender = getattr(thread, "placeholder_sender", None) or thread.participants[0].name
+        sender = (getattr(thread, "placeholder_sender", None)
+                  or thread.participants[0].label("messenger"))
         rows = [(world.owner if is_owner else sender, body)
                 for is_owner, body in thread.lines]
 

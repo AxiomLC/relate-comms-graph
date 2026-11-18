@@ -91,6 +91,13 @@ A couple of deliberate quirks worth knowing:
   two code paths, both worth generating.
 - `sms_json_app` is a different Android app's shape and **should** be reported
   unrecognised: it proves the app does not guess.
+- **`outlook_copy/Outlook.pst` is a byte-for-byte copy of
+  `tests/fixtures/outlook/Outlook.pst`** (same SHA-256). A dummy writer **cannot**
+  synthesise a `.pst`: the format is a paged `MS-PST` database with an on-disk B-tree
+  of nodes and blocks, and no maintained pure-Python writer exists — every reader
+  (`libratom`, `libpff`) is read-only. So Outlook is the one platform whose fuzzed
+  shapes are **not** generated, and the build log says so. If you need new Outlook
+  mail, replace the fixture; do not expect this writer to invent it.
 
 > **Naming note.** The store key and the artifact folders keep the code name `messenger`
 > (it is part of every `Message.key` and must not change). The UI and this page call the
@@ -166,8 +173,44 @@ Fixed cast, always present: `Mark Jones` (Owner, on every platform), `Mary Jones
 stays honestly disconnected until cross-platform resolution is wired.
 
 Bodies are templated, not LLM-written: `dialogue.py` holds topic pools (dog, baseball,
-Coca-Cola, Mary Jones, the ABC Corp contract, invoices) and turn‑taking where a question
-draws an answer. Offline, deterministic, milliseconds.
+Coca-Cola, Mary Jones, the ABC Corp contract, invoices) plus a Subject→Predicate→Result
+sentence builder and a sign-off pool. Offline, deterministic, milliseconds.
+
+---
+
+## Fuzz — the same thing spelled differently
+
+Real downloads disagree with each other about how a name is spelled, and a flatten pass
+that has never seen a disagreement cannot be trusted. The build therefore manufactures
+them, under knobs in `config.py`:
+
+| Knob | What it produces |
+|---|---|
+| `FUZZ_SENDERS_CROSS` | one person, two platform spellings — `Chris Fowley` on WhatsApp, `Christopher Fowley` on Telegram |
+| `FUZZ_SENDERS_INTRA` | two spellings of one person inside a single export |
+| `FUZZ_BODIES_CROSS` | an entity spelled differently on two platforms — `North Dakota` / `N Dakota` |
+| `FUZZ_BODIES_INTRA` | several spellings inside one export — `Celestica` / `celestica` / `Celstica` |
+| `FUZZ_BODY_KINDS` | which kinds may vary: `org`, `place`, `person` (never `thing`) |
+
+**The Owner is never fuzzed.** `Mark Jones` is emitted byte-identically by every writer;
+a fuzzed owner would break the one invariant the app's ingestion depends on.
+
+How it is produced matters: almost none of it is a list of variants. `fuzz.py` derives
+each spelling from the string plus a seeded index — case, possessive, a dropped letter,
+a transposition, an abbreviation (`North Dakota` → `N Dakota`). The one genuine table is
+`NICKNAMES` (`Chris`↔`Christopher`, `Bob`↔`Robert`), because a nickname is a fact about
+English rather than a transformation of the letters. `abbrev` is places-only.
+
+The result is reported every run, so a knob that produces nothing is visible rather than
+silent:
+
+```
+fuzz: senders cross=2/2 intra=4/4 on whatsapp, telegram
+fuzz: bodies org=13 place=2 person=8 (kinds=org,place,person)
+fuzz: outlook is a copied .pst, so its bodies cannot be fuzzed
+```
+
+Outlook is the one platform outside the fuzz: a `.pst` cannot be synthesised (see above).
 
 ---
 

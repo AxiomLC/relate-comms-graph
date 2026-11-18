@@ -6,11 +6,12 @@ byte-identical.
 """
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from . import config
+from . import config, fuzz
 
 # --------------------------------------------------------------------------- topics
 
@@ -34,6 +35,14 @@ PEOPLE_ROLES = [
     ("recruiter", "Talent Partners"),
     ("landlord", None),
     ("contractor", None),
+    # Roles that carry an organisation, so the expanded COMPANIES is actually used.
+    ("engineer", "tech"),
+    ("analyst", "tech"),
+    ("vendor contact", "tech"),
+    ("account manager", "tech"),
+    ("contractor", "tech"),
+    ("civil servant", "public"),
+    ("consultant", "tech"),
 ]
 
 GIVEN = [
@@ -41,15 +50,59 @@ GIVEN = [
     "Dimitri", "Priya", "Owen", "Ines", "Tomas", "Hannah", "Rahul", "Clare", "Nadia",
     "Ivo", "Beth", "Marco", "Sofia", "Jonas", "Amara", "Peter", "Yuki", "Fatima",
     "Callum", "Rosa", "Ahmed",
+    # +50%: people names beside the tech/AI/database cast, not vendor names.
+    "Ada", "Grace", "Alan", "Vint", "Niklaus", "Linus", "Barbara", "Margaret",
+    "Katherine", "Radia", "Frances", "Anita", "Shafi", "Judea", "Ptolemy",
+    # Given names with a nickname pair in `fuzz.NICKNAMES`. Without these the
+    # cross-platform sender fuzz has almost no candidate to work with: a random cast
+    # of tech-adjacent names otherwise holds one nickname-able first name in forty.
+    "Chris", "Christopher", "Bob", "Robert", "Dave", "David", "Jim", "James",
+    "Bill", "William", "Liz", "Elizabeth", "Tom", "Thomas", "Dan", "Daniel",
+    "Nick", "Nicholas", "Alexander",
 ]
 SURNAMES = [
     "Olver", "Steinhart", "Lonon", "Geller", "Aaen", "Habegger", "Settens", "Davin",
     "Kowalski", "Petrov", "Nair", "Blythe", "Costa", "Novak", "Whitfield", "Iyer",
     "Mercer", "Haddad", "Ellis", "Ferreira", "Bauer", "Ricci", "Lindqvist", "Okafor",
     "Vance", "Tanaka", "Hassan", "Ross", "Marsh", "Zaman",
+    # +50%: surnames a tech-adjacent cast plausibly carries.
+    "Lovelace", "Hopper", "Turing", "Cerf", "Wirth", "Torvalds", "Nakamoto",
+    "Kernighan", "Ritchie", "Thompson", "Kay", "Perlman", "Lamarr", "Berners",
+    "Fowley",
 ]
 
-COMPANIES = ["ABC Corp", "Northwind Supplies", "Talent Partners", "Coca-Cola", "Sox Tickets"]
+# Organisations quoted in bodies and subjects, and drawn by `PEOPLE_ROLES`.
+# The first five are the original cast's employers and must stay: `ABC Corp` and
+# `Northwind Supplies` are written into the fixed cast's `org` below.
+COMPANIES = [
+    "ABC Corp", "Northwind Supplies", "Talent Partners", "Coca-Cola", "Sox Tickets",
+    # data / infra
+    "Databricks", "Celestica", "Snowflake", "Confluent", "HashiCorp", "Datadog",
+    "Cloudflare", "Elastic", "MongoDB", "Neo4j",
+    # ai
+    "Anthropic", "OpenAI", "Hugging Face", "Weights & Biases", "Scale AI",
+    # platforms and tools, spelled the way they are said in a conversation
+    "n8n.io", "Hermes", "3D Force Graph", "Claude Code", "Zed", "Retool",
+    # government / public sector
+    "North Dakota DOT", "GSA", "National Archives", "NIST",
+]
+TECH_ORGS = COMPANIES[5:24]
+PUBLIC_ORGS = COMPANIES[24:]
+
+# Org pools `PEOPLE_ROLES` draws from when its second field is a key, not a name.
+ORG_POOLS = {"tech": TECH_ORGS, "public": PUBLIC_ORGS}
+
+# Places. Bodies say `N Dakota` on one platform and `North Dakota` on another, and
+# that is the point: the pool holds the abbreviated forms real people type.
+PLACES = [
+    "North Dakota", "N Dakota", "ND", "Fargo", "Bismarck",
+    "Austin, TX", "Austin", "Denver", "Seattle", "Berlin", "Lisbon", "Toronto",
+    "Cambridge, MA", "the Bay Area", "Chicago",
+]
+
+# How a body refers to an organisation: `Celestica`, `celestica`, `Celstica`, or
+# `Celestica's`. The flattener has to survive all four; the writer picks per message.
+ORG_FORMS = ("plain", "lower", "drop_letter", "possessive")
 
 
 @dataclass
@@ -62,6 +115,10 @@ class Person:
     org: str | None
     topics: list[str]
     is_fixed: bool = False
+    # How this person's name is *printed* on a given platform. Empty means `name` is
+    # used everywhere. Populated by the world at build time, never per message, so the
+    # same person keeps one spelling per export — which is what a real download does.
+    labels: dict[str, str] = field(default_factory=dict)
 
     @property
     def handle(self) -> str:
@@ -70,6 +127,15 @@ class Person:
     @property
     def slug(self) -> str:
         return self.name.lower().replace(" ", "")
+
+    def label(self, platform: str) -> str:
+        """The name this person carries on `platform`.
+
+        **Only the printed sender field uses this.** `name` stays the structural
+        identity — it feeds `slug`, `handle` and therefore message keys and filenames,
+        so a fuzzed spelling can never move a `Message.key`.
+        """
+        return self.labels.get(platform, self.name)
 
     def email_for(self, domain: str | None = None) -> str:
         if domain:
@@ -80,6 +146,23 @@ class Person:
 # ------------------------------------------------------------------------ the world
 
 
+def norm_person_name(name: str | None) -> str:
+    """Compare two spellings of a person without case or accents mattering.
+
+    The generator only needs this to answer "is this the Owner?", so it deliberately
+    matches the app's own `resolution.norm_name` shape (casefold, strip marks, collapse
+    spaces) without importing from the app.
+    """
+    import unicodedata
+
+    if not name:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", name)
+    without_marks = "".join(
+        ch for ch in decomposed if not unicodedata.category(ch).startswith("M"))
+    return " ".join(without_marks.casefold().split())
+
+
 @dataclass
 class World:
     seed: int
@@ -88,6 +171,12 @@ class World:
     end: datetime
     people: list[Person] = field(default_factory=list)
     rng: random.Random = field(default_factory=random.Random)
+    # Entity fuzz for message bodies. Each entry is `canonical -> {platform: spelling}`,
+    # so a body can say `Celestica` on one platform and `Celstica` on another. Decided
+    # once at build time, like `Person.labels`.
+    body_orgs: dict[str, dict[str, str]] = field(default_factory=dict)
+    body_places: dict[str, dict[str, str]] = field(default_factory=dict)
+    body_persons: dict[str, dict[str, str]] = field(default_factory=dict)
 
     # --- construction ------------------------------------------------------------
 
@@ -134,6 +223,8 @@ class World:
                 continue
             used.add(name)
             role, org = self.rng.choice(PEOPLE_ROLES)
+            if org in ORG_POOLS:
+                org = self.rng.choice(ORG_POOLS[org])
             topics = self.rng.sample(list(TOPIC_WORDS), k=self.rng.randint(1, 3))
             self.people.append(Person(
                 name=name,
@@ -151,18 +242,266 @@ class World:
         # band for reasons that are not a bug.
         platforms = ["whatsapp", "telegram", "messenger", "sms", "linkedin", "email"]
         share = self.rng.uniform(config.CROSS_PLATFORM_MIN, config.CROSS_PLATFORM_MAX)
-        random_cast = [p for p in self.people if not p.on]
+        # The denominator must be the *random* cast only, because that is what
+        # `multi_platform_share()` measures. This used `if not p.on`, but at this point
+        # nobody has `on` set yet, so the fixed cast (already multi-platform) was counted
+        # in the denominator and not in the numerator, dragging the ratio below the band.
+        random_cast = [p for p in self.people if not p.is_fixed]
+        # `round` can land a rounded share outside the band the contract asserts, which
+        # made the build fail for reasons that depend on the cast size rather than on a
+        # bug. Clamp to the band's own integer bounds instead, and round *up* at the
+        # lower bound so a ratio that rounds down cannot under-shoot it.
         multi_count = int(round(len(random_cast) * share))
+        low = math.ceil(config.CROSS_PLATFORM_MIN * len(random_cast))
+        high = int(config.CROSS_PLATFORM_MAX * len(random_cast))
+        multi_count = max(low, min(multi_count, high))
         order = list(self.people)
         self.rng.shuffle(order)
-        for index, person in enumerate(order):
+        # Count *eligible* people, not loop indices: the fixed cast already has `on`
+        # set and is skipped by the `continue`, so an index-based test spent the budget
+        # on people it never multi-homed and undershot the band.
+        multi_left = multi_count
+        for person in order:
             if person.on:
                 continue
             first = self.rng.choice(platforms)
             person.on.add(first)
-            if index < multi_count:
+            if multi_left > 0:
                 extra = self.rng.choice([p for p in platforms if p != first])
                 person.on.add(extra)
+                multi_left -= 1
+
+        self._assign_labels()
+
+    def _assign_labels(self) -> None:
+        """Decide once, per person, how their name is spelled on each platform.
+
+        This is the whole of the sender-field fuzz: a `Person` keeps one structural
+        `name`, and the downloads print a per-platform spelling from `labels`. Doing
+        it here rather than inside a writer is what makes it deterministic, keeps one
+        spelling per export (as a real download has), and leaves the writers dumb.
+
+        Two shapes, both counted by their own knob:
+
+          intra  two spellings *within one platform's export* — the platform lists a
+                 thread title from the address book and a sender row the user typed
+        cross  two spellings *across two platforms* — `Chris Fowley` on WhatsApp,
+                 `Christopher Fowley` on Telegram, same phone, same email
+
+        The Owner is never a candidate: `config.OWNER` is emitted verbatim by every
+        writer, and a fuzzed owner would break the one invariant the app depends on.
+        """
+        owner = norm_person_name(self.owner)
+        pool = [p for p in self.people
+                if not p.is_fixed and norm_person_name(p.name) != owner]
+        self.rng.shuffle(pool)
+
+        # A cross-platform pair needs two platforms. A nickname is the nicest case
+        # (`Chris` / `Christopher`), but a mistyped given name across two platforms is
+        # just as real a mismatch and is available for anybody — so a candidate without
+        # a nickname falls back to that rather than leaving the knob unmet. Measured on
+        # 60 seeds: nickname-only left 14 of them short.
+        crossable = [p for p in pool if len(p.on) > 1]
+        need = max(0, config.FUZZ_SENDERS_CROSS)
+        # The cross shape needs two platforms *per candidate*, and only ~8-12% of the
+        # cast is multi-platform, so a fixed quota of 2 could not be met on 26 of 60
+        # seeds. Rather than report a knob that silently does nothing, promote the
+        # shortfall to a second platform: the cast is synthetic, and a person being on
+        # two platforms is exactly what the cross case requires.
+        if len(crossable) < need:
+            for person in [p for p in pool if len(p.on) < 2]:
+                if len(crossable) >= need:
+                    break
+                extra = self.rng.choice([x for x in platforms if x not in person.on])
+                person.on.add(extra)
+                crossable.append(person)
+        cross = crossable[:need]
+        # Keyed by name, not by object: `Person` is a mutable dataclass and therefore
+        # unhashable. Names are unique in the cast (`_populate` dedupes on them).
+        used: set[str] = set()
+        made = 0
+        # Walk the candidates in order and keep going: a 3-letter given name (`Ada`)
+        # has no variant to offer, and stopping at the first such pair left the knob
+        # short even when later candidates could satisfy it.
+        for person in crossable:
+            if made >= need:
+                break
+            # Prefer two platforms that are NOT the intra ones, so a cross pair does
+            # not spend the same platform slots the intra quota needs. Seed 21 hit
+            # exactly this: one person took both WhatsApp and Telegram as their cross
+            # pair, starving the intra pass.
+            preferred = [x for x in sorted(person.on)
+                         if x not in config.FUZZ_SENDERS_INTRA_PLATFORMS]
+            if len(preferred) >= 2:
+                first, second = preferred[:2]
+            elif len(person.on) == 2 and set(person.on) <= set(
+                    config.FUZZ_SENDERS_INTRA_PLATFORMS):
+                # Both platforms are intra ones: using this person would consume the
+                # very slots the intra quota needs, and the summary would then count one
+                # person as `cross` while intra came up short. Leave them for intra.
+                continue
+            else:
+                first, second = sorted(person.on)[:2]
+            other = fuzz.nicknamed(person.name) or fuzz.vary_sender(person.name, self.rng)
+            if not other or other == person.name:
+                continue
+            person.labels[first] = person.name
+            person.labels[second] = other
+            used.add(person.name)
+            made += 1
+
+        intra_pool = list(pool)
+        for platform in config.FUZZ_SENDERS_INTRA_PLATFORMS:
+            quota = max(0, config.FUZZ_SENDERS_INTRA)
+            if not quota:
+                continue
+            made = 0
+            # If the platform's cast is too thin to meet the quota, promote a couple of
+            # people onto it first. Measured on 300 seeds: 2 still fell short purely
+            # because only 9 people were on WhatsApp. The cast is synthetic; being on
+            # the platform is what the shape requires.
+            candidates = [p for p in intra_pool if platform in p.on]
+            if len(candidates) < quota:
+                for person in [p for p in intra_pool if platform not in p.on]:
+                    if len(candidates) >= quota:
+                        break
+                    person.on.add(platform)
+                    candidates.append(person)
+            # Walk the whole pool, not just the first `quota` candidates: the same
+            # person can be skipped for a misspelling that `vary_sender` could not
+            # produce, and stopping early would leave the knob unmet.
+            for person in candidates:
+                if made >= quota:
+                    break
+                # A person already carrying a label on this platform IS the intra
+                # case — a cross-platform variant on the *other* platform does not
+                # satisfy it, and vice versa. A person in a cross pair is left alone
+                # entirely: giving them a third label made the summary report a cross
+                # count the knob never asked for (cross=3 on a knob of 2).
+                if platform in person.labels or person.name in used:
+                    continue
+                # Inside one export: the spelling the contact list holds, plus the
+                # one a sender row carries. `SENDER_MODES` keeps this to mistypings —
+                # an all-caps or possessive variant is not a sender name.
+                variant = fuzz.vary_sender(person.name, self.rng)
+                if variant != person.name:
+                    person.labels[platform] = variant
+                    used.add(person.name)
+                    made += 1
+
+        self._assign_body_entities()
+
+    def _assign_body_entities(self) -> None:
+        """Decide how each fuzzed entity is spelled on each platform.
+
+        Unlike a sender label, a body entity is not tied to a person: it is an
+        organisation, a place or a named colleague mentioned in a message. Each gets a
+        map `platform -> spelling`, and any platform without an entry uses the
+        canonical spelling.
+
+        Two shapes, both knob-counted:
+
+          intra  several spellings inside one platform (`Celestica`, `celestica`)
+          cross  a different spelling on two platforms (`N Dakota` / `North Dakota`)
+
+        Kept to the drain-the-shortfall rule: if a pool runs out before the quota is
+        met the build reports it rather than looping forever. `fuzz_lines` prints the
+        counts, and `assert_contract` fails when a kind produced nothing at all.
+        """
+        # Outlook is excluded: `outlook_copy/Outlook.pst` is a byte copy of the
+        # committed fixture, so a variant decided for it is never written. Including it
+        # spent a quota slot on a platform that cannot carry the fuzz.
+        platforms = [p for p in config.PLATFORMS
+                     if p in config.VARIANTS and p != "outlook"]
+        if not platforms:
+            return
+        # `FUZZ_BODIES_INTRA_PLATFORMS` is a count of platforms, not a list of names:
+        # it says how many exports carry intra-platform variants. Pick that many, so
+        # the shape is spread rather than piled onto one platform.
+        count = max(1, min(int(config.FUZZ_BODIES_INTRA_PLATFORMS), len(platforms)))
+        intra_platforms = sorted(self.rng.sample(platforms, k=count))
+
+        kinds = set(config.FUZZ_BODY_KINDS)
+
+        # (table, canonical pool, modes, cross-line transform)
+        sources: list[tuple[dict, list[str], tuple[str, ...]]] = []
+        if "org" in kinds:
+            sources.append((self.body_orgs, list(ORG_POOLS["tech"] + ORG_POOLS["public"]),
+                            ("lower", "drop_letter", "swap")))
+        if "place" in kinds:
+            # Places abbreviate by rule (`North Dakota` -> `N Dakota`), which is the
+            # shape that matters here. Most place names have no qualifying first word
+            # though (`Denver`, `Berlin`), so `abbrev` alone left the quota at 2 of 8.
+            # Fall back to case/letter-drop, so every place can carry a variant.
+            sources.append((self.body_places, list(PLACES),
+                            ("abbrev", "lower", "drop_letter")))
+        if "person" in kinds:
+            # A person variant is a nickname, not a mechanical edit: `Bob` -> `Robert`.
+            nicknamed = [p.name for p in self.people
+                         if not p.is_fixed and fuzz.nicknamed(p.name)]
+            sources.append((self.body_persons, nicknamed, ("nickname",)))
+
+        def variant(canonical: str, modes: tuple[str, ...]) -> str | None:
+            if modes == ("nickname",):
+                other = fuzz.nicknamed(canonical)
+                return other if other and other != canonical else None
+            # `abbrev` is tried first when the mode list contains it, so a place with a
+            # qualifying word (`North Dakota`) abbreviates to `N Dakota` instead of
+            # getting a letter dropped. A place without one falls through to the
+            # mechanical modes, which is why the list carries both.
+            for mode in modes:
+                other = fuzz.vary(canonical, self.rng, (mode,))
+                if other != canonical:
+                    return other
+            return None
+
+        for table, pool, modes in sources:
+            ordered = list(pool)
+            self.rng.shuffle(ordered)
+
+            # Cross: a different spelling on two platforms, drawn from the pool first
+            # so an entity does not end up in both shapes.
+            for canonical in ordered[:max(0, config.FUZZ_BODIES_CROSS)]:
+                other = variant(canonical, modes)
+                if other is None:
+                    continue
+                first, second = self.rng.sample(platforms, k=min(2, len(platforms)))
+                table[canonical] = {first: canonical, second: other}
+
+            # Intra: a variant inside one export, on the platforms the knob names.
+            remaining = [c for c in ordered if c not in table]
+            for canonical in remaining[:max(0, config.FUZZ_BODIES_INTRA)]:
+                other = variant(canonical, modes)
+                if other is None:
+                    continue
+                platform = self.rng.choice(intra_platforms)
+                table.setdefault(canonical, {})[platform] = other
+
+    def body_entity(self, canonical: str, platform: str) -> str:
+        """How a body on `platform` spells an org, place or person.
+
+        Falls back to the canonical spelling when the entity was not chosen for fuzz,
+        or when this platform has no variant for it.
+        """
+        for table in (self.body_orgs, self.body_places, self.body_persons):
+            variants = table.get(canonical)
+            if variants and platform in variants:
+                return variants[platform]
+        return canonical
+
+    def fuzz_summary(self) -> dict[str, int]:
+        """What the fuzz knobs actually produced, for the build log.
+
+        `cross` counts people carrying two platform spellings; `intra` counts the
+        single-platform spellings that are *not* part of a cross pair, so the two
+        numbers answer different questions and can be checked against their knobs.
+        """
+        cross = sum(1 for p in self.people if len({v for v in p.labels.values()}) > 1
+                    and len(p.labels) > 1)
+        intra = sum(len(p.labels) for p in self.people
+                    if len(p.labels) == 1)
+        return {"labelled": len([p for p in self.people if p.labels]),
+                "cross": cross, "intra": intra}
 
     def _assert_contract(self) -> None:
         share = self.multi_platform_share()
