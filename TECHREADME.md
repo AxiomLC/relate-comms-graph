@@ -77,7 +77,7 @@ back; importing the library must not pull in FastAPI.
 | `resolution.py` | Phones/emails/names matching. **Unwired** — counts reported, result discarded. |
 | `scrub.py` | `Verdict` (keep/hide/block), `AliasMap` (memory-only), Luhn check. |
 | `identity.py` · `manifest.py` | Who the **Owner** is (with `tz_offsets`) · what has been ingested (sampled fingerprint, a shortcut never the authority). |
-| `tools.py` | **The tool layer.** 11 tools, schema from each signature. |
+| `tools.py` | **The tool layer.** 12 tools, schema from each signature. |
 | `models.py` · `cli.py` | Ollama model choice (`THINK = False`) · `python -m relate_comms`. |
 | `adapters/` | `parse(export_path, **kw)` + `detect(path)`. Built: `telegram`, `whatsapp`, `whatsapp_html`, `messenger`, `linkedin`, `email_imap`, `outlook_pst`, `sms`. **WhatsApp has two dialects** — native `chat.txt` and the extension's HTML — both reporting `whatsapp`; `_parser_for()` picks per file. |
 
@@ -101,7 +101,7 @@ React 19 + esbuild. `dist/app.js` is **committed** so a clone runs without npm.
 | `components/GraphCanvas.jsx` | Cytoscape + fcose. **Icons are the only node look.** |
 | `components/Viewer.jsx` | Two states, Back, budgeted loads, per-thread search, paging. |
 | `components/ChatPanel.jsx` · `CommandBar.jsx` | Ollama chat with tool trace · the title bar. |
-| `components/modals/` | `Modal.jsx` (+ `Slider`/`Check`/`TextField`), Log, Ingest, **Canvas** (+ Styling), Utilities. |
+| `components/modals/` | `Modal.jsx` (+ `Slider`/`Check`/`TextField`), then the four the title bar opens: **Log**, **Ingest**, **Canvas** (+ Styling), **Utilities**. `SetupModal.jsx` exists but is not mounted. |
 | `config/theme.js` · `nodeTypes.js` | **Every tunable**, persisted · platform colours, icons, placeholders. |
 | `lib/api.js` · `useViewerStack.js` | The only server call site · the persisted state timeline. |
 
@@ -170,7 +170,7 @@ Correspondent nodes, and that is correct — merging one human across platforms 
 | Every title has a fallback, never empty | `writer.thread_display_title()`. |
 | One writer per `.rl` file | Concurrent writers are corruption. Hence parallel parse → serialised write. |
 | Truncation is never silent | Any tool hitting `limit` returns `truncated: true`; `graph_slice` also returns `total`. |
-| **A view toggle never narrows a query** | Canvas hides clusters and silent threads; that is drawing only. `Utilities` narrows what tools return. |
+| **Canvas toggles never narrow a query; Utilities does, deliberately** | Canvas hides clusters and silent threads — drawing only, reversible, still searchable. The **Utilities** platform filter is different: it is module state in `tools.py` (`configure_platforms`), so it narrows `graph_slice`, `search_messages` and the AI chat alike. That overrides the older blanket rule on purpose; the alternative is a per-call `platforms` argument. |
 | **Icons are an override layer, never the base** | A platform with no icon file keeps the base fill and stays visible. |
 | `write_enabled` and `platforms` are excluded from tool schemas | They are the surface's toggles, not something a model may set. |
 | **A dropped thread leaves no orphan messages** | Any parse-time gate runs before the rows are committed and before the `Chat` is appended. |
@@ -237,9 +237,11 @@ start.bat                        # Windows: opens browser + server
 
 python -m relate_comms ingest --email hostinger --tz-offset -5
 python -m relate_comms ingest "C:/Users/me/Downloads/chat.zip" --tz-offset -5
-python -m relate_comms sample build --check
 
-python -m pytest tests -q        # 248 passed, 2 skipped
+python -m sample_writer                  # fake downloads -> sample_writer/out/
+python -m sample_writer add --seed 5     # write alongside out/, no clobber
+
+python -m pytest tests -q        # 279 passed, 2 skipped
 
 npm install && npm run build     # -> app/static/dist/app.js
 npm run watch                    # rebuild on save, no server

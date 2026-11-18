@@ -35,25 +35,6 @@ export function monthLabel(iso) {
   return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-/** Whole months between two ISO timestamps, or null. */
-export function monthsBetween(fromIso, toIso) {
-  const a = parse(fromIso);
-  const b = parse(toIso);
-  if (!a || !b) return null;
-  return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
-}
-
-/** "quiet 2y" — how long since the last message. */
-export function quietFor(lastIso, now = new Date()) {
-  const d = parse(lastIso);
-  if (!d) return "";
-  const months = (now.getFullYear() - d.getFullYear()) * 12 + (now.getMonth() - d.getMonth());
-  if (months < 1) return "active this month";
-  if (months < 12) return `quiet ${months}mo`;
-  const years = Math.floor(months / 12);
-  return `quiet ${years}y`;
-}
-
 export function formatCount(n) {
   return Number(n || 0).toLocaleString();
 }

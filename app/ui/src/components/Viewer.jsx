@@ -8,8 +8,6 @@ import {
   formatDateTime,
   monthKey,
   monthLabel,
-  monthsBetween,
-  quietFor,
 } from "../lib/format.js";
 import { isPlaceholder, platformColor, platformLabel } from "../config/nodeTypes.js";
 
@@ -524,27 +522,15 @@ function MessageRow({ message, onOpen, first }) {
 /**
  * The arc, from the graph — not a caption written by hand.
  *
- * "met → 707 messages → went quiet 4mo" is three facts: the first timestamp, the
- * count, and the gap since the last one. The sparkline is the monthly histogram.
+ * The sparkline is the monthly histogram. The text line that used to sit above it
+ * (`first … · N months · quiet for …`) is gone: the thread title now carries the
+ * person and the date range, so the line repeated it. The hover and the dates below
+ * the sparkline stay.
  */
 function Arc({ thread, histogram }) {
-  const first = thread.first_ts;
-  const last = thread.last_ts;
-  const span = monthsBetween(first, last);
-
-  if (!first && !last) return null;
-
-  const parts = [];
-  if (first) parts.push(`first ${formatDate(first)}`);
-  if (span != null && span > 0) parts.push(`${span} month${span === 1 ? "" : "s"}`);
-  if (last) parts.push(quietFor(last));
-
-  return (
-    <>
-      <div className="arc">{parts.join(" · ")}</div>
-      {histogram?.length > 0 && <Sparkline rows={histogram} />}
-    </>
-  );
+  if (!thread.first_ts && !thread.last_ts) return null;
+  if (!histogram?.length) return null;
+  return <Sparkline rows={histogram} />;
 }
 
 function Sparkline({ rows }) {

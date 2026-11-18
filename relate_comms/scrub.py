@@ -1,10 +1,10 @@
 """Scrub gate — `keep` / `hide` / `block`, applied before anything is written.
 
-WHY IT SITS BETWEEN RESOLUTION AND THE WRITE
---------------------------------------------
-§3.2: resolution needs real keys to join on (a scrubbed phone matches nothing), so the
-gate runs **after** resolution and **before** `writer.write`. By then every identity is
-already merged; the store only ever sees the verdict.
+WHY IT SITS BEFORE THE WRITE
+----------------------------
+The gate runs **before** `writer.write`, so the store only ever sees the verdict. It
+runs after parsing, because a scrubbed phone in a message body cannot be matched
+against anything — the alias is a display substitute, not an identity.
 
 VERDICTS
 --------
@@ -71,8 +71,8 @@ _ADDRESS = re.compile(
 def _canonical(kind: str, value: str) -> str:
     """The form two spellings of the same value must share before aliasing.
 
-    Phones here must agree with `resolution.norm_phone`, or a hidden number and a
-    merged identity disagree about what one person's number is.
+    Phones here must agree with `canon.phone_digits`, or a hidden number and a
+    canonical key disagree about what one person's number is.
     """
     if kind == "phones":
         digits = re.sub(r"\D", "", value)

@@ -90,48 +90,12 @@ class Chat:
     participant_names: tuple[str, ...] = ()
 
 
-@dataclass
-class Person:
-    """One human, across every platform (§3.1).
-
-    A Person is not created by an adapter — adapters produce `Identity` evidence. Only
-    `resolution` may mint a Person, which is what keeps a mis-merge from being written
-    by a parser.
-    """
-
-    key: str
-    display_name: str
-    first_seen_utc: datetime
-    last_seen_utc: datetime
-
-    def __post_init__(self) -> None:
-        for field_name in ("first_seen_utc", "last_seen_utc"):
-            if getattr(self, field_name).tzinfo is None:
-                raise ValueError(f"{self.key}: {field_name} must be timezone-aware")
-
-
-@dataclass(frozen=True)
-class Identity:
-    """One account on one platform, and the evidence that ties it to a Person.
-
-    `confidence` is 1.0 for an exact key (phone in E.164, lowercase email, platform
-    user id) and 0.4-0.8 for a name match. Never 1.0 for a guess — §3.1's
-    "a wrong guess must look like honest uncertainty".
-    """
-
-    key: str
-    platform: str
-    handle: str
-    phone_e164: str | None = None
-    email: str | None = None
-    display_name: str = ""
-    person_key: str | None = None
-    confidence: float = 0.0
-    matched_by: str = ""       # "phone" | "email" | "platform_id" | "name"
-
-    def __post_init__(self) -> None:
-        if not 0.0 <= self.confidence <= 1.0:
-            raise ValueError(f"{self.key}: confidence must be within 0..1")
+# `Person` and `Identity` were removed deliberately. `Person` is a **future extraction
+# node type** — a person named in a message body, alongside `Place`, `Organization` and
+# `Thing` — and is never the Owner. The Owner is the person using the app, resolved per
+# platform and frozen in `store/profile/identity.json`; no leg may emit a node for them.
+# The old `Person`/`Identity` dataclasses existed only to carry the output of an
+# identity resolver whose result was discarded, and they encoded the wrong term.
 
 
 @dataclass

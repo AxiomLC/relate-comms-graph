@@ -9,11 +9,12 @@ Durable facts: [`TECHREADME.md`](TECHREADME.md). Human overview: [`README.md`](R
 
 ## Where it stands
 
-`pytest tests -q` → **248 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
+`pytest tests -q` → **356 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
 
 **Live store:** 12,164 messages / 620 threads / 591 correspondents across five platforms —
 messenger 10,605 · telegram 877 · linkedin 292 · email 221 · whatsapp 169. Largest thread
-1,624 (a Messenger group titled `Facebook user`).
+707 (`Bode Bradshaw`, a Messenger group). **Stale:** built before the canon pipe, so it
+still holds the Owner as a Correspondent in 236 threads. The re-ingest clears it.
 
 **Legs built:** Telegram, WhatsApp (native `chat.txt` **and** HTML), Messenger, LinkedIn,
 Email (IMAP), Outlook (`.pst`), SMS. Outlook and SMS are built and verified but **not in the
@@ -24,57 +25,33 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 
 ---
 
-## Next, in order
+## Next
 
-### 1. Wipe and re-ingest with the gates on
+**The detailed build plan is [`temp-finalBeta-fixes.md`](temp-finalBeta-fixes.md).** It
+carries the four ordered edits (node structure → `tools.py` → UI node types → cross-connect),
+the locked thread-title schema, the knobs, and the naming decisions. Read that before
+starting anything.
 
-The live store was built with every gate **off**, which is why Messenger's 70 owner-silent
-groups (9,513 of 10,605 messages) are in it. A clean run with the silent-group toggle on
-will drop them and the largest thread falls to the low hundreds.
+In one line each, what is left after it:
 
-- **Truncate Relate DB** in the Ingest modal (double confirm). It takes the dedup manifest
-  with it, deliberately.
-- Re-ingest from `spool/real/`. **It is currently empty** — the exports need to come from
-  Downloads again.
-- Expect the store to shrink substantially. That is the point.
-
-### 2. UI and graph items the Owner raised
-
-- **Placeholder nodes are not styled on the canvas.** `nodeTypes.js` has
-  `PLACEHOLDER_NAMES` and `isPlaceholder()`, but only `Viewer.jsx` uses it (a pill).
-  `Facebook user` spans 31 Messenger threads and currently draws as a normal contact.
-- **The size warning has no visible threshold.** `LARGE_FILE_BYTES = 500 MB` renders as
-  "· large file" with no explanation of why it matters or what to do.
-- **`prune` and `exclude_spam_groups` are both wired now**, but neither has been exercised
-  against a real multi-run spool.
-
-### 3. UI chat / LLM
-
-Wired, never exercised end to end. `_CHAT_TOOLS` is five read tools plus `ingest` when the
-write toggle is on. Needs: a real conversation, a check that tool selection picks the right
-tool, and a check that `MAX_TOOL_CHARS` truncation is reported rather than silent.
-
-### 4. Search results and query tests
-
-`search_messages` has `substring` and `cypher` modes. No test asserts result **quality** —
-only that the call returns. Worth a small fixture store with known answers.
-
-### 5. MCP wiring
-
-`app/mcp/__init__.py` is a docstring and nothing else. The tool registry is ready; the
-server is not. When it is built it must **not** gain a `.env` read — that is the one
-guarantee the IMAP credentials rely on.
-
-### 6. Cross-platform identity
-
-No cross-platform edge exists, so every platform is a set of disconnected components.
-`resolution.py` and `writer.write_people()` are unused scaffolding. `Person` is **not** the
-term for the result (`TECHREADME.md` §0).
-
-### 7. Body-entity extraction
-
-`Person`, `Place`, `Organization`, `Product`. Blocked on a candidate generator. Do not
-start before the Viewer is settled.
+1. **Re-ingest twice** — `sample_writer/in/` (the real exports), then `sample_writer/out/`
+   (the generated samples). Review both, adjust, then wipe and re-ingest for real. The live
+   store was built with every gate off, which is why Messenger's 70 owner-silent groups
+   (9,513 of 10,605 messages) are in it.
+2. **Messenger group titles** — 97 of 97 groups have a `<title>`; the adapter reads a
+   participant's name instead. `sample_writer` also emits participant names as group titles.
+3. **Body-entity extraction** — `Person`, `Place`, `Organization`, `Product`. Blocked on a
+   candidate generator. The schema and canon pipe are already wired for all four.
+4. **UI chat / LLM** — wired, never exercised end to end. Needs a real conversation and a
+   check that `MAX_TOOL_CHARS` truncation is reported rather than silent.
+5. **Search relevance** — `search_messages` is a substring scan only, no ranking. A design
+   gap, not a test gap.
+6. **MCP wiring** — `app/mcp/__init__.py` is a docstring. When built it must **not** gain a
+   `.env` read; that is the guarantee the IMAP credentials rely on.
+7. **Placeholder nodes are not styled on the canvas** — `isPlaceholder()` exists but only
+   `Viewer.jsx` uses it.
+8. **The size warning has no visible threshold** — `LARGE_FILE_BYTES = 500 MB` renders as
+   "· large file" with no explanation.
 
 ---
 
@@ -94,11 +71,36 @@ start before the Viewer is settled.
 
 ---
 
+## Latent — a re-export can mint a whole new thread
+
+**Not a bug today, because nothing has been re-ingested. It will bite on the first one.**
+
+A thread's identity is `platform:chat_id`, and three platforms *derive* `chat_id` rather
+than read it from the export. If the derivation input changes between two exports of the
+same conversation, the thread key changes, and because `message_key()` hashes `chat_id` as
+its first component, **every message in it gets a new key too**. Result: the conversation
+exists twice, with no error and no warning.
+
+| Platform | `chat_id` derived from | Changes when |
+|---|---|---|
+| **LinkedIn** | `sha256(CONVERSATION ID)[:16]` → `li_…` | LinkedIn re-issues conversation ids on some archive regenerations |
+| **WhatsApp** | `sha256(chat title)[:16]` → `wa_…` | the contact is renamed, or the title is formatted differently by the two dialects |
+| **Email** | `Message-ID`, else `uid:<UIDVALIDITY>:<UID>` | the server bumps `UIDVALIDITY` — every key in the mailbox changes at once |
+| Telegram / Messenger | read straight from the export | (stable) |
+
+WhatsApp's `message_key()` also hashes the **body**, so an edited message, a changed media
+placeholder or a locale difference duplicates that one row even when the thread id holds.
+
+**Debugging it later:** compare `count(DISTINCT t.key)` against the number of conversations
+the export claims. A doubled count with identical titles is this. The fix is a stable
+surrogate — persist `(platform, title-or-participants) → chat_id` in `store/profile/` and
+reuse it, the way `identity.json` already persists the Owner — not a change to the hash.
+
 ## Known issues in the real store
 
 - `Facebook user` spans 31 Messenger threads — a placeholder Correspondent by design.
-- **One thread holds 1,624 messages** (a Messenger group titled `Facebook user`). The
-  Viewer pages, so this is fine, but it is the test case. The largest *named* thread is 707.
+- **One thread holds 707 messages** (`Bode Bradshaw`, a Messenger group). The Viewer pages,
+  so this is fine, but it is the test case. The largest `Facebook user` thread is 252.
 - Hostinger sent mail has no `Message-ID` (133 of 221) — keyed by `uid:<UIDVALIDITY>:<UID>`.
 - **147 threads have no Correspondent edge.** 135 are Telegram strangers with a `sender_id`
   and no name — fixed at the source, so a re-ingest clears them. 12 are Messenger
@@ -108,34 +110,35 @@ start before the Viewer is settled.
   warranted until a real group export appears.
 - **Email: 68 threads, 44 owner-silent, largest silent thread is 2 messages.** The 10+
   spam rule drops nothing today; it exists for a real mailbox.
+- **Four LinkedIn Correspondents are whole recipient lists, not people** — 160 to 672
+  characters, e.g. `Nigel Harrison,Anat Malkin,Christian Davis,…`. `_split_recipients()`
+  splits on `;` only, deliberately, because `TO` also contains names with credentials
+  (`Steve Mikano CIA, AIC-M, AINS, SSBB`). A comma-separated list with no semicolons
+  therefore becomes one node. `canon.split_list()` now implements the separator heuristic
+  (comma with no space = list; comma with a space = inside a name), but the LinkedIn
+  adapter does not call it yet.
 
 ---
 
 ## Done — one line each
 
-- **2026-11-16** — UI built (React + esbuild, Cytoscape + fcose, two-state Viewer, local
-  Ollama chat, five modals). Terms settled. Docs consolidated.
-- **2026-11-17** — Outlook leg. SMS adapter. Canvas modal replaced Graph Style.
-- **2026-11-17** — Ingest modal rebuilt as one tab: drop box (file **or folder**, one or
-  many) → IMAP → separator → gates → log.
-- **2026-11-17** — Silent-group gates for Telegram / WhatsApp / Messenger, default on.
-  Email + Outlook spam gates at 10+ messages, default on.
-- **2026-11-17** — Preview (`GET /api/ingest/preview`): size + duplicate per spool file.
-  Dedup manifest at `store/profile/ingested.json`.
-- **2026-11-17** — Truncate Relate DB, double confirm, always takes the manifest.
-- **2026-11-17** — Ingest log with a halt prompt: exclude-and-continue or cancel.
-- **2026-11-17** — IMAP credentials written to `./.env` from the modal; never echoed, never
-  read by a tool.
-- **2026-11-17** — WhatsApp HTML dialect (`adapters/whatsapp_html.py`). `message_key()`
-  truncates to the minute so both dialects collapse. 46 of 47 keys identical.
-- **2026-11-17** — `sms.detect()` reads inside a `.xml.zip`.
-- **2026-11-17** — One spool queue. `store/spool/` (9.6 MB stale) deleted.
-- **2026-11-17** — `ingest(store=…)` now redirects the profile too, so tests stop writing
-  into the live `store/profile/`.
-- **2026-11-17** — `GraphCanvas.jsx` `hideSilent` ReferenceError fixed (blanked the app).
-- **2026-11-17** — `start.bat` no longer passes `--reload`.
-- **2026-11-17** — Messenger detects an unzipped export (folder or loose
-  `message_N.html`); `_parse_root()` walks back to the archive root so thread ids resolve.
+Everything before **2026-11-18** is in `git log`; only the current round is listed.
+
+- **2026-11-18** — Docs consolidated: one spool queue, no stale claims.
+- **2026-11-18** — `sample_writer` finished: `add` writes alongside `out/` with Windows-style
+  `name (1)` dedupe (`uniquify.Filer`), `--platform` takes space-separated names, `--keep`
+  replaced by the `build`/`add` split.
+- **2026-11-18** — `canon.py`: the shared flattening pipe. Four kinds, English nickname table,
+  `rapidfuzz` for fuzzy, report-only candidates. 69 tests.
+- **2026-11-18** — Canon wired into the Correspondent write. **The Owner is no longer a
+  Correspondent on any platform** — it was in 236 threads. `ingest._owner_forms()` collects
+  every form the Owner is known by, including the display name from other platforms.
+- **2026-11-18** — Thread titles: `Platform; Name; MM-DD-YYYY->`. The `->` changes at most
+  once, ever, so the label does not drift on re-ingest.
+- **2026-11-18** — `Person`/`Identity` scaffolding deleted. `resolution.py` gone,
+  `write_people()` gone, `person_key="owner"` gone. `Person` is a future extraction node
+  type, never the Owner.
+- **2026-11-18** — Viewer: the text block above the histogram deleted; the title carries it.
 
 ---
 
@@ -143,7 +146,6 @@ start before the Viewer is settled.
 
 **Term: `Email`.** Platform key `email`. **One mailbox at a time.**
 
-**Current state.** `email_imap.py` works and is verified live against Gmail and Hostinger.
 `--email` is repeatable and `_fetch_mailboxes()` loops, but every mailbox lands as platform
 `email`, so two mailboxes merge into one cluster and `Message.key` is not guaranteed unique
 across them.

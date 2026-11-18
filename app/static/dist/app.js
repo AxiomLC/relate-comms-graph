@@ -16528,21 +16528,6 @@
     if (!d) return "";
     return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
   }
-  function monthsBetween(fromIso, toIso) {
-    const a = parse(fromIso);
-    const b = parse(toIso);
-    if (!a || !b) return null;
-    return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
-  }
-  function quietFor(lastIso, now = /* @__PURE__ */ new Date()) {
-    const d = parse(lastIso);
-    if (!d) return "";
-    const months = (now.getFullYear() - d.getFullYear()) * 12 + (now.getMonth() - d.getMonth());
-    if (months < 1) return "active this month";
-    if (months < 12) return `quiet ${months}mo`;
-    const years = Math.floor(months / 12);
-    return `quiet ${years}y`;
-  }
   function formatCount(n) {
     return Number(n || 0).toLocaleString();
   }
@@ -16942,18 +16927,9 @@
     ] });
   }
   function Arc({ thread, histogram }) {
-    const first = thread.first_ts;
-    const last = thread.last_ts;
-    const span = monthsBetween(first, last);
-    if (!first && !last) return null;
-    const parts = [];
-    if (first) parts.push(`first ${formatDate(first)}`);
-    if (span != null && span > 0) parts.push(`${span} month${span === 1 ? "" : "s"}`);
-    if (last) parts.push(quietFor(last));
-    return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(import_jsx_runtime4.Fragment, { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "arc", children: parts.join(" \xB7 ") }),
-      histogram?.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(Sparkline, { rows: histogram })
-    ] });
+    if (!thread.first_ts && !thread.last_ts) return null;
+    if (!histogram?.length) return null;
+    return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(Sparkline, { rows: histogram });
   }
   function Sparkline({ rows }) {
     const series = (0, import_react8.useMemo)(() => {

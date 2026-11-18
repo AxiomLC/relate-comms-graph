@@ -80,7 +80,7 @@ from typing import Any, Iterator
 from xml.etree import ElementTree as ET
 
 from .. import identity
-from ..resolution import norm_phone
+from ..canon import phone_digits as norm_phone
 from ..schema import AttachmentRef, Chat, IngestResult, Message
 
 PLATFORM = "sms"

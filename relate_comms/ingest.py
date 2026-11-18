@@ -40,7 +40,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import identity, manifest, paths, resolution, scrub, writer
+from . import identity, manifest, paths, scrub, writer
 from .adapters import (email_imap, linkedin, messenger, outlook_pst, sms, telegram,
                        whatsapp, whatsapp_html)
 from .schema import IngestResult
@@ -161,9 +161,7 @@ class BatchOutcome:
     kinds: dict[str, int] = field(default_factory=dict)
     skipped: dict[str, int] = field(default_factory=dict)
     withheld: str = ""
-    identities: int = 0
     fingerprint: str = ""
-    who_matched: int = 0
     correspondents: int = 0
 
     @property
@@ -711,16 +709,17 @@ def ingest(
             outcome.skipped = dict(result.skipped)
             outcome.warnings = list(result.warnings)
 
-            # §3.2: resolution, then scrub, then write. Resolution needs real keys
-            # to join on, so the gate comes after it and before anything lands.
+            # §3.2: scrub, then write. The scrub gate runs before anything lands.
+            #
+            # Identity resolution used to run here too and its result was discarded —
+            # `resolution.collect/merge` produced `Person` nodes that were never
+            # written. That scaffolding is gone: `Person` is a future extraction node
+            # type, not the Owner, and the Owner is now excluded by `canon` at the
+            # point a Correspondent is minted.
             if scrub_policy is not False:
-                candidates = resolution.collect(result)
-                people, merged = resolution.merge(candidates)
                 result, scrub_report, aliases = scrub.scrub_result(
                     result, policy=scrub_policy or None, aliases=aliases)
-                outcome.who_matched = len(people)
                 outcome.withheld = scrub_report.summary()
-                outcome.identities = len(merged)
 
             try:
                 written = writer.write(conn, result, owner=parse_kwargs.get("self_id"))
@@ -730,11 +729,19 @@ def ingest(
                 continue
 
             # §5.6: the thread's counterparty, straight from the export's participant
-            # list. After `write()` because `WITH` needs the Thread row to exist. This
-            # is a fact, not the inference `write_people()` will later add.
+            # list. After `write()` because `WITH` needs the Thread row to exist.
+            #
+            # The Owner guard needs **every** form the Owner is known by on this
+            # platform, not just `self_id`. A Telegram user id matches no display name,
+            # which is why the old single-form guard let the Owner through on four of
+            # five platforms. `_owner_forms()` collects the display name, the id, the
+            # address and the phone from the profile and from this result.
             try:
                 counted = writer.write_correspondents(
-                    conn, result, owner=parse_kwargs.get("self_id"))
+                    conn, result,
+                    owner=parse_kwargs.get("self_id"),
+                    owner_forms=_owner_forms(profile, result, parse_kwargs),
+                )
                 outcome.correspondents = counted["correspondents"]
             except Exception as exc:  # noqa: BLE001 - never fail the batch over this
                 outcome.warnings.append(
@@ -953,6 +960,64 @@ def _drop_spam_threads(
     result.chats = [c for c in result.chats if c.chat_id not in doomed]
     for _ in doomed:
         result.note_skip("spam thread (long, owner silent)")
+
+
+def _owner_forms(
+    profile: Path,
+    result: IngestResult,
+    parse_kwargs: dict[str, Any],
+) -> list[str]:
+    """Every form the Owner is known by on this platform.
+
+    The Owner's identifier is not interchangeable between platforms: Telegram names
+    them `user1426445212`, Messenger and LinkedIn name them `David Sartori`, Email
+    names them an address. Comparing one form against another matches nothing, which
+    is exactly how the Owner ended up written as a `Correspondent` in 236 threads.
+
+    So collect all of them — the persisted owner, the caller's `self_id`, and every
+    sender this result marks `is_self` — and let `canon.canonical` compare against the
+    lot. A form that does not apply simply never matches.
+    """
+    forms: list[str] = []
+
+    stored = identity.load_owner(profile, result.platform)
+    if stored:
+        forms.append(stored)
+
+    caller = parse_kwargs.get("self_id")
+    if caller:
+        forms.append(str(caller))
+
+    # The strongest evidence available: rows this adapter itself decided were ours.
+    # A display name here is the Owner's name *on this platform*, which is the form
+    # the participant list will contain.
+    for message in result.messages:
+        if message.is_self and message.sender_name:
+            forms.append(message.sender_name)
+        if message.is_self and message.sender_id:
+            forms.append(str(message.sender_id))
+
+    # A platform whose owner marker is not a name (`You` on WhatsApp) never marks a
+    # row `is_self` under the Owner's real spelling, so the loop above learns nothing.
+    # The profile's owner for *another* platform is still the same human, and a display
+    # name is the form a participant list contains — so it is worth carrying across.
+    # A form that does not apply simply never matches.
+    for platform in ("messenger", "linkedin", "email", "telegram", "outlook", "sms"):
+        if platform == result.platform:
+            continue
+        other = identity.load_owner(profile, platform)
+        if other:
+            forms.append(other)
+
+    # Deduplicate while keeping order, so the list is stable across runs.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for form in forms:
+        key = form.strip().casefold()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(form.strip())
+    return unique
 
 
 def _resolve_owner_once(

@@ -18,15 +18,13 @@ from typing import Any, Iterable
 
 import relate
 
-from .schema import Chat, Identity, IngestResult, Message, Person, to_utc_string
+from .schema import Chat, IngestResult, Message, to_utc_string
 
 _SCHEMA = (
     "CREATE INDEX msg_key IF NOT EXISTS FOR (m:Message) ON (m.key)",
     "CREATE INDEX thread_key IF NOT EXISTS FOR (t:Thread) ON (t.key)",
-    "CREATE INDEX identity_key IF NOT EXISTS FOR (i:Identity) ON (i.key)",
     "CREATE INDEX attachment_key IF NOT EXISTS FOR (a:Attachment) ON (a.key)",
-    "CREATE INDEX person_key IF NOT EXISTS FOR (p:Person) ON (p.key)",
-    "CREATE INDEX identity_person IF NOT EXISTS FOR (i:Identity) ON (i.person_key)",
+    "CREATE INDEX correspondent_key IF NOT EXISTS FOR (c:Correspondent) ON (c.key)",
 )
 
 _MSG_CYPHER = (
@@ -78,16 +76,44 @@ _CORRESPONDENT_CYPHER = (
 )
 
 
+# The label the UI shows, mirroring `PLATFORM_LABELS` in
+# `app/ui/src/config/nodeTypes.js`. Duplicated deliberately: the title is built in
+# Python at write time, and importing the UI's JS is not an option. If one changes,
+# both change — the same duplication `paths.PLATFORM_FOLDERS` already carries.
+PLATFORM_TITLE_LABELS = {
+    "messenger": "Fcbk Mssgr",
+    "telegram": "Telegram",
+    "whatsapp": "WhatsApp",
+    "linkedin": "LinkedIn",
+    "email": "Email",
+    "gmail": "Email",
+    "imap": "Email",
+    "outlook": "Outlook",
+    "sms": "SMS",
+}
+
+
+def platform_title_label(platform: str) -> str:
+    return PLATFORM_TITLE_LABELS.get((platform or "").lower(), platform or "")
+
+
 def correspondent_key(platform: str, name: str) -> str:
-    """Stable per (platform, person).
+    """Stable per (platform, person), on the **canonical** name.
 
     **Not scoped to the thread.** Keying by thread gave `David Sartori` four separate
     nodes — one per thread he appeared in — because Messenger's placeholder account
     shows up in 31 different threads. The row is still attached with `WITH` per
     thread; only the identity is shared, so a person who appears in ten threads is
     one node with ten `WITH` edges.
+
+    The name is flattened first, so `Dave Sartori` and `david sartori` are one node
+    rather than two. That fan-in is the whole point: fifteen threads with one person
+    must read as fifteen edges into one node, not fifteen disconnected pairs.
     """
-    return f"{platform}:{name.strip()}"
+    from .canon import canonical
+
+    record = canonical(name, kind="person")
+    return f"{platform}:{record.key or name.strip()}"
 
 
 def write_correspondents(
@@ -95,39 +121,68 @@ def write_correspondents(
     result: IngestResult,
     *,
     owner: str | None = None,
+    owner_forms: Iterable[str] | None = None,
 ) -> dict[str, int]:
     """Write one `Correspondent` per non-owner participant, attached with `WITH`.
 
     Called **after** `write()`, because `WITH` needs the Thread row to exist.
 
     `participant_names` is already populated by every adapter and was previously
-    dropped. A `You` placeholder or the owner's own name is skipped: a thread you
-    sent messages into alone has correspondents, not a self-edge.
-    """
-    from .resolution import is_placeholder, norm_name
+    dropped. A placeholder or the Owner is skipped: a thread you sent messages into
+    alone has correspondents, not a self-edge.
 
-    thread_titles = {thread_key_for(c): c.title for c in result.chats}
-    owner_norm = norm_name(owner) if owner else ""
+    **The Owner guard needs every form the Owner is known by on this platform.**
+    `owner` alone was the bug: a run resolves the Owner once from Telegram and puts a
+    user id in `self_id`, which matches no display name anywhere else, so the guard
+    was inert on Messenger, LinkedIn, Email and WhatsApp — and the Owner was written
+    as a Correspondent in 236 threads. `owner_forms` carries the display name, the
+    id, the address and the phone; `canon.canonical` compares against all of them.
+
+    Names are flattened through `canon` before they become keys, so `Dave Sartori`
+    and `david sartori` are one node with two `WITH` edges rather than two nodes.
+    """
+    from .canon import canonical
+
+    forms = [form for form in (owner_forms or ()) if form]
+    if owner:
+        forms.append(owner)
 
     rows: list[dict[str, Any]] = []
     for chat in result.chats:
         tkey = thread_key_for(chat)
         for name in chat.participant_names:
             clean = (name or "").strip()
-            if not clean or is_placeholder(clean):
+            if not clean:
                 continue
-            if owner_norm and norm_name(clean) == owner_norm:
+
+            record = canonical(clean, kind="person", owner=forms)
+            # The Owner is never a Correspondent, on any platform, ever.
+            if record.is_owner:
                 continue
+            # A placeholder is not a person. It is attached to a per-platform
+            # pseudo-node so those threads cluster instead of floating unconnected.
+            if record.is_placeholder:
+                rows.append({
+                    "key": f"{chat.platform}:{record.key}",
+                    "display_name": record.display,
+                    "platform": chat.platform,
+                    "handle": record.display,
+                    "email": None,
+                    "phone_e164": None,
+                    "thread_key": tkey,
+                })
+                continue
+
             # One row per (thread, person): the MERGE is on `key`, so a repeat across
             # threads attaches a second `WITH` edge to the same node rather than
             # minting a duplicate.
             rows.append({
-                "key": correspondent_key(chat.platform, clean),
-                "display_name": clean,
+                "key": f"{chat.platform}:{record.key}",
+                "display_name": record.display,
                 "platform": chat.platform,
-                "handle": clean,
-                "email": clean if "@" in clean else None,
-                "phone_e164": None,
+                "handle": record.display,
+                "email": record.key if record.evidence == "email" else None,
+                "phone_e164": record.key if record.evidence == "phone" else None,
                 "thread_key": tkey,
             })
 
@@ -142,78 +197,195 @@ def thread_key_for(chat: Chat) -> str:
     return f"{chat.platform}:{chat.chat_id}"
 
 
+def _thread_spans(result: IngestResult) -> dict[str, tuple[Any, Any]]:
+    """`chat_id -> (first_ts, last_ts)`, from the messages themselves."""
+    spans: dict[str, tuple[Any, Any]] = {}
+    for message in result.messages:
+        current = spans.get(message.chat_id)
+        if current is None:
+            spans[message.chat_id] = (message.ts_utc, message.ts_utc)
+            continue
+        first, last = current
+        spans[message.chat_id] = (
+            message.ts_utc if message.ts_utc < first else first,
+            message.ts_utc if message.ts_utc > last else last,
+        )
+    return spans
+
+
+def _title_ordinals(
+    result: IngestResult,
+    owner: str | None,
+    spans: dict[str, tuple[Any, Any]],
+) -> dict[str, int]:
+    """`chat_id -> n`, for threads that share a person and a start date.
+
+    `#n` exists so two threads with the same person starting the same day stay
+    distinguishable. It is assigned by `chat_id`, never by ingest order, or the same
+    store built twice would get different titles.
+
+    A thread with no collision gets no ordinal, so the common case stays clean.
+    """
+    from .canon import canonical
+
+    groups: dict[tuple[str, str, str], list[str]] = {}
+    for chat in result.chats:
+        start = _as_date(spans.get(chat.chat_id, (None, None))[0])
+        if start is None:
+            continue
+        name = _thread_name(chat, owner, canonical)
+        groups.setdefault((chat.platform, name, start.strftime("%m-%d-%Y")), []).append(
+            chat.chat_id)
+
+    ordinals: dict[str, int] = {}
+    for chat_ids in groups.values():
+        if len(chat_ids) < 2:
+            continue
+        for index, chat_id in enumerate(sorted(chat_ids), start=1):
+            ordinals[chat_id] = index
+    return ordinals
+
+
+def _title_for(
+    message: Message,
+    chat: Chat | None,
+    owner: str | None,
+    spans: dict[str, tuple[Any, Any]],
+    ordinals: dict[str, int],
+) -> str:
+    """The title for one message's thread. Same string for every message in it."""
+    if chat is None:
+        label = platform_title_label(message.platform)
+        return f"{label}; {message.chat_id[-6:]}"
+    first, last = spans.get(chat.chat_id, (None, None))
+    return thread_display_title(
+        chat, owner, first_ts=first, last_ts=last,
+        ordinal=ordinals.get(chat.chat_id),
+    )
+
+
 def _is_owner_name(name: str, owner: str | None) -> bool:
-    from .resolution import norm_name
-    return bool(owner) and norm_name(name) == norm_name(owner)
+    """Is this participant the Owner? Compared on the canonical form.
+
+    `canon.canonical` resolves nicknames on both sides, so a profile saying
+    `David Sartori` matches an export saying `Dave Sartori`.
+    """
+    from .canon import canonical
+
+    if not owner:
+        return False
+    return canonical(name, owner=[owner]).is_owner
 
 
-def thread_display_title(chat: Chat, owner: str | None = None) -> str:
-    """A human-readable title, always non-empty.
+def thread_display_title(
+    chat: Chat,
+    owner: str | None = None,
+    *,
+    first_ts: Any = None,
+    last_ts: Any = None,
+    ordinal: int | None = None,
+) -> str:
+    """A human-readable title, always non-empty. **Display only.**
 
-    Telegram omits `name` on 1:1 chats (291 threads in the real export rendered as
-    `""`), so the title falls back through what the export *did* contain:
+    The schema is two separators, so a group name or email subject that itself
+    contains a date, `-`, `->` or `#2` is harmless — the date block is delimited,
+    never merely trailing:
 
-    1. the stated name
-    2. the other participants, minus the owner — the counterparty is the chat
-    3. the platform and a short id, which is never pretty but is always true
+        <Platform>; <Name>; <MM-DD-YYYY>[-][>][ #n]
+
+        SMS; Bryan Rodgers; 06-02-2026
+        Facebook; Ryan Phillip; 02-13-2025->
+        WhatsApp; +27 84 518 9029; 04-21-2026->
+        LinkedIn; n8n Hackathon today - log in!🪐; 08-16-2025
+        LinkedIn; Invoice due 08-16-2025; 08-16-2025
+
+    Parse from the outside in — platform before the **first** `;`, date block after
+    the **last** `;`, name between them. Never parse it for the platform key: the
+    token is the display label, and the node's `platform` property is authoritative.
+
+    **Why `->` and not an end date.** An end date changes on every ingest, because
+    `max(ts)` moves. `->` changes at most once, ever: the first time a thread spans
+    more than one day it becomes true and stays true. Stable label, still accurate.
+
+    **Why the name is canonical.** The title is what makes the fan-in legible: three
+    threads all reading `with Mary Olver` are obviously one conversation split across
+    three chat ids. Raw spellings would hide that.
 
     A title is a label, not evidence. Inventing one from the counterparty is safe
     because §5.6 already treats that person as a fact of the export.
     """
-    if chat.title.strip():
-        return chat.title.strip()
+    from .canon import canonical
+
+    label = platform_title_label(chat.platform)
+    name = _thread_name(chat, owner, canonical)
+    block = _date_block(first_ts, last_ts)
+
+    parts = [label, name]
+    if block:
+        parts.append(block)
+    title = "; ".join(part for part in parts if part)
+    if ordinal and ordinal > 1:
+        title = f"{title} #{ordinal}"
+    return title
+
+
+def _thread_name(chat: Chat, owner: str | None, canonical) -> str:
+    """The name half of the title: the group's own name, else the counterparty.
+
+    A group's stated name wins outright — it is what the export says the group is
+    called, and a participant's name standing in for it is indistinguishable from a
+    1:1 thread.
+
+    A 1:1 thread is named after its counterparty, canonicalised so that the same
+    person's threads read alike. When there is no counterparty at all — the Telegram
+    strangers with a `sender_id` and no name — the short id is the only true thing
+    left to say.
+    """
+    stated = (chat.title or "").strip()
+    if stated:
+        return stated
 
     others = [n for n in chat.participant_names
               if n.strip() and not _is_owner_name(n, owner)]
-    if len(others) == 1:
-        return others[0]
-    if 1 < len(others) <= 3:
-        return ", ".join(others)
-    if len(others) > 3:
-        return f"{others[0]}, {others[1]} +{len(others) - 2}"
+    if not others:
+        return chat.chat_id[-6:]
 
-    # No participants at all: name it by what identifies it, honestly.
-    return f"{chat.platform.capitalize()} thread {chat.chat_id[-6:]}"
+    names = [canonical(name, kind="person").display for name in others]
+    if len(names) == 1:
+        return names[0]
+    if len(names) <= 3:
+        return ", ".join(names)
+    return f"{names[0]}, {names[1]} +{len(names) - 2}"
 
 
-_PERSON_CYPHER = (
-    "UNWIND $rows AS row "
-    "MERGE (p:Person {key: row.key}) "
-    "SET p.display_name = row.display_name, "
-    "    p.first_seen_utc = row.first_seen_utc, p.last_seen_utc = row.last_seen_utc"
-)
+def _date_block(first_ts: Any, last_ts: Any) -> str:
+    """`MM-DD-YYYY`, plus `->` when the thread spans more than one calendar day."""
+    start = _as_date(first_ts)
+    if start is None:
+        return ""
+    block = start.strftime("%m-%d-%Y")
+    end = _as_date(last_ts)
+    if end is not None and end.date() > start.date():
+        block += "->"
+    return block
 
-_IDENTITY_CYPHER = (
-    "UNWIND $rows AS row "
-    "MERGE (i:Identity {key: row.key}) "
-    "SET i.platform = row.platform, i.handle = row.handle, "
-    "    i.phone_e164 = row.phone_e164, i.email = row.email, "
-    "    i.display_name = row.display_name, i.confidence = row.confidence, "
-    "    i.matched_by = row.matched_by "
-    "WITH i, row "
-    "MATCH (p:Person {key: row.person_key}) "
-    "MERGE (p)-[r:MATCHED_BY]->(i) "
-    "SET r.confidence = row.confidence, r.matched_by = row.matched_by"
-)
 
-# A fuzzy match between two People. Written in both directions because the resolver
-# cannot know which side is "canonical", and a directed guess would invent hierarchy.
-_POSSIBLY_CYPHER = (
-    "UNWIND $rows AS row "
-    "MATCH (a:Person {key: row.a}) "
-    "MATCH (b:Person {key: row.b}) "
-    "MERGE (a)-[r:POSSIBLY]->(b) "
-    "SET r.confidence = row.confidence, r.reason = row.reason"
-)
+def _as_date(value: Any):
+    """Accept a datetime, a date, or the ISO string the store holds."""
+    from datetime import date, datetime, timezone
 
-# Whoever sent a message is its author. The resolver knows the platform account; this
-# connects it to the message row already written.
-_SENT_CYPHER = (
-    "UNWIND $rows AS row "
-    "MATCH (p:Person {key: row.person_key}) "
-    "MATCH (m:Message {key: row.msg_key}) "
-    "MERGE (p)-[:SENT]->(m)"
-)
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
 
 
 def connect(store: str | Path) -> Any:
@@ -245,6 +417,11 @@ def write(conn: Any, result: IngestResult, *, owner: str | None = None) -> dict[
     chats_by_id = {c.chat_id: c for c in result.chats}
     cur = conn.cursor()
 
+    # The title needs each thread's span, which is a property of its messages rather
+    # than of the Chat record. Computed once here, before the row loop.
+    spans = _thread_spans(result)
+    ordinals = _title_ordinals(result, owner, spans)
+
     message_rows: list[dict[str, Any]] = []
     for message in result.messages:
         chat: Chat | None = chats_by_id.get(message.chat_id)
@@ -261,8 +438,7 @@ def write(conn: Any, result: IngestResult, *, owner: str | None = None) -> dict[
             "sender_name": message.sender_name,
             "sender_id": message.sender_id,
             "thread_key": thread_key(message),
-            "thread_title": (thread_display_title(chat, owner) if chat
-                             else f"{message.platform.capitalize()} thread {message.chat_id[-6:]}"),
+            "thread_title": _title_for(message, chat, owner, spans, ordinals),
             "is_group": chat.is_group if chat else False,
         })
 
@@ -295,69 +471,6 @@ def write(conn: Any, result: IngestResult, *, owner: str | None = None) -> dict[
     conn.commit()
     return {"messages": len(message_rows), "attachments": len(attachment_rows),
             "keys": {m.key for m in result.messages}}
-
-
-def write_people(
-    conn: Any,
-    people: Iterable[Person],
-    identities: Iterable[Identity],
-    *,
-    sent: Iterable[tuple[str, str]] = (),
-) -> dict[str, int]:
-    """Persist resolved people, their identities and who sent what.
-
-    Called **after** `write()`, because `SENT` needs the message rows to exist.
-
-    `sent` is `(person_key, message_key)` pairs. The resolver reports them through
-    `resolution.sent_edges()`, so this function does no matching of its own — a
-    second place that decides authorship is a second place to be wrong.
-
-    An identity at `confidence >= MATCH_THRESHOLD` is a fact and is written as
-    `MATCHED_BY`; anything lower also gets a `POSSIBLY` edge between the person and
-    the identity's *own* standalone person, so the uncertainty is visible in the
-    graph rather than flattened into a boolean (§3.1).
-    """
-    cur = conn.cursor()
-
-    person_rows = [
-        {
-            "key": p.key,
-            "display_name": p.display_name,
-            "first_seen_utc": to_utc_string(p.first_seen_utc),
-            "last_seen_utc": to_utc_string(p.last_seen_utc),
-        }
-        for p in people
-    ]
-    for batch in _chunks(person_rows):
-        cur.execute(_PERSON_CYPHER, {"rows": batch})
-
-    identity_rows = [
-        {
-            "key": i.key,
-            "platform": i.platform,
-            "handle": i.handle,
-            "phone_e164": i.phone_e164,
-            "email": i.email,
-            "display_name": i.display_name,
-            "person_key": i.person_key or i.key,
-            "confidence": i.confidence,
-            "matched_by": i.matched_by,
-        }
-        for i in identities
-    ]
-    for batch in _chunks(identity_rows):
-        cur.execute(_IDENTITY_CYPHER, {"rows": batch})
-
-    sent_rows = [{"person_key": p, "msg_key": m} for p, m in sent]
-    for batch in _chunks(sent_rows):
-        cur.execute(_SENT_CYPHER, {"rows": batch})
-
-    conn.commit()
-    return {
-        "people": len(person_rows),
-        "identities": len(identity_rows),
-        "sent": len(sent_rows),
-    }
 
 
 def stored_keys(conn: Any, platform: str) -> set[str]:

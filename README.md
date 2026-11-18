@@ -37,7 +37,7 @@ Three more, for the ingest path:
 |---|---|
 | **Download** | The raw file the user got from the platform. Never moved, never deleted. |
 | **Export** | The copy inside `spool/`, which is what actually gets parsed. |
-| **Root** | Which spool queue to read: `real` (the user's) or `sample` (generated demo data). |
+| **Root** | The spool queue to read: `spool/real/`. There is **one** queue — a generated sample is just a file dropped in it, and `ingest` cannot tell it from a real export. |
 
 **`Person`, `Place`, `Organization`, `Product` are not terms in this app yet.** They name a
 *future* extraction step: entities pulled out of a message body that are neither the Owner
@@ -78,7 +78,6 @@ records, and merged into that single file.
 ```
 spool/
   real/     telegram/  whatsapp/  messenger/  linkedin/  outlook/  sms/  imap/  gmail/
-  sample/   the same folders, for generated demo data
 store/
   graph.rl      the graph — every message, every correspondent
   profile/      identity.json — which account is the Owner, per platform
@@ -131,6 +130,11 @@ python -m relate_comms ingest --which real --email hostinger --tz-offset -5
 Per-platform download instructions live in
 [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md).
 
+**No real exports yet?** `python -m sample_writer` writes a full fake batch to
+`sample_writer/out/` — every platform, every shape the app has a switch for. Drop those in
+the same way: `ingest` cannot tell them from a real download. See
+[`sample_writer/README.md`](sample_writer/README.md).
+
 ### What the demo looks like
 
 1. Drop three archives in: Telegram JSON, WhatsApp `.txt`, LinkedIn zip. (Email reads live.)
@@ -164,7 +168,7 @@ Per-platform download instructions live in
 Outlook and SMS adapters are built but not yet in the live store.
 
 **Built:** seven file adapters + live IMAP, parallel parse → resolve → scrub → serialised
-write → verify → prune, 10-tool layer, FastAPI, and the UI.
+write → verify → prune, 12-tool layer, FastAPI, and the UI.
 
 **Not built:** cross-platform identity (a `Correspondent` is a per-platform fact; merging
 one human across platforms is unsolved), body-entity extraction (`Person`, `Place`,
@@ -176,7 +180,7 @@ against a real `.pst`) and `adapters/sms.py` (33 tests, verified against the rea
 export). Neither is in the store above because that store was ingested before those legs
 were finished.
 
-`pytest tests -q` → **204 passed, 2 skipped**.
+`pytest tests -q` → **279 passed, 2 skipped**.
 
 ## Docs
 
