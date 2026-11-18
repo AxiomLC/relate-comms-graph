@@ -53,10 +53,14 @@ _TEXT_SUFFIXES = {".txt", ".md"}
 # WhatsApp's browser-extension exporter writes standalone `.html` pages.
 _HTML_SUFFIXES = {".html"}
 _MAIL_SUFFIXES = {".pst", ".ost"}
+# A saved mailbox: one RFC 5322 message per file. `sample_writer` writes these, and so
+# does any mail client's "Save As". Distinct from `.pst`, which is a paged database.
+_EML_SUFFIXES = {".eml"}
 # SMS Backup & Restore writes `.xml`, or `.xml.zip` when "compress backup" is on.
 _XML_SUFFIXES = {".xml"}
 _CONSIDER_SUFFIXES = (_JSON_SUFFIXES | _ARCHIVE_SUFFIXES | _TEXT_SUFFIXES
-                      | _MAIL_SUFFIXES | _XML_SUFFIXES | _HTML_SUFFIXES)
+                      | _MAIL_SUFFIXES | _EML_SUFFIXES | _XML_SUFFIXES
+                      | _HTML_SUFFIXES)
 
 # Parse functions by platform. Adding an adapter means adding one line here.
 # Parsers that read wall-clock times with no offset. Only these accept
@@ -83,6 +87,10 @@ _PARSERS: dict[str, Callable[..., IngestResult]] = {
     linkedin.PLATFORM: linkedin.parse,
     outlook_pst.PLATFORM: outlook_pst.parse,
     sms.PLATFORM: sms.parse,
+    # A saved mailbox (a folder of `.eml`). A live IMAP mailbox is not discoverable
+    # and never reaches here — it is fetched by the caller and appended as an
+    # `extra_results` entry, which is why `email_imap.fetch` is not in this table.
+    email_imap.PLATFORM: email_imap.parse,
 }
 
 # WhatsApp has two dialects and one platform key. The parser is chosen per FILE, not
@@ -293,6 +301,10 @@ def detect_platform(path: Path) -> str | None:
             return messenger.PLATFORM
         if linkedin.detect(path):
             return linkedin.PLATFORM
+        # A folder of `.eml` files. Checked before WhatsApp's folder branch because a
+        # saved mailbox is a folder of files, not a chat export.
+        if email_imap.detect(path):
+            return email_imap.PLATFORM
         if whatsapp_html.detect(path):
             return whatsapp.PLATFORM
         # `whatsapp` has no `detect()` of its own — its shape check lives in
@@ -307,6 +319,9 @@ def detect_platform(path: Path) -> str | None:
 
     if suffix in _MAIL_SUFFIXES:
         return outlook_pst.PLATFORM if outlook_pst.detect(path) else None
+
+    if suffix in _EML_SUFFIXES:
+        return email_imap.PLATFORM if email_imap.detect(path) else None
 
     if suffix in _XML_SUFFIXES:
         # Only SMS Backup & Restore writes an `.xml` we read. Anything else is

@@ -120,6 +120,12 @@ def read_export(export_path: str | Path) -> tuple[str, str]:
 
     The zip holds `chat.txt` plus a markdown twin; the txt is the one we parse. The
     filename is the chat title: WhatsApp names the archive after the contact/group.
+
+    **The `WhatsApp Chat with ` prefix is stripped.** The native exporter names the
+    archive `Ada Ross.zip` but the loose-text form is `WhatsApp Chat with Ada Ross.txt`,
+    and `_chat_id()` hashes the title. Without this, the same conversation downloaded
+    both ways produced two thread ids and every message in it was stored twice. The
+    prefix is packaging, not identity.
     """
     path = Path(export_path)
     if path.is_dir():
@@ -143,7 +149,17 @@ def read_export(export_path: str | Path) -> tuple[str, str]:
         data = path.read_bytes()
         title_source = path.parent.name if path.name in {"chat.txt", "_chat.txt"} else path.stem
 
-    return _decode(data), title_source
+    return _decode(data), _strip_chat_prefix(title_source)
+
+
+# The loose-text exporter prefixes the filename with this. It is packaging, not part
+# of the contact's name, and it must not reach `_chat_id()`.
+_CHAT_PREFIX = re.compile(r"^WhatsApp\s+Chat\s+(?:with|-)\s+", re.I)
+
+
+def _strip_chat_prefix(title: str) -> str:
+    """`WhatsApp Chat with Ada Ross` -> `Ada Ross`. Idempotent."""
+    return _CHAT_PREFIX.sub("", title or "").strip() or (title or "")
 
 
 def _detect_month_first(lines: list[str]) -> bool:

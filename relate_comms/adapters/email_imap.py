@@ -57,6 +57,10 @@ from ..schema import Chat, IngestResult, Message
 
 PLATFORM = "email"
 
+# A saved mailbox: one RFC 5322 message per file. `sample_writer` writes these, and
+# so does any mail client's "Save As". The suffix is the only signal needed.
+_EML_SUFFIX = ".eml"
+
 # Folders we look for, by intent. Matched against the LAST path segment, because
 # servers namespace them differently: Gmail uses `[Gmail]/Sent Mail`, Hostinger
 # uses `INBOX.Sent`. Comparing whole names silently missed every sent message.
@@ -549,17 +553,103 @@ def parse(
 ) -> IngestResult:
     """Adapter entry point, so `ingest.ingest()` can treat email like the others.
 
-    `export_path` is a provider name here (`"gmail"`, `"zoho"`, …), resolved from
-    `.env` by `account_from_env`. It is never a file path — email is the one platform
-    with no export file to read. For a provider not in the table, call `fetch()`
-    directly with `account_from_parts()`.
+    Two shapes reach here, and the path decides which:
+
+    * **A saved mailbox** — a folder of `.eml` files, or one `.eml`. Read from disk,
+      no network. This is what `discover()` hands over when the spool holds a
+      `sample_writer` email export.
+    * **A provider name** (`"gmail"`, `"zoho"`, …) — resolved from `.env` by
+      `account_from_env` and read over IMAP. For a provider not in the table, call
+      `fetch()` directly with `account_from_parts()`.
+
+    The test is `Path.exists()`, not a suffix check: a provider name is not a path,
+    so it cannot exist on disk, and a real folder always does.
     """
+    path = Path(str(export_path))
+    if path.exists() and (path.is_dir() or path.suffix.lower() == _EML_SUFFIX):
+        return parse_eml(path, since=since, until=until, limit=limit)
+
     account = account_from_env(str(export_path))
     return fetch(
         account["host"], account["user"], account["password"],
         port=int(account.get("port", 993)),
         since=since, until=until, limit=limit, folders=folders,
     )
+
+
+def parse_eml(
+    path: str | Path,
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int | None = None,
+) -> IngestResult:
+    """Read a saved mailbox: every `.eml` under `path`, as one platform `email`.
+
+    **The owner is inferred by breadth, not volume.** A saved mailbox states no
+    account, so `is_self` has nothing structural to read — unlike IMAP, where a
+    `\\Sent` folder says it outright. The rule is the one `messenger._resolve_owner`
+    already uses: the address that appears in the most *distinct messages* is the
+    account, because a mailing list can outnumber the owner in raw rows but never in
+    breadth. The inference is reported in `warnings`, never silent.
+
+    `folder` is the containing directory's name and `uid` is the file stem, so a
+    message with no `Message-ID` still gets a stable `uid:<uidvalidity>:<uid>` key —
+    the same fallback IMAP uses, and unique per file.
+    """
+    root = Path(path)
+    files = sorted(
+        [root] if root.is_file() else
+        [entry for entry in root.rglob(f"*{_EML_SUFFIX}") if entry.is_file()]
+    )
+    result = IngestResult(platform=PLATFORM, export_path=str(root))
+    if not files:
+        result.warnings.append(f"no {_EML_SUFFIX} files under {root}")
+        return result
+
+    raws: list[tuple[Path, bytes]] = []
+    for entry in files:
+        try:
+            raws.append((entry, entry.read_bytes()))
+        except OSError as exc:
+            result.note_skip(f"unreadable file ({type(exc).__name__})")
+
+    # Window first, so the owner vote is not skewed by mail the caller excluded.
+    kept: list[tuple[Path, bytes]] = []
+    for entry, raw in raws:
+        ts = _ts(email.message_from_bytes(raw))
+        if ts is not None and since is not None and ts < since:
+            result.note_skip("before window")
+            continue
+        if ts is not None and until is not None and ts > until:
+            result.note_skip("after window")
+            continue
+        kept.append((entry, raw))
+    if limit:
+        kept = kept[-limit:]
+
+    breadth: dict[str, int] = {}
+    for _entry, raw in kept:
+        pairs = _addresses(email.message_from_bytes(raw).get("From"))
+        if pairs and pairs[0][1]:
+            breadth[pairs[0][1]] = breadth.get(pairs[0][1], 0) + 1
+    account = max(breadth, key=breadth.get) if breadth else ""
+    if account:
+        result.warnings.append(
+            f"owner inferred as {account!r} (sender of {breadth[account]} of "
+            f"{len(kept)} messages); a saved mailbox states no account")
+
+    seen_keys: set[str] = set()
+    chats: dict[str, Chat] = {}
+    for entry, raw in kept:
+        _parse_raw(raw, entry.parent.name, entry.stem, "eml", result,
+                   seen_keys, chats, account_address=account)
+
+    result.chats.extend(chats.values())
+    if not result.messages:
+        result.warnings.append(
+            f"no messages matched in {root}; check the date window")
+    return result
 
 
 # Known IMAP providers. This is a CONVENIENCE TABLE, not a whitelist: a provider
@@ -675,5 +765,22 @@ def _dotenv(environ: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def detect(path: Path) -> bool:
-    """Email is not a file. It is never auto-discovered from the spool."""
-    return False
+    """A folder of `.eml` files, or one `.eml`.
+
+    A live mailbox is not a file and is never discovered from the spool — that is
+    still true, and it is why this used to return `False` unconditionally. But a
+    **saved** mailbox is a folder of RFC 5322 files, which is exactly what a
+    `sample_writer` email export and a Thunderbird "Save As" both produce. Those
+    are discoverable, and refusing them meant the email leg could only ever be
+    reached from a test.
+
+    Detection is by content shape, never by the folder's name: one `.eml` is
+    enough, and a folder holding none is not email.
+    """
+    if path.is_dir():
+        try:
+            return any(entry.is_file() and entry.suffix.lower() == _EML_SUFFIX
+                       for entry in path.iterdir())
+        except OSError:
+            return False
+    return path.suffix.lower() == _EML_SUFFIX
