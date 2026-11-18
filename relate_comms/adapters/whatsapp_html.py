@@ -311,7 +311,15 @@ def _parse_page(
             sender = SELF_NAME
         else:
             # A 1:1 correspondent with no sender div: the chat title names them.
+            #
+            # **This must be added to `senders`.** It is the only place a 1:1 HTML
+            # chat names its counterparty, and `participant_names` is built from
+            # `senders`. Leaving it out gave every 1:1 thread an empty participant
+            # list, so `write_correspondents` had nothing to attach and 16 of 20
+            # WhatsApp threads landed with no `WITH` edge at all.
             sender = _clean_name(title)
+            if sender:
+                senders.add(sender)
 
         time_match = _TIME.search(body)
         ts = _stamp(day, time_match.group("time") if time_match else "")
