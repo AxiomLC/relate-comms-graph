@@ -8,10 +8,12 @@ Shape requirements come from `UNDESIRABLES.md` §12. The knobs below control *si
 flavour*; the `MARK_*` knobs control whether a required shape is present at all.
 
 Run:
-    python -m sample_writer                  # in/ -> out/, every platform
-    python -m sample_writer --platform sms   # one platform
-    python -m sample_writer --seed 7         # different world
-    python -m sample_writer --huge           # also emit the 1,600-message thread
+    python -m sample_writer                  # wipe out/, write every platform
+    python -m sample_writer --platform sms   # wipe & write only SMS
+    python -m sample_writer --seed 7         # wipe & write, seed 7
+    python -m sample_writer --huge           # wipe & write + 1,600-message thread
+    python -m sample_writer add --seed 5     # write alongside out/ (name (1) on clash)
+    python -m sample_writer clean            # wipe out/
     python -m sample_writer capture          # in/ -> schemas/*.json (shape refs)
 """
 from __future__ import annotations

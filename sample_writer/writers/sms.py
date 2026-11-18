@@ -110,26 +110,29 @@ def _xml(rows: list[dict], count_total: int) -> str:
     return "".join(parts)
 
 
-def write_xml(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
+def write_xml(plan: Plan, world: World, out_dir: Path, rng: Random,
+              filer) -> Path:
     folder = out_dir / "sms_xml"
     folder.mkdir(parents=True, exist_ok=True)
     rows = _messages(plan, world, rng)
-    target = folder / "sms-20261116212209.xml"
+    target = filer.file(folder, "sms-20261116212209.xml")
     target.write_text(_xml(rows, len(rows)), encoding="utf-8")
     return target
 
 
-def write_xml_zip(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
+def write_xml_zip(plan: Plan, world: World, out_dir: Path, rng: Random,
+                  filer) -> Path:
     folder = out_dir / "sms_xml_zip"
     folder.mkdir(parents=True, exist_ok=True)
     rows = _messages(plan, world, rng)
-    target = folder / "sms-20261116212209.xml.zip"
+    target = filer.file(folder, "sms-20261116212209.xml.zip")
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("sms-20261116212209.xml", _xml(rows, len(rows)))
     return target
 
 
-def write_json_app(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
+def write_json_app(plan: Plan, world: World, out_dir: Path, rng: Random,
+                   filer) -> Path:
     """A different Android backup app: an array of objects, not `<smses>`.
 
     Kept because the user asked for it and because it is the honest test of "we do not
@@ -151,7 +154,7 @@ def write_json_app(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path
         }
         for index, row in enumerate(rows)
     ]
-    target = folder / "sms-backup.json"
+    target = filer.file(folder, "sms-backup.json")
     target.write_text(json.dumps(document, ensure_ascii=False, indent=1), encoding="utf-8")
     return target
 
@@ -159,6 +162,6 @@ def write_json_app(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path
 WRITERS = {"xml": write_xml, "xml_zip": write_xml_zip, "json_app": write_json_app}
 
 
-def write(plan: Plan, world: World, out_dir: Path) -> list[Path]:
+def write(plan: Plan, world: World, out_dir: Path, filer) -> list[Path]:
     rng = Random(f"{world.seed}:{plan.platform}")
-    return [WRITERS[v](plan, world, out_dir, rng) for v in config.VARIANTS[KIND]]
+    return [WRITERS[v](plan, world, out_dir, rng, filer) for v in config.VARIANTS[KIND]]

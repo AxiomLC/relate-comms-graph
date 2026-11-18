@@ -90,10 +90,11 @@ def _csv(rows: list[dict[str, str]], columns: list[str]) -> str:
     return buffer.getvalue()
 
 
-def write_zip(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
+def write_zip(plan: Plan, world: World, out_dir: Path, rng: Random,
+              filer) -> Path:
     folder = out_dir / "linkedin_zip"
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / "Basic_LinkedInDataExport_11-14-2026.zip.zip"
+    target = filer.file(folder, "Basic_LinkedInDataExport_11-14-2026.zip.zip")
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("messages.csv", _csv(_rows(plan, world, rng), COLUMNS))
         archive.writestr("Connections.csv", _csv(_connections(world, rng), CONNECTION_COLUMNS))
@@ -101,8 +102,9 @@ def write_zip(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
     return target
 
 
-def write_dir(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
-    folder = out_dir / "linkedin_dir"
+def write_dir(plan: Plan, world: World, out_dir: Path, rng: Random,
+              filer) -> Path:
+    folder = filer.dir(out_dir, "linkedin_dir")
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "messages.csv").write_text(
         _csv(_rows(plan, world, rng), COLUMNS), encoding="utf-8"
@@ -116,6 +118,6 @@ def write_dir(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
 WRITERS = {"zip": write_zip, "dir": write_dir}
 
 
-def write(plan: Plan, world: World, out_dir: Path) -> list[Path]:
+def write(plan: Plan, world: World, out_dir: Path, filer) -> list[Path]:
     rng = Random(f"{world.seed}:{plan.platform}")
-    return [WRITERS[v](plan, world, out_dir, rng) for v in config.VARIANTS[KIND]]
+    return [WRITERS[v](plan, world, out_dir, rng, filer) for v in config.VARIANTS[KIND]]

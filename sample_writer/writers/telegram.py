@@ -133,7 +133,8 @@ def _chat(thread: Thread, world: World, rng: Random, start_id: int) -> tuple[dic
     }, msg_id
 
 
-def write_bulk(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
+def write_bulk(plan: Plan, world: World, out_dir: Path, rng: Random,
+                filer) -> Path:
     folder = out_dir / "telegram_bulk"
     folder.mkdir(parents=True, exist_ok=True)
     chats, next_id = [], 100000
@@ -147,12 +148,13 @@ def write_bulk(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
         "chats": {"about": "Chats", "list": chats},
         "left_chats": {"about": "Left chats", "list": []},
     }
-    target = folder / "result.json"
+    target = filer.file(folder, "result.json")
     target.write_text(json.dumps(document, ensure_ascii=False, indent=1), encoding="utf-8")
     return target
 
 
-def write_single(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
+def write_single(plan: Plan, world: World, out_dir: Path, rng: Random,
+                 filer) -> Path:
     folder = out_dir / "telegram_single"
     folder.mkdir(parents=True, exist_ok=True)
     thread = next((t for t in plan.threads if t.count > 1 and not t.is_group),
@@ -160,7 +162,7 @@ def write_single(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
     chat, _ = _chat(thread, world, rng, 90000)
     document = {"name": chat["name"], "type": chat["type"], "id": chat["id"],
                 "messages": chat["messages"]}
-    target = folder / "result.json"
+    target = filer.file(folder, "result.json")
     target.write_text(json.dumps(document, ensure_ascii=False, indent=1), encoding="utf-8")
     return target
 
@@ -168,6 +170,6 @@ def write_single(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
 WRITERS = {"bulk": write_bulk, "single": write_single}
 
 
-def write(plan: Plan, world: World, out_dir: Path) -> list[Path]:
+def write(plan: Plan, world: World, out_dir: Path, filer) -> list[Path]:
     rng = Random(f"{world.seed}:{plan.platform}")
-    return [WRITERS[v](plan, world, out_dir, rng) for v in config.VARIANTS[KIND]]
+    return [WRITERS[v](plan, world, out_dir, rng, filer) for v in config.VARIANTS[KIND]]

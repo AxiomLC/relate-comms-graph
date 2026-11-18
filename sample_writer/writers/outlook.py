@@ -19,10 +19,11 @@ FIXTURE = (Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "outlook
            / "Outlook.pst")
 
 
-def write_copy(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
+def write_copy(plan: Plan, world: World, out_dir: Path, rng: Random,
+               filer) -> Path:
     folder = out_dir / "outlook_copy"
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / "Outlook.pst"
+    target = filer.file(folder, "Outlook.pst")
     if not FIXTURE.exists():
         raise FileNotFoundError(f"committed fixture missing: {FIXTURE}")
     shutil.copy2(FIXTURE, target)
@@ -32,6 +33,6 @@ def write_copy(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
 WRITERS = {"copy": write_copy}
 
 
-def write(plan: Plan, world: World, out_dir: Path) -> list[Path]:
+def write(plan: Plan, world: World, out_dir: Path, filer) -> list[Path]:
     rng = Random(f"{world.seed}:{plan.platform}")
-    return [WRITERS[v](plan, world, out_dir, rng) for v in config.VARIANTS[KIND]]
+    return [WRITERS[v](plan, world, out_dir, rng, filer) for v in config.VARIANTS[KIND]]

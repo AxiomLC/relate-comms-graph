@@ -112,7 +112,8 @@ def _safe(title: str) -> str:
     return title.strip() or "chat"
 
 
-def write_chat_txt(plan: Plan, world: World, out_dir: Path, rng: Random) -> list[Path]:
+def write_chat_txt(plan: Plan, world: World, out_dir: Path, rng: Random,
+                   filer) -> list[Path]:
     """One chat per zip, inside the conversation folder. The native Android export.
 
     §11a: the native format is **one chat per file** and the chat title is the zip name,
@@ -127,7 +128,7 @@ def write_chat_txt(plan: Plan, world: World, out_dir: Path, rng: Random) -> list
         if thread.silent:
             continue
         safe = _safe(thread.title)
-        target = folder / f"{safe}.zip"
+        target = filer.file(folder, f"{safe}.zip")
         body = "\r\n".join(_txt(_rows(thread, world, rng))) + "\r\n"
         inner = f"WhatsApp Chat with {safe}/{_chat_id(thread)}/chat.txt"
         with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -137,7 +138,8 @@ def write_chat_txt(plan: Plan, world: World, out_dir: Path, rng: Random) -> list
     return made
 
 
-def write_underscore(plan: Plan, world: World, out_dir: Path, rng: Random) -> list[Path]:
+def write_underscore(plan: Plan, world: World, out_dir: Path, rng: Random,
+                     filer) -> list[Path]:
     """Older iPhone-style packaging: one zip per chat, `_chat.txt` at the archive root."""
     folder = out_dir / "whatsapp_underscore"
     folder.mkdir(parents=True, exist_ok=True)
@@ -145,7 +147,7 @@ def write_underscore(plan: Plan, world: World, out_dir: Path, rng: Random) -> li
     for thread in plan.threads:
         if thread.silent:
             continue
-        target = folder / f"{_safe(thread.title)}.zip"
+        target = filer.file(folder, f"{_safe(thread.title)}.zip")
         body = "\r\n".join(_txt(_rows(thread, world, rng))) + "\r\n"
         with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("_chat.txt", body)
@@ -153,7 +155,8 @@ def write_underscore(plan: Plan, world: World, out_dir: Path, rng: Random) -> li
     return made
 
 
-def write_bare(plan: Plan, world: World, out_dir: Path, rng: Random) -> list[Path]:
+def write_bare(plan: Plan, world: World, out_dir: Path, rng: Random,
+               filer) -> list[Path]:
     """Loose text files, one per chat: what a copy-pasted export looks like."""
     folder = out_dir / "whatsapp_bare"
     folder.mkdir(parents=True, exist_ok=True)
@@ -161,7 +164,7 @@ def write_bare(plan: Plan, world: World, out_dir: Path, rng: Random) -> list[Pat
     for thread in plan.threads:
         if thread.silent:
             continue
-        target = folder / f"WhatsApp Chat with {_safe(thread.title)}.txt"
+        target = filer.file(folder, f"WhatsApp Chat with {_safe(thread.title)}.txt")
         body = "\r\n".join(_txt(_rows(thread, world, rng))) + "\r\n"
         target.write_text(body, encoding="utf-8")
         made.append(target)
@@ -209,11 +212,12 @@ def _page(thread: Thread, world: World, rng: Random) -> str:
     return head + "".join(body) + "</div></div></body></html>"
 
 
-def write_html(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
+def write_html(plan: Plan, world: World, out_dir: Path, rng: Random,
+               filer) -> Path:
     """Many chats in one zip, one page each. The browser-extension dialect (§11b)."""
     folder = out_dir / "whatsapp_html"
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / "whatsapp-chats-20261117.zip"
+    target = filer.file(folder, "whatsapp-chats-20261117.zip")
     pages: list[tuple[str, str]] = []
     used: set[str] = set()
     for index, thread in enumerate(plan.threads):
@@ -247,11 +251,11 @@ WRITERS = {
 }
 
 
-def write(plan: Plan, world: World, out_dir: Path) -> list[Path]:
+def write(plan: Plan, world: World, out_dir: Path, filer) -> list[Path]:
     """Some dialects write one file per chat, so every result is normalised to a list."""
     rng = Random(f"{world.seed}:{plan.platform}")
     made: list[Path] = []
     for variant in config.VARIANTS[KIND]:
-        produced = WRITERS[variant](plan, world, out_dir, rng)
+        produced = WRITERS[variant](plan, world, out_dir, rng, filer)
         made.extend(produced if isinstance(produced, list) else [produced])
     return made

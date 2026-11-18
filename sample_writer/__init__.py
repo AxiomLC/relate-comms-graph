@@ -1,7 +1,8 @@
 """sample_writer — generate realistic fake platform downloads from real ones.
 
-    python -m sample_writer                  # in/ -> out/
-    python -m sample_writer --platform sms   # one platform
+    python -m sample_writer                  # wipe out/, write every platform
+    python -m sample_writer --platform sms   # wipe & write only SMS
+    python -m sample_writer add --seed 5     # write alongside out/ (name (1) on clash)
     python -m sample_writer clean
     python -m sample_writer capture          # in/ -> schemas/
 

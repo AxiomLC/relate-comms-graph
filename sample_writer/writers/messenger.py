@@ -94,10 +94,11 @@ def _layout(plan: Plan, world: World) -> dict[str, str]:
     return files
 
 
-def write_zip(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
+def write_zip(plan: Plan, world: World, out_dir: Path, rng: Random,
+              filer) -> Path:
     folder = out_dir / "messenger_zip"
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / "facebook-sampleuser-2026-11-14-1G300tUX.zip"
+    target = filer.file(folder, "facebook-sampleuser-2026-11-14-1G300tUX.zip")
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, body in _layout(plan, world).items():
             archive.writestr(name, body)
@@ -105,8 +106,9 @@ def write_zip(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
     return target
 
 
-def write_dir(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
-    folder = out_dir / "messenger_dir"
+def write_dir(plan: Plan, world: World, out_dir: Path, rng: Random,
+              filer) -> Path:
+    folder = filer.dir(out_dir, "messenger_dir")
     for name, body in _layout(plan, world).items():
         target = folder / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +119,6 @@ def write_dir(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
 WRITERS = {"zip": write_zip, "dir": write_dir}
 
 
-def write(plan: Plan, world: World, out_dir: Path) -> list[Path]:
+def write(plan: Plan, world: World, out_dir: Path, filer) -> list[Path]:
     rng = Random(f"{world.seed}:{plan.platform}")
-    return [WRITERS[v](plan, world, out_dir, rng) for v in config.VARIANTS[KIND]]
+    return [WRITERS[v](plan, world, out_dir, rng, filer) for v in config.VARIANTS[KIND]]

@@ -56,8 +56,9 @@ def _message(thread: Thread, world: World, is_owner: bool, body: str, index: int
     return msg
 
 
-def write_eml(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
-    root = out_dir / "email_eml"
+def write_eml(plan: Plan, world: World, out_dir: Path, rng: Random,
+              filer) -> Path:
+    root = filer.dir(out_dir, "email_eml")
     for thread in plan.threads:
         if thread.silent:
             continue
@@ -72,6 +73,6 @@ def write_eml(plan: Plan, world: World, out_dir: Path, rng: Random) -> Path:
 WRITERS = {"eml": write_eml}
 
 
-def write(plan: Plan, world: World, out_dir: Path) -> list[Path]:
+def write(plan: Plan, world: World, out_dir: Path, filer) -> list[Path]:
     rng = Random(f"{world.seed}:{plan.platform}")
-    return [WRITERS[v](plan, world, out_dir, rng) for v in config.VARIANTS[KIND]]
+    return [WRITERS[v](plan, world, out_dir, rng, filer) for v in config.VARIANTS[KIND]]

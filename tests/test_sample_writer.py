@@ -34,7 +34,11 @@ from sample_writer import config, plan as plan_module, world as world_module  # 
 def generated():
     """One generation, shared by the read-only assertions below."""
     out = Path(tempfile.mkdtemp(prefix="sw_"))
-    written = sample_writer.build(clean=False, log=None)
+    # `clean=True` so a wipe->write run always starts from a fresh out/. Without it,
+    # a manual `python -m sample_writer --seed N` left in out/ would merge that seed's
+    # files onto the default-seed generation and corrupt the tree (see the directory
+    # ingest test — two seed sets in one messenger_dir double the message count).
+    written = sample_writer.build(seed=config.SEED, clean=True, log=None)
     # `build` writes into config.OUT_DIR; copy the tree out so tests never touch it.
     shutil.copytree(config.OUT_DIR, out, dirs_exist_ok=True)
     yield out

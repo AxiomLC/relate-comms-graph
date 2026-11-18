@@ -1,31 +1,40 @@
-"""build / capture / clean. See `config` for every knob."""
+"""build / add / capture / clean. See `config` for every knob."""
 from __future__ import annotations
 
 import argparse
 import shutil
 import time
+from collections import defaultdict
+from collections.abc import Callable
+from pathlib import Path
 from random import Random
-from typing import Callable
 
 from . import config, plan as plan_module, world as world_module
+from .uniquify import Filer
 from .writers import MODULES
 
 
-def build(seed: int | None = None, platforms: list[str] | None = None,
-          clean: bool = True, huge: bool = False,
-          log: Callable[[str], None] | None = None) -> list[str]:
-    """Generate every chosen platform into `out/<platform>/`.
-
-    One output. There are no divisions: every mandated shape from `UNDESIRABLES.md` §12
-    is present in every run, which is what a real export looks like.
-    """
-    say = log or (lambda _line: None)
-    started = time.perf_counter()
-
+def _make_world(seed: int | None, say: Callable[[str], None]):
     world = world_module.build(seed)
     say(f"world      seed={world.seed} people={len(world.people)} "
         f"cross-platform={world.multi_platform_share():.0%}")
+    return world
 
+
+def build(seed: int | None = None, platforms: list[str] | None = None,
+          clean: bool = True, huge: bool = False, filer: Filer | None = None,
+          log: Callable[[str], None] | None = None) -> list[str]:
+    """Write the chosen platforms into `out/<platform>/`.
+
+    `clean=True` (the default) wipes each chosen platform before writing — this replaces
+    the set. `clean=False` with an enabled `filer` is `add`: no wipe, and clashing names
+    become `name (1)` so a second set sits alongside the first without clobbering it.
+    """
+    say = log or (lambda _line: None)
+    started = time.perf_counter()
+    filer = filer or Filer(False)
+
+    world = _make_world(seed, say)
     chosen = platforms or [p for p in config.PLATFORMS if p in MODULES]
 
     if clean:
@@ -48,9 +57,23 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
 
         out_dir = config.OUT_DIR / module.KIND
         out_dir.mkdir(parents=True, exist_ok=True)
-        for path in module.write(plan_obj, world, out_dir):
-            written.append(str(path))
-            say(f"{'':<10} -> {path.relative_to(config.OUT_DIR)}")
+        produced = module.write(plan_obj, world, out_dir, filer)
+        written.extend(str(p) for p in produced)
+        # Aggregate per artifact variant: a whatsapp dialect writes one file per chat,
+        # which is 20+ lines of noise. One summary line per variant keeps the log usable.
+        by_variant: dict[Path, list[Path]] = defaultdict(list)
+        for p in produced:
+            by_variant[p.parent if p.is_file() else p].append(p)
+        for folder, paths in by_variant.items():
+            rel = folder.relative_to(config.OUT_DIR)
+            if len(paths) == 1:
+                only = paths[0]
+                if only.is_dir():
+                    say(f"{'':<10} -> {rel}\\  ({len(list(only.rglob('*')))} files)")
+                else:
+                    say(f"{'':<10} -> {rel / only.name}")
+            else:
+                say(f"{'':<10} -> {rel}\\  ({len(paths)} files)")
 
     notes = plan_module.assert_contract(plans, huge=huge)
     for note in notes:
@@ -60,6 +83,20 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
     say(f"done       {len(written)} files, "
         f"{plan_module.total_messages(plans)} messages, {elapsed:.2f}s -> {config.OUT_DIR}")
     return written
+
+
+def add(seed: int | None = None, platforms: list[str] | None = None,
+        huge: bool = False, log: Callable[[str], None] | None = None) -> list[str]:
+    """Write a new set alongside anything already in `out/`, never clobbering.
+
+    Fixed names (all platforms share `result.json`, `Outlook.pst`, …) and any thread that
+    repeats become `name (1)`, `name (2)`, … Windows-style. The user picks what to drag
+    into the app; a `clean` run is the way to start an out/ folder from scratch.
+    """
+    say = log or (lambda _line: None)
+    say("add        no wipe — writing alongside existing out/ (name (1) on clash)")
+    return build(seed, platforms, clean=False, huge=huge,
+                 filer=Filer(True), log=say)
 
 
 def clean() -> None:
@@ -74,15 +111,21 @@ def clean() -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sample_writer")
     parser.add_argument("command", nargs="?", default="build",
-                        choices=["build", "clean", "capture", "knobs"])
-    parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--platform", action="append", dest="platforms", default=None)
+                        choices=["build", "add", "clean", "capture", "knobs"])
+    parser.add_argument("--seed", type=int, default=None,
+                        help="world seed (default: config.SEED)")
+    parser.add_argument("--default", action="store_true",
+                        help="explicit: default seed, every platform, wipe->write")
+    parser.add_argument("--platform", nargs="+", dest="platforms", default=None,
+                        help="only these platforms (space-separated, e.g. --platform sms telegram)")
     parser.add_argument("--huge", action="store_true",
                         help="also emit the 1,600-message thread (UNDESIRABLES §9b)")
-    parser.add_argument("--keep", action="store_true",
-                        help="do not wipe out/<platform>/ before writing")
     parser.add_argument("--in", dest="in_dir", default=None)
     args = parser.parse_args(argv)
+
+    if args.default:
+        args.seed = None
+        args.platforms = None
 
     if args.command == "clean":
         clean()
@@ -101,8 +144,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        build(args.seed, args.platforms, clean=not args.keep, huge=args.huge,
-              log=print)
+        if args.command == "build":
+            # build is the wipe->write command; the default of `clean=True` replaces
+            # the chosen platforms as a set.
+            build(seed=args.seed, platforms=args.platforms, huge=args.huge, log=print)
+        else:  # add
+            add(seed=args.seed, platforms=args.platforms, huge=args.huge, log=print)
     except AssertionError as error:
         # A missing mandated shape is a generator bug, not a user error. Say what and
         # where, without a traceback.
