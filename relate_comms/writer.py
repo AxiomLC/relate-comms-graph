@@ -65,15 +65,65 @@ BATCH_SIZE = 500
 # must look different from a known identity at a glance.
 MATCH_THRESHOLD = 0.95
 
+# One `Correspondent` per canonical name, **not** per (platform, name). The key is
+# `person:<canonical>`, so the same person spelled the same way on Telegram and on
+# Messenger is one node with two `WITH` edges. Placeholders are the exception and keep
+# their platform prefix — see `write_correspondents`.
+#
+# **This statement writes only per-platform facts.** `handle_<p>` and `seen_<p>` are
+# that platform's spelling and its first sighting; `email`/`phone_e164` are the first
+# non-null. Everything *derived* from those — `platform`, `display_name`,
+# `first_seen_utc`, `platforms`, `platform_label`, `:Merged` — is recomputed by
+# `_reconcile` after the rows land.
+#
+# The split is not stylistic. Relate evaluates every row of an `UNWIND` against the
+# node as it stood **before** the statement, so two rows for one key both read the old
+# value and the last row wins. Accumulating in Cypher therefore cannot work; the
+# derived properties have to be computed from the finished flat facts.
 _CORRESPONDENT_CYPHER = (
     "UNWIND $rows AS row "
     "MERGE (c:Correspondent {key: row.key}) "
-    "SET c.display_name = row.display_name, c.platform = row.platform, "
-    "    c.handle = row.handle, c.email = row.email, c.phone_e164 = row.phone_e164 "
+    # `c[row.seen_prop] IS NULL` is the "never written" test for this platform, not
+    # `first_seen_utc IS NULL`: a participant in a thread with no messages has no
+    # timestamp, and keying on the timestamp would let every batch overwrite them.
+    "SET c[row.handle_prop] = CASE WHEN c[row.seen_prop] IS NULL "
+    "        OR (row.first_seen_utc IS NOT NULL AND row.first_seen_utc < c[row.seen_prop]) "
+    "    THEN row.handle ELSE c[row.handle_prop] END "
+    "SET c[row.seen_prop] = CASE WHEN c[row.seen_prop] IS NULL "
+    "        OR (row.first_seen_utc IS NOT NULL AND row.first_seen_utc < c[row.seen_prop]) "
+    "    THEN coalesce(row.first_seen_utc, c[row.seen_prop]) ELSE c[row.seen_prop] END "
+    "SET c.email = coalesce(c.email, row.email) "
+    "SET c.phone_e164 = coalesce(c.phone_e164, row.phone_e164) "
+    "SET c.merged_by = coalesce(c.merged_by, row.merged_by) "
     "WITH c, row "
     "MATCH (t:Thread {key: row.thread_key}) "
     "MERGE (t)-[:WITH]->(c)"
 )
+
+# `canon` evidence -> the `merged_by` value the audit query reads. Anything that is
+# not a phone, an address or a nickname is a name match, which is what `exact_name`
+# means here: the canonical forms were already identical.
+_MERGED_BY = {"phone": "phone", "email": "email", "nickname": "nickname"}
+
+# Per-platform spellings and first sightings are stored **flat**, not as a map:
+# Relate rejects a map property (`DataError: InvalidPropertyType`). The plan's
+# `handles: {telegram: "…"}` shape is assembled by `handles_from()` at the API
+# boundary, where a dict is free.
+HANDLE_PREFIX = "handle_"
+SEEN_PREFIX = "seen_"
+
+
+def handles_from(properties: dict[str, Any]) -> dict[str, str]:
+    """`{handle_telegram: "Axiom", handle_messenger: "David"}` -> `{telegram: …, messenger: …}`.
+
+    The API layer calls this so a caller sees the map the schema promises without the
+    store having to hold one.
+    """
+    return {
+        name[len(HANDLE_PREFIX):]: value
+        for name, value in (properties or {}).items()
+        if name.startswith(HANDLE_PREFIX) and value
+    }
 
 
 # The label the UI shows, mirroring `PLATFORM_LABELS` in
@@ -96,24 +146,6 @@ PLATFORM_TITLE_LABELS = {
 def platform_title_label(platform: str) -> str:
     return PLATFORM_TITLE_LABELS.get((platform or "").lower(), platform or "")
 
-
-def correspondent_key(platform: str, name: str) -> str:
-    """Stable per (platform, person), on the **canonical** name.
-
-    **Not scoped to the thread.** Keying by thread gave `David Sartori` four separate
-    nodes — one per thread he appeared in — because Messenger's placeholder account
-    shows up in 31 different threads. The row is still attached with `WITH` per
-    thread; only the identity is shared, so a person who appears in ten threads is
-    one node with ten `WITH` edges.
-
-    The name is flattened first, so `Dave Sartori` and `david sartori` are one node
-    rather than two. That fan-in is the whole point: fifteen threads with one person
-    must read as fifteen edges into one node, not fifteen disconnected pairs.
-    """
-    from .canon import canonical
-
-    record = canonical(name, kind="person")
-    return f"{platform}:{record.key or name.strip()}"
 
 
 def write_correspondents(
@@ -140,6 +172,19 @@ def write_correspondents(
 
     Names are flattened through `canon` before they become keys, so `Dave Sartori`
     and `david sartori` are one node with two `WITH` edges rather than two nodes.
+
+    **The key is `person:<canonical>`, not `<platform>:<canonical>`.** Dropping the
+    platform prefix is what lets one person be one node across sources. It does not
+    merge a phone-only contact with a named one — those keys differ and stay apart
+    until `link.py` (edit 4) folds them.
+
+    **Placeholders keep the platform prefix.** `canon` returns
+    `placeholder:facebook user`; under a bare `person:` key Messenger's `Facebook
+    user` and LinkedIn's `LinkedIn Member` would become one node standing for two
+    different platforms' placeholder accounts.
+
+    `first_seen_utc` is the earliest message timestamp per (platform, canonical),
+    built from `result.messages` — the participant list carries no time at all.
     """
     from .canon import canonical
 
@@ -147,7 +192,19 @@ def write_correspondents(
     if owner:
         forms.append(owner)
 
+    first_seen = _first_seen_by_person(result, forms)
+
+    # One row per (thread, person), but the *per-platform* facts are decided once per
+    # (key, platform). Relate evaluates every row of an `UNWIND` against the node as
+    # it stood **before** the statement, so two rows for one key both see the old
+    # value and the last row wins. Aggregating here means every row for a key carries
+    # the same answer, and the statement is order-independent.
+    #
+    # The cache is keyed by `(key, platform)`, not by `key`: a person on two platforms
+    # needs a row for each, carrying that platform's own `handle_<p>` / `seen_<p>`.
     rows: list[dict[str, Any]] = []
+    facts: dict[tuple[str, str], dict[str, Any]] = {}
+    keys: set[str] = set()
     for chat in result.chats:
         tkey = thread_key_for(chat)
         for name in chat.participant_names:
@@ -159,38 +216,141 @@ def write_correspondents(
             # The Owner is never a Correspondent, on any platform, ever.
             if record.is_owner:
                 continue
+
             # A placeholder is not a person. It is attached to a per-platform
             # pseudo-node so those threads cluster instead of floating unconnected.
             if record.is_placeholder:
-                rows.append({
-                    "key": f"{chat.platform}:{record.key}",
-                    "display_name": record.display,
+                key = f"{chat.platform}:{record.key}"
+            else:
+                key = f"person:{record.key or clean}"
+            keys.add(key)
+
+            slot = (key, chat.platform)
+            fact = facts.get(slot)
+            if fact is None:
+                fact = facts[slot] = {
+                    "key": key,
                     "platform": chat.platform,
                     "handle": record.display,
-                    "email": None,
-                    "phone_e164": None,
-                    "thread_key": tkey,
-                })
-                continue
-
-            # One row per (thread, person): the MERGE is on `key`, so a repeat across
-            # threads attaches a second `WITH` edge to the same node rather than
-            # minting a duplicate.
-            rows.append({
-                "key": f"{chat.platform}:{record.key}",
-                "display_name": record.display,
-                "platform": chat.platform,
-                "handle": record.display,
-                "email": record.key if record.evidence == "email" else None,
-                "phone_e164": record.key if record.evidence == "phone" else None,
-                "thread_key": tkey,
-            })
+                    "handle_prop": f"{HANDLE_PREFIX}{chat.platform}",
+                    "seen_prop": f"{SEEN_PREFIX}{chat.platform}",
+                    "first_seen_utc": first_seen.get((chat.platform, record.key)),
+                    "merged_by": _MERGED_BY.get(record.evidence, "exact_name"),
+                    "email": record.key if record.evidence == "email" else None,
+                    "phone_e164": record.key if record.evidence == "phone" else None,
+                }
+            rows.append({**fact, "thread_key": tkey})
 
     cur = conn.cursor()
     for batch in _chunks(rows):
         cur.execute(_CORRESPONDENT_CYPHER, {"rows": batch})
+    _reconcile(cur, keys)
     conn.commit()
-    return {"correspondents": len(rows)}
+    return {"correspondents": len(keys)}
+
+
+def _first_seen_by_person(
+    result: IngestResult, owner_forms: Iterable[str],
+) -> dict[tuple[str, str], str]:
+    """`(platform, canonical) -> earliest `ts_utc`, as the store's ISO string.
+
+    The participant list says who was in a thread, never when. The only timestamp
+    the writer has is on the messages, so this walks them once and keeps the
+    minimum per sender. A sender who is the Owner is skipped for the same reason
+    the Owner is skipped above.
+    """
+    from .canon import canonical
+
+    forms = list(owner_forms)
+    earliest: dict[tuple[str, str], Any] = {}
+    for message in result.messages:
+        name = (message.sender_name or "").strip()
+        if not name:
+            continue
+        record = canonical(name, kind="person", owner=forms)
+        if record.is_owner or not record.key:
+            continue
+        slot = (message.platform, record.key)
+        current = earliest.get(slot)
+        if current is None or message.ts_utc < current:
+            earliest[slot] = message.ts_utc
+    return {slot: to_utc_string(ts) for slot, ts in earliest.items()}
+
+
+# The order the label lists platforms in when two first sightings tie. A tie is
+# possible (a thread with no messages has no timestamp at all), and a stable order
+# keeps the label from flickering between ingests.
+_PLATFORM_ORDER = tuple(PLATFORM_TITLE_LABELS)
+
+
+def _reconcile(cur: Any, keys: Iterable[str]) -> None:
+    """Recompute every derived property from the flat per-platform facts.
+
+    Runs after the rows have landed, because a node's `platforms` list depends on
+    stamps written by *other* batches and a batch cannot see them. It is idempotent:
+    it reads only `seen_<p>` and `handle_<p>`, which the row statement owns.
+
+    What it decides, and why each rule is what it is:
+
+      platforms      every platform with a `seen_<p>` stamp, in date order.
+      platform       the first of those. The platform filter reads this single
+                     string, so it must never be a joined label.
+      display_name   the spelling from the earliest platform, so the label does not
+                     depend on which export was ingested first.
+      first_seen_utc the minimum stamp across platforms.
+      platform_label `Telegram-WhatsApp-Fcbk Mssgr`, in the same date order.
+      :Merged        set when more than one platform is present, removed when not.
+                     Additive, so `MATCH (c:Correspondent)` still finds it.
+    """
+    keys = sorted(set(keys))
+    if not keys:
+        return
+
+    rows = []
+    cur.execute(
+        "MATCH (c:Correspondent) WHERE c.key IN $keys RETURN properties(c) AS p",
+        {"keys": keys},
+    )
+    for record in cur.fetchall():
+        props = record["p"]
+        seen = {
+            platform: props[f"{SEEN_PREFIX}{platform}"]
+            for platform in _PLATFORM_ORDER
+            if props.get(f"{SEEN_PREFIX}{platform}")
+        }
+        # A platform with no timestamp still counts as present — it is in the list,
+        # it just sorts last. `platforms` is therefore the union of the stamps and
+        # the handles, not the stamps alone.
+        present = [
+            platform for platform in _PLATFORM_ORDER
+            if props.get(f"{SEEN_PREFIX}{platform}") or props.get(f"{HANDLE_PREFIX}{platform}")
+        ]
+        present.sort(key=lambda p: (seen.get(p) is None, seen.get(p) or "",
+                                    _PLATFORM_ORDER.index(p)))
+        if not present:
+            continue
+
+        first = present[0]
+        rows.append({
+            "key": props["key"],
+            "platform": first,
+            "platforms": present,
+            "display_name": props.get(f"{HANDLE_PREFIX}{first}") or props.get("display_name"),
+            "first_seen_utc": min(seen.values()) if seen else None,
+            "platform_label": "-".join(PLATFORM_TITLE_LABELS[p] for p in present),
+            "merged": len(present) > 1,
+        })
+
+    cur.execute(
+        "UNWIND $rows AS row MATCH (c:Correspondent {key: row.key}) "
+        "SET c.platform = row.platform, c.platforms = row.platforms, "
+        "    c.display_name = row.display_name, "
+        "    c.first_seen_utc = row.first_seen_utc, "
+        "    c.platform_label = row.platform_label "
+        "FOREACH (_ IN CASE WHEN row.merged THEN [1] ELSE [] END | SET c:Merged) "
+        "FOREACH (_ IN CASE WHEN row.merged THEN [] ELSE [1] END | REMOVE c:Merged) ",
+        {"rows": rows},
+    )
 
 
 def thread_key_for(chat: Chat) -> str:

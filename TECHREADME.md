@@ -15,7 +15,7 @@ Use these spellings in code, in Cypher, in the UI and in docs.
 | Term | Code / store | Definition | Deliberately NOT |
 |---|---|---|---|
 | **Owner** | `identity.py`, `store/profile/identity.json` | The account owner. Per platform, persisted, with `tz_offsets`. | Not a node. Not a `Correspondent`. |
-| **Correspondent** | `(:Correspondent {key, …})`, key `<platform>:<name>` | The other party, **on one platform**. A fact from the export. | Not one human across platforms. Not an extracted entity. |
+| **Correspondent** | `(:Correspondent {key, …})`, key `person:<canonical>` | The other party. A fact from the export, folded across platforms **by name only** — a phone-only contact and a named one stay apart until `link.py`. | Not one human across platforms (that is `link.py`). Not an extracted entity. |
 | **Platform** | `platform` property on every node; `_PLATFORMS` in `tools.py` | The source: `telegram`, `messenger`, `email`, `linkedin`, `whatsapp`, `outlook`, `sms`. | Not the export file. Not the provider — Outlook-over-IMAP is `email`. |
 | **Thread** | `(:Thread {key, platform, title, is_group})` | One conversation. | Not a message. |
 | **Message** | `(:Message {key, platform, chat_id, message_id, …})` | One message. | Not a thread. |
@@ -25,8 +25,14 @@ Ingest path — three more, not interchangeable: **Download** (the user's file, 
 (`paths.real_dir()`, **one queue** — a sample is just a file dropped in it).
 
 **Not terms yet:** `Person`, `Place`, `Organization`, `Product` name a future extraction
-step — no node type, no writer, no query. `resolution.collect/merge` **are** called and
-their counts land in the report, then the result is discarded.
+step — the queries exist (§4) but no writer fills them, so they hold zero rows.
+`resolution.collect/merge` **are** called and their counts land in the report, then the
+result is discarded.
+
+**The kind names are the node type names, lowercased.** `canon.KINDS` is
+`("person", "organization", "place", "product")` and `tools.ENTITY_KINDS` is derived
+from it. `thing` and `company` are gone; `canon.canonical()` raises on an unknown kind
+rather than falling through to the `person` branch.
 
 ### Platform identity table
 
@@ -73,7 +79,7 @@ back; importing the library must not pull in FastAPI.
 | `schema.py` | Frozen dataclasses: `Message`, `Chat`, `AttachmentRef`, `IngestResult`. |
 | `paths.py` | `spool_dir()`, `real_dir()`, `store_path()`, `profile_dir()`, `ensure_layout()`. |
 | `ingest.py` | The pipeline: `_parser_for()`, `detect_platform()`, `discover()`, `parse_batches()`, `ingest()`, `preview()`, `stage()`, `_drop_spam_threads()`. |
-| `writer.py` | Cypher writer. `write()` (UNWIND 500), `write_correspondents()`, `thread_display_title()`, `verify_present()`. |
+| `writer.py` | Cypher writer. `write()` (UNWIND 500), `write_correspondents()` + `_reconcile()`, `thread_display_title()`, `verify_present()`. |
 | `resolution.py` | Phones/emails/names matching. **Unwired** — counts reported, result discarded. |
 | `scrub.py` | `Verdict` (keep/hide/block), `AliasMap` (memory-only), Luhn check. |
 | `identity.py` · `manifest.py` | Who the **Owner** is (with `tz_offsets`) · what has been ingested (sampled fingerprint, a shortcut never the authority). |
@@ -144,18 +150,62 @@ verify_present(conn, result) -> tuple[bool, dict]
 (:Message       {key, platform, chat_id, message_id, ts_utc, body,
                  has_attachments, is_self, sender_name, sender_id, raw_kind})
 (:Attachment    {key, filename_scrubbed, mime, sha256, size})
-(:Correspondent {key, display_name, platform, handle, email, phone_e164})
+(:Correspondent {key, display_name, platform, platforms, platform_label,
+                 first_seen_utc, merged_by, email, phone_e164,
+                 handle_<platform>, seen_<platform>})
 
 (:Message)-[:IN]->(:Thread)        (:Message)-[:REPLY_TO]->(:Message)
 (:Message)-[:HAS_ATTACHMENT]->(:Attachment)
 (:Thread)-[:WITH]->(:Correspondent)
 ```
 
-**Designed but unwritten — do not query against these:** `Identity`, `MATCHED_BY`,
-`POSSIBLY`, `SENT`, `Place`, `Company`, `Product`, `MENTIONS`, `Draft`.
+**`Correspondent` is keyed `person:<canonical>`.** Two spellings of one name on one
+platform already collapsed via `canon`; dropping the platform prefix means the same
+canonical name on two platforms is now **one node** with a `WITH` edge per thread.
+Placeholders keep their platform prefix (`messenger:placeholder:facebook user`) so
+`Facebook user` and `LinkedIn Member` never fold into one node.
 
-`Correspondent` is the only identity term. `David Sartori` is currently three
-Correspondent nodes, and that is correct — merging one human across platforms is unsolved.
+| Property | Rule |
+|---|---|
+| `platform` | the **first** platform by date — a single string, because the filter reads it |
+| `platforms` | every platform, date order. **The filter reads this list.** |
+| `platform_label` | `Telegram-WhatsApp-Fcbk Mssgr`, same order |
+| `first_seen_utc` | earliest message timestamp across platforms |
+| `merged_by` | `phone` / `email` / `nickname` / `exact_name` |
+| `handle_<p>` · `seen_<p>` | that platform's spelling and first sighting, stored **flat** |
+
+**`primaryPlatform` and `dominance` are query-time, not stored.** `graph_slice`
+returns them on every Correspondent: `primaryPlatform` is the platform with the most
+**messages**, `dominance` is its share (0.0–1.0). They are deliberately *not* the same
+as `platform` — that is first-by-**date**, so the filter and label never drift between
+ingests. Measured on the sample store: 17 of 34 merged nodes lean toward a platform
+other than their first-by-date one, so the two fields carry different information.
+
+The canvas uses `dominance` as leash length: a high-dominance bridge hugs its
+platform, a 50/50 bridge drifts between them. `platform` cannot serve that purpose.
+
+`:Merged` is an additive label on a node spanning more than one platform. It is
+filtered out of `types_present()` — it is a marker, not a node type.
+
+**Relate rejects map properties** (`InvalidPropertyType`), so `handles` is stored as
+`handle_<platform>` and assembled by `writer.handles_from()` at the API edge.
+
+**Relate evaluates every row of an `UNWIND` against the node as it stood before the
+statement.** Accumulating in Cypher therefore cannot work — the last row wins. The
+row statement writes only per-platform facts; `writer._reconcile()` computes the
+derived properties afterwards.
+
+**Queryable but empty — the queries exist, the rows do not:** `Person`, `Place`,
+`Organization`, `Product` (`tools.ENTITY_KINDS`). Each has a node query, a count
+query, three sort entries and a `MENTIONS_<KIND>` edge query. They return 0 until
+body-entity extraction lands. They are **not** in `DRAWABLE_NODE_TYPES`.
+
+**Designed but unwritten — do not query against these:** `Identity`, `MATCHED_BY`,
+`SENT`, `Draft`.
+
+`POSSIBLY` has an `_EDGE_QUERIES` entry (so it draws the moment `link.py` writes one)
+but zero rows today. Merging a phone-only contact with a named one is still unsolved —
+that is `link.py` (edit 4), not the key change.
 
 ## 5. Invariants — break these and things fail silently
 
@@ -164,6 +214,9 @@ Correspondent nodes, and that is correct — merging one human across platforms 
 | `Message.key = platform:chat_id:message_id` | Makes re-ingest idempotent. Never an array index or timestamp. |
 | `ts_utc` everywhere | Telegram/WhatsApp/Messenger export wall-clock with no offset. |
 | **A platform is a source, not a provider** | `outlook` is a `.pst`; Outlook-over-IMAP is `email`. Different provenance, different keys. |
+| **A merged node is filtered on `platforms`, never `platform`** | `platform` is one string (first by date). Testing it hides a merged node whenever the user filters by any other platform. |
+| **Derived Correspondent properties are computed after the rows land** | Relate reads every `UNWIND` row against the pre-statement node, so accumulating in Cypher lets the last row win. |
+| **A kind name is a node type name, lowercased** | `canon.KINDS` drives `tools.ENTITY_KINDS`. An unknown kind raises — the pipeline's last branch is `person`, so a typo would silently strip credentials off a product name. |
 | **The owner is never a Correspondent** | An adapter that knows the owner must prune them from `participant_names` under both forms. |
 | **The tz offset is part of the key** | `ts_utc` hashes into the key. Stored per platform; changing it on a populated store is refused. |
 | `MERGE` on `key`, never `CREATE` | Re-ingest must not duplicate. |

@@ -9,11 +9,16 @@ Durable facts: [`TECHREADME.md`](TECHREADME.md). Human overview: [`README.md`](R
 
 ## Where it stands
 
-`pytest tests -q` → **360 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
+`pytest tests -q` → **380 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
 
 **Live store:** rebuilt from the sample variants — **1,981 messages**, and email **is** present
 (128 messages / 20 threads / 20 correspondents). Per platform: telegram 851 · messenger 657 ·
 sms 138 · email 128 · whatsapp 108 · linkedin 93 · outlook 6.
+
+> **The live store predates edits 1–2.** Its Correspondent keys are still
+> `<platform>:<name>`. Rebuilding it is what applies the new `person:<canonical>` keys and
+> produces the merged nodes — measured on the sample variants: **93 correspondents, 34
+> merged**. Nothing is broken; the store is just old. Truncate and re-ingest when convenient.
 
 > **Currently testing ingest.** Drag-and-drop and folder-pick do **not** show what they staged
 > (see *Ingest UI — known broken*). **Pasting a path works**, which is how email was ingested:
@@ -42,11 +47,30 @@ source of truth: the four ordered edits (node structure → `tools.py` → UI no
 cross-connect), what is verified versus planned, the locked thread-title schema, the knobs,
 and the naming decisions. Read that before starting anything.
 
+**Edits 1 and 2 are done** (2026-11-19).
+
+*Edit 1* — `Correspondent.key` is `person:<canonical>`; placeholders keep their platform
+prefix; `platforms` / `platform_label` / `first_seen_utc` / `merged_by` accumulate via
+`writer._reconcile()`; `:Merged` is set and filtered out of `types_present()`. Verified on
+the sample variants: **93 correspondents, 34 merged across platforms**.
+
+*Edit 2* — `_platform_clause()` reads `platforms`; `_NODE_ALIAS` replaces the `if` chain;
+`Person` / `Place` / `Organization` / `Product` have node, count, sort and
+`MENTIONS_<KIND>` edge queries (all returning 0 until extraction lands); `POSSIBLY` has an
+edge query; `graph_slice` returns `primaryPlatform` and `dominance` per Correspondent.
+
 In one line each, what is left after it:
 
-1. **Cross-connect merge (edit 4)** — the one that produces merged Correspondent nodes. The
-   samples are built for it: fuzzed spellings across and within platforms, 8–12% of the cast
-   on more than one platform.
+1. **Cross-connect merge (edit 4)** — **next up.** The one that folds nodes whose **keys
+   differ** (a WhatsApp phone-only contact vs a Telegram named one). Edit 1 folds only
+   identical canonical names. The samples are built for it: fuzzed spellings across and
+   within platforms, 8–12% of the cast on more than one platform. `POSSIBLY` already has an
+   edge query, so the edge draws the moment `link.py` writes one.
+1b. **UI node types (edit 3)** — `GraphCanvas` still tests `node.type === "Thread"`
+   strings. Independent of edit 4; either order works. The platform filter is already fixed.
+1c. **Canvas gravity / compound bags** — `CytoGravityRecommend.md`. Needs `parent` on
+   elements before any fcose parameter does anything; `dominance` is already on the API for
+   the leash.
 2. **Messenger group titles** — 117 of 134 real threads are groups; the adapter names each
    after a participant instead of the `<h1>`. The samples happen to be right for one group
    and wrong for the rest, so **the samples will not catch this**.
@@ -179,6 +203,27 @@ no other route does.
 
 Everything before **2026-11-18** is in `git log`; only the current round is listed.
 
+- **2026-11-19** — **Naming settled: `canon.KINDS` is the single source.** `kind="thing"`
+  renamed to `kind="product"`; `canon.canonical()` now raises on an unknown kind instead
+  of silently taking the `person` branch (which would strip credentials and resolve
+  nicknames on a product name). `tools.ENTITY_KINDS` is derived from `canon.KINDS`, so the
+  store label `Product` and the kind `product` cannot drift. `Company` appears nowhere.
+- **2026-11-19** — **Edit 2 landed: the tool layer knows the new kinds.** `_NODE_ALIAS`
+  replaces the `if` chain; `Person` / `Place` / `Organization` / `Product` each get a node
+  query, a count query, three sort entries and a `MENTIONS_<KIND>` edge query — all
+  returning 0 until extraction lands, and none in `DRAWABLE_NODE_TYPES`. `POSSIBLY` gets
+  an edge query so it draws the moment `link.py` writes one. `graph_slice` now returns
+  `primaryPlatform` and `dominance` per Correspondent, derived from a two-stage
+  per-platform message count. `primaryPlatform` is **most messages**; `platform` stays
+  **first by date** — 17 of 34 merged nodes on the sample store disagree, so they are
+  genuinely two fields.
+- **2026-11-19** — **Edit 1 landed: `Correspondent.key` is `person:<canonical>`.** One
+  canonical name on two platforms is one node. Placeholders stay platform-scoped. New
+  properties `platforms`, `platform_label`, `first_seen_utc`, `merged_by`, plus flat
+  `handle_<p>` / `seen_<p>` (Relate rejects map properties). `:Merged` marks a node on
+  more than one platform and is filtered out of `types_present()`. The platform filter
+  and the canvas filter now read `platforms`, not `platform`. Measured on the sample
+  variants: 93 correspondents, 34 merged.
 - **2026-11-19** — `sample_writer` fuzz: sender labels and body entities can now carry
   different spellings per platform (`Chris`/`Christopher`, `Celestica`/`Celstica`,
   `North Dakota`/`N Dakota`). Derived by rule (`sample_writer/fuzz.py`); one small nickname

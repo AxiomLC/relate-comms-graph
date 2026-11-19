@@ -80,7 +80,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Literal, Union, get_args, get_origin, get_type_hints
 
-from . import paths
+from . import canon, paths
 
 
 class Access(str, Enum):
@@ -205,11 +205,18 @@ def _platform_clause(alias: str, params: dict[str, Any]) -> str:
     `alias` is the variable the platform property lives on. The parameter is always
     named `$platforms`, so a caller can add the clause to any MATCH without
     inventing a name.
+
+    **A Correspondent is tested against `platforms`, not `platform`.** A merged node
+    keeps one `platform` (the first by date) and lists the rest in `platforms`;
+    testing the single string would hide it whenever the user filtered by any
+    platform but the first. Every other node type has only `platform`, so the
+    predicate falls back to it — `coalesce` makes one clause serve both.
     """
     if _PLATFORMS is None:
         return ""
     params["platforms"] = list(_PLATFORMS)
-    return f"{alias}.platform IN $platforms"
+    return (f"ANY(p IN $platforms "
+            f"    WHERE p IN coalesce({alias}.platforms, [{alias}.platform]))")
 
 
 def _connect(*, read_only: bool = True) -> Any:
@@ -372,7 +379,32 @@ def _snippet(body: str, needle: str, width: int = 160) -> str:
 
 # The canvas draws these and nothing else (UI-Cytoscape.md §3): 955 threads is
 # drawable, 12,499 messages is not. Asking for `Message` is explicit, never default.
+#
+# The four extracted kinds are **queryable but not drawn by default**: they have zero
+# rows until body-entity extraction lands, and the UI's `NODE_TYPES` config does not
+# know them yet (edit 3). They are in `_NODE_QUERIES` so a caller can ask for them
+# explicitly and so the queries exist before the writer that fills them.
 DRAWABLE_NODE_TYPES: tuple[str, ...] = ("Thread", "Correspondent")
+
+# The four kinds a body-entity extractor will produce. One shape, one query, one
+# alias — the only thing that differs is the label. `Correspondent` is deliberately
+# not in this set: it is written by ingest, not extracted, and it has its own query
+# because `thread_count` is counted through `WITH`.
+#
+# Derived from `canon.KINDS` so the node type and the canonicalisation kind cannot
+# drift apart: `canon` says `product`, the store label says `Product`, and there is
+# exactly one place that mapping is written.
+ENTITY_KINDS: tuple[str, ...] = tuple(kind.capitalize() for kind in canon.KINDS)
+
+# Which variable each node query binds. A dict rather than an `if` chain: the chain
+# grew a branch per type and would have needed a fourth for the entity kinds.
+_NODE_ALIAS: dict[str, str] = {
+    "Thread": "t",
+    "Correspondent": "c",
+    "Message": "m",
+    "Attachment": "a",
+    **{kind: "e" for kind in ENTITY_KINDS},
+}
 
 # Node queries are templates: `{where}` is the source-filter predicate (or empty),
 # `{order}` is the sort chosen by the caller. Every one of them filters on the node's
@@ -403,11 +435,32 @@ _NODE_QUERIES: dict[str, str] = {
         # `thread_count` is what tiers a correspondent: it is the only quantity the
         # store has for one. Counted through `WITH`, so a person in ten threads is
         # ten, not the number of messages they sent.
+        #
+        # `platforms` and `platform_label` are returned because a merged node spans
+        # more than one source: the canvas filters on the list, and the Viewer shows
+        # the label. `platform` stays the single first-by-date string the filter used
+        # to read, so an older client still draws something sensible.
+        #
+        # `per_platform` is the raw material for `primaryPlatform` / `dominance`,
+        # which are derived in Python (`_with_dominance`). It has to be a two-stage
+        # aggregation: messages are counted per thread, then summed per platform.
+        # A single `count(m)` would count a message once per `WITH` edge it reaches.
         "MATCH (c:Correspondent) "
         "{where}"
         "OPTIONAL MATCH (t:Thread)-[:WITH]->(c) "
+        "OPTIONAL MATCH (t)<-[:IN]-(m:Message) "
+        "WITH c, t.platform AS p, count(m) AS n, count(DISTINCT t) AS tc "
+        # The `WHERE` drops the null row an `OPTIONAL MATCH` emits for a correspondent
+        # with no threads at all — otherwise `per_platform` holds one empty entry.
+        #
+        # The braces are doubled because this template goes through `str.format`,
+        # which would otherwise read `{platform: p, ...}` as a placeholder.
+        "WITH c, [x IN collect({{platform: p, messages: n, threads: tc}}) "
+        "         WHERE x.platform IS NOT NULL] AS per "
         "RETURN c.key AS id, c.display_name AS label, c.platform AS platform, "
-        "       count(DISTINCT t) AS thread_count "
+        "       coalesce(c.platforms, [c.platform]) AS platforms, "
+        "       c.platform_label AS platform_label, per AS per_platform, "
+        "       reduce(s = 0, x IN per | s + x.threads) AS thread_count "
         "ORDER BY {order} "
         "LIMIT $n"
     ),
@@ -426,6 +479,24 @@ _NODE_QUERIES: dict[str, str] = {
         "ORDER BY {order} "
         "LIMIT $n"
     ),
+    # The four extracted kinds share one query. `mention_count` is the only quantity
+    # the store will have for them, counted through `MENTIONS` the way a
+    # correspondent's `thread_count` is counted through `WITH`. The edge does not
+    # exist yet, so this returns 0 today — which is the honest answer, not a bug.
+    **{
+        kind: (
+            f"MATCH (e:{kind}) "
+            "{where}"
+            "OPTIONAL MATCH (t:Thread)-[:MENTIONS]->(e) "
+            "RETURN e.key AS id, e.display_name AS label, e.platform AS platform, "
+            "       coalesce(e.platforms, [e.platform]) AS platforms, "
+            "       e.platform_label AS platform_label, "
+            "       count(DISTINCT t) AS mention_count "
+            "ORDER BY {order} "
+            "LIMIT $n"
+        )
+        for kind in ENTITY_KINDS
+    },
 }
 
 # Sort key -> the ORDER BY fragment for each node type. Every fragment ends in a
@@ -437,12 +508,14 @@ _SORTS: dict[str, dict[str, str]] = {
         "Correspondent": "thread_count DESC, label, id",
         "Message": "ts_utc DESC, id",
         "Attachment": "id",
+        **{kind: "mention_count DESC, label, id" for kind in ENTITY_KINDS},
     },
     "recent": {
         "Thread": "last_ts DESC, id",
         "Correspondent": "thread_count DESC, label, id",
         "Message": "ts_utc DESC, id",
         "Attachment": "id",
+        **{kind: "mention_count DESC, label, id" for kind in ENTITY_KINDS},
     },
     "quiet": {
         # Least recently active first. `last_ts` is null for a thread with no
@@ -452,6 +525,7 @@ _SORTS: dict[str, dict[str, str]] = {
         "Correspondent": "thread_count ASC, label, id",
         "Message": "ts_utc ASC, id",
         "Attachment": "id",
+        **{kind: "mention_count ASC, label, id" for kind in ENTITY_KINDS},
     },
 }
 
@@ -464,6 +538,7 @@ _COUNT_QUERIES: dict[str, str] = {
     "Correspondent": "MATCH (c:Correspondent) {where}RETURN count(c) AS n",
     "Message": "MATCH (m:Message) {where}RETURN count(m) AS n",
     "Attachment": "MATCH (a:Attachment) {where}RETURN count(a) AS n",
+    **{kind: f"MATCH (e:{kind}) {{where}}RETURN count(e) AS n" for kind in ENTITY_KINDS},
 }
 
 # `Attachment` has no platform of its own; it inherits the message's. The filter is
@@ -485,6 +560,22 @@ _EDGE_QUERIES: dict[str, str] = {
     "HAS_ATTACHMENT": "MATCH (m:Message)-[:HAS_ATTACHMENT]->(a:Attachment) "
                       "{where}"
                       "RETURN m.key AS source, a.key AS target",
+    # A fuzzy identity guess, never a fold (direction.md §5: two edge types, never
+    # one). Both endpoints stay; the line is what makes the guess visible and
+    # ignorable. Written by `link.py` (edit 4), so it has zero rows today.
+    "POSSIBLY": "MATCH (a:Correspondent)-[:POSSIBLY]->(b:Correspondent) "
+                "{where}"
+                "RETURN a.key AS source, b.key AS target",
+    # An extracted entity mentioned in a thread. One entry per kind, because the
+    # target label differs and Cypher cannot parameterise a label.
+    **{
+        f"MENTIONS_{kind.upper()}": (
+            f"MATCH (t:Thread)-[:MENTIONS]->(e:{kind}) "
+            "{where}"
+            "RETURN t.key AS source, e.key AS target"
+        )
+        for kind in ENTITY_KINDS
+    },
 }
 
 # Which variable each query's platform predicate applies to.
@@ -493,6 +584,10 @@ _EDGE_PLATFORM_ALIAS: dict[str, str] = {
     "IN": "m",
     "REPLY_TO": "m",
     "HAS_ATTACHMENT": "m",
+    # The source correspondent: a merged node is filtered on its `platforms` list,
+    # which `_platform_clause` already handles.
+    "POSSIBLY": "a",
+    **{f"MENTIONS_{kind.upper()}": "t" for kind in ENTITY_KINDS},
 }
 
 # Edges whose endpoints are both in the default node set. `IN`, `REPLY_TO` and
@@ -510,9 +605,43 @@ def _node_where(node_type: str, params: dict[str, Any]) -> str:
     if node_type == "Attachment":
         clause = _platform_clause("m", params)
         return f"WHERE {clause} " if clause else ""
-    alias = "m" if node_type == "Message" else ("c" if node_type == "Correspondent" else "t")
+    alias = _NODE_ALIAS[node_type]
     clause = _platform_clause(alias, params)
     return f"WHERE {clause} " if clause else ""
+
+
+def _with_dominance(node: dict[str, Any]) -> dict[str, Any]:
+    """Add `primaryPlatform` and `dominance` to a Correspondent row.
+
+    **`primaryPlatform` is not `platform`.** `platform` is the first by *date*, so the
+    filter and the label do not drift between ingests. `primaryPlatform` is the one
+    with the most *messages*, which is a different question and can legitimately
+    disagree. Redefining `platform` as dominant would reintroduce exactly the
+    instability the date rule exists to prevent.
+
+    `dominance` is the largest platform's share of the node's messages, 0.0-1.0.
+    1.0 means every message is on one platform. The canvas uses it as leash length:
+    a high-dominance bridge hugs its platform, a 50/50 bridge drifts between them.
+
+    A node with no messages at all (a correspondent in a thread that holds none)
+    gets `primaryPlatform = platform` and `dominance = 1.0` — it has one platform and
+    nothing to contradict it.
+    """
+    per = [entry for entry in (node.pop("per_platform", None) or [])
+           if entry.get("platform")]
+    if not per:
+        node["primaryPlatform"] = node.get("platform")
+        node["dominance"] = 1.0
+        return node
+
+    total = sum(int(entry.get("messages") or 0) for entry in per)
+    # Tie-break on the platform name, not on list order: the query's `collect` order
+    # is not guaranteed, and a bridge that flips its primary platform between two
+    # identical loads would visibly jump on the canvas.
+    best = max(per, key=lambda e: (int(e.get("messages") or 0), e["platform"]))
+    node["primaryPlatform"] = best["platform"]
+    node["dominance"] = round(int(best.get("messages") or 0) / total, 4) if total else 1.0
+    return node
 
 
 def _resolve_types(
@@ -603,6 +732,8 @@ def graph_slice(
                 truncated = True
             for row in rows:
                 row["type"] = node_type
+                if node_type == "Correspondent":
+                    _with_dominance(row)
                 nodes.append(row)
 
         drawn = {node["id"] for node in nodes}
@@ -877,17 +1008,28 @@ def message_view(message_key: str) -> dict[str, Any]:
     return message
 
 
+# Labels that mark a node rather than describe its kind. `Merged` is additive — a
+# merged Correspondent is still a Correspondent — so it must not appear in the
+# Toggles modal as a switchable node type of its own.
+_MARKER_LABELS = frozenset({"Merged"})
+
+
 def types_present() -> dict[str, Any]:
     """Node and edge types that actually hold data, with counts.
 
     Populates the Toggles modal. A type with zero rows is omitted rather than
     listed as empty — a toggle that draws nothing is a lie about the store.
+
+    Marker labels (`Merged`) are skipped: they are additive annotations on a node
+    that already has its real type, and `db.labels()` cannot tell the two apart.
     """
     node_types: list[dict[str, Any]] = []
     edge_types: list[dict[str, Any]] = []
     with _session() as conn:
         for row in _fetch(conn, "CALL db.labels()"):
             label = row["label"]
+            if label in _MARKER_LABELS:
+                continue
             count = _scalar(conn, "MATCH (n) WHERE $lbl IN labels(n) RETURN count(n) AS n",
                             {"lbl": label}) or 0
             if count:

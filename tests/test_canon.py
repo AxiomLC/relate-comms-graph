@@ -182,20 +182,38 @@ def test_a_prefix_collision_is_not_a_merge():
             != canon.canonical("New York Mills", kind="place").key)
 
 
-# ----------------------------------------------------------------------------- thing
+# --------------------------------------------------------------------------- product
 
 @pytest.mark.parametrize("raw", ["Coca-Cola", "Coca Cola", "CocaCola", "coca-cola"])
 def test_hyphen_and_space_are_one_product(raw):
-    assert canon.canonical(raw, kind="thing").key == "coca cola"
+    assert canon.canonical(raw, kind="product").key == "coca cola"
 
 
 def test_a_leading_article_is_not_identity():
-    assert canon.canonical("the Coke account", kind="thing").key == "coke account"
+    assert canon.canonical("the Coke account", kind="product").key == "coke account"
 
 
 def test_a_product_line_stays_distinct():
-    assert (canon.canonical("Coca-Cola", kind="thing").key
-            != canon.canonical("Coca-Cola Zero", kind="thing").key)
+    assert (canon.canonical("Coca-Cola", kind="product").key
+            != canon.canonical("Coca-Cola Zero", kind="product").key)
+
+
+def test_the_kind_names_are_the_node_type_names():
+    """`thing` and `company` are gone: the kind is the node type, lowercased."""
+    assert canon.KINDS == ("person", "organization", "place", "product")
+    for kind in canon.KINDS:
+        assert canon.canonical("Something", kind=kind).kind == kind
+
+
+@pytest.mark.parametrize("kind", ["thing", "company", "Thing", "", "person "])
+def test_an_unknown_kind_fails_loudly(kind):
+    """The last branch is `person`, so a typo would silently take it.
+
+    That is a wrong merge, not a crash: `kind="thing"` would strip credentials and
+    resolve nicknames on a product name. Raising is the only safe answer.
+    """
+    with pytest.raises(ValueError, match="unknown kind"):
+        canon.canonical("Coca-Cola", kind=kind)
 
 
 # ------------------------------------------------------------------------ list split
@@ -249,7 +267,7 @@ def test_placeholders_are_excluded_from_candidates():
 
 def test_canonical_is_idempotent():
     for raw, kind in [("Dave Sartori", "person"), ("ABC Corp, Inc.", "organization"),
-                      ("New York, NY", "place"), ("Coca-Cola", "thing")]:
+                      ("New York, NY", "place"), ("Coca-Cola", "product")]:
         once = canon.canonical(raw, kind=kind).key
         assert canon.canonical(once, kind=kind).key == once
 

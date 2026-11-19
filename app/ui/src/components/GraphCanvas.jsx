@@ -105,14 +105,18 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     //
     // An empty `platforms` list means "every platform on", so a platform added later
     // appears without the user ticking it.
+    // A merged Correspondent carries one `platform` (the first by date) and the
+    // full list in `platforms`. Testing the single string would hide it whenever the
+    // user unticked anything but the first, even though the server kept it.
+    const platformsOf = (node) =>
+      Array.isArray(node.platforms) && node.platforms.length
+        ? node.platforms
+        : [node.platform];
     const chosen = theme.filter.platforms || [];
-    const hiddenPlatforms = chosen.length ? new Set(
-      (data.nodes || [])
-        .map((node) => node.platform)
-        .filter((platform) => !chosen.includes(platform)),
-    ) : new Set();
     const allNodes = (data.nodes || []).filter((node) => {
-      if (hiddenPlatforms.has(node.platform)) return false;
+      if (chosen.length && !platformsOf(node).some((p) => chosen.includes(p))) {
+        return false;
+      }
       // A thread the owner never spoke in. `message_count` is the only signal the
       // canvas has, so a thread with no messages is not hidden by this — it is
       // already invisible for other reasons.

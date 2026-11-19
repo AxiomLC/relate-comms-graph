@@ -154,7 +154,7 @@ def test_differently_spelled_threads_still_fan_in(store):
         "MATCH (t:Thread)-[:WITH]->(c:Correspondent) "
         "RETURN c.key AS k, count(t) AS n")["rows"]
     assert len(rows) == 1
-    assert rows[0]["k"] == "messenger:david sartori"
+    assert rows[0]["k"] == "person:david sartori"
     assert rows[0]["n"] == 2
 
 
@@ -166,8 +166,207 @@ def test_a_phone_number_correspondent_keeps_its_display_form(store):
 
     rows = tools.run_cypher(
         "MATCH (c:Correspondent) RETURN c.key AS k, c.display_name AS n")["rows"]
-    assert rows[0]["k"] == "whatsapp:27845189029"
+    assert rows[0]["k"] == "person:27845189029"
     assert rows[0]["n"] == "+27 84 518 9029"
+
+
+# ------------------------------------------------------- the merged node shape
+
+def _node(store, key):
+    rows = tools.run_cypher(
+        "MATCH (c:Correspondent {key: $k}) RETURN properties(c) AS p", {"k": key},
+    )["rows"]
+    assert rows, f"no correspondent {key!r}"
+    return rows[0]["p"]
+
+
+def test_one_name_on_two_platforms_is_one_node_with_both_platforms(store):
+    # The whole point of dropping the platform prefix from the key.
+    telegram = _chat("telegram", "t1", "", ("Mary Olver", "Mark Jones"))
+    whatsapp = _chat("whatsapp", "w1", "", ("Mary Olver", "Mark Jones"))
+    messages = [
+        _message(telegram, 0, "Mary Olver", is_self=False, day=0),
+        _message(whatsapp, 0, "Mary Olver", is_self=False, day=5),
+    ]
+    _write(store, _result([telegram, whatsapp], messages), owner="Mark Jones")
+
+    rows = tools.run_cypher(
+        "MATCH (t:Thread)-[:WITH]->(c:Correspondent) "
+        "RETURN c.key AS k, count(t) AS n")["rows"]
+    assert len(rows) == 1
+    assert rows[0]["k"] == "person:mary olver"
+    assert rows[0]["n"] == 2
+
+    node = _node(store, "person:mary olver")
+    assert sorted(node["platforms"]) == ["telegram", "whatsapp"]
+    # `platform` is the first by date, so the platform filter keeps working.
+    assert node["platform"] == "telegram"
+    assert node["platform_label"] == "Telegram-WhatsApp"
+    assert node["merged_by"] == "exact_name"
+
+
+def test_a_merged_node_carries_the_merged_label(store):
+    telegram = _chat("telegram", "t1", "", ("Mary Olver",))
+    sms = _chat("sms", "s1", "", ("Mary Olver",))
+    messages = [
+        _message(telegram, 0, "Mary Olver", is_self=False, day=0),
+        _message(sms, 0, "Mary Olver", is_self=False, day=1),
+    ]
+    _write(store, _result([telegram, sms], messages))
+
+    labels = tools.run_cypher(
+        "MATCH (c:Correspondent {key: 'person:mary olver'}) "
+        "RETURN labels(c) AS lb")["rows"][0]["lb"]
+    assert "Correspondent" in labels and "Merged" in labels
+
+
+def test_a_single_platform_node_is_not_merged(store):
+    chat = _chat("telegram", "t1", "", ("Mary Olver",))
+    _write(store, _result([chat], [_message(chat, 0, "Mary Olver", is_self=False)]))
+
+    labels = tools.run_cypher(
+        "MATCH (c:Correspondent {key: 'person:mary olver'}) "
+        "RETURN labels(c) AS lb")["rows"][0]["lb"]
+    assert "Merged" not in labels
+
+
+def test_placeholders_stay_platform_scoped(store):
+    # `Facebook user` and `LinkedIn Member` are two different placeholder accounts.
+    # Under a bare `person:` key they would fold into one node claiming both.
+    messenger = _chat("messenger", "m1", "", ("Facebook user",))
+    linkedin = _chat("linkedin", "l1", "", ("LinkedIn Member",))
+    messages = [
+        _message(messenger, 0, "Facebook user", is_self=False),
+        _message(linkedin, 0, "LinkedIn Member", is_self=False),
+    ]
+    _write(store, _result([messenger, linkedin], messages))
+
+    keys = {row["k"] for row in tools.run_cypher(
+        "MATCH (c:Correspondent) RETURN c.key AS k")["rows"]}
+    assert keys == {"messenger:placeholder:facebook user",
+                   "linkedin:placeholder:linkedin member"}
+
+
+def test_first_seen_is_the_earliest_message_not_the_first_ingest(store):
+    # The participant list carries no timestamp, so this is built from the messages.
+    chat = _chat("telegram", "t1", "", ("Mary Olver",))
+    messages = [
+        _message(chat, 0, "Mary Olver", is_self=False, day=10),
+        _message(chat, 1, "Mary Olver", is_self=False, day=2),
+    ]
+    _write(store, _result([chat], messages))
+
+    node = _node(store, "person:mary olver")
+    # `_message` offsets by its index in minutes, so the day-2 row is 12:01.
+    assert node["first_seen_utc"] == "2026-01-03T12:01:00Z"
+
+
+def test_each_platform_keeps_its_own_spelling(store):
+    # `handles` is flat in the store (`handle_<platform>`), assembled at the API edge.
+    telegram = _chat("telegram", "t1", "", ("Axiom LoftCoin",))
+    messenger = _chat("messenger", "m1", "", ("Axiom LoftCoin",))
+    messages = [
+        _message(telegram, 0, "Axiom LoftCoin", is_self=False, day=0),
+        _message(messenger, 0, "Axiom LoftCoin", is_self=False, day=1),
+    ]
+    _write(store, _result([telegram, messenger], messages))
+
+    # `canon` splits the camelCase, so the key is `axiom loft coin`; the handle keeps
+    # the spelling the export used.
+    node = _node(store, "person:axiom loft coin")
+    assert writer.handles_from(node) == {
+        "telegram": "Axiom LoftCoin", "messenger": "Axiom LoftCoin",
+    }
+
+
+def test_dominance_is_the_largest_platforms_share_of_messages(store):
+    # Telegram gets 3 messages, WhatsApp 1: dominance 0.75, primary telegram.
+    telegram = _chat("telegram", "t1", "", ("Mary Olver",))
+    whatsapp = _chat("whatsapp", "w1", "", ("Mary Olver",))
+    messages = [
+        _message(telegram, i, "Mary Olver", is_self=False, day=0) for i in range(3)
+    ] + [_message(whatsapp, 0, "Mary Olver", is_self=False, day=5)]
+    _write(store, _result([telegram, whatsapp], messages))
+
+    node = next(n for n in tools.graph_slice()["nodes"]
+                if n["id"] == "person:mary olver")
+    assert node["primaryPlatform"] == "telegram"
+    assert node["dominance"] == 0.75
+    # `platform` is still the first by DATE, which is a different question.
+    assert node["platform"] == "telegram"
+    assert node["platforms"] == ["telegram", "whatsapp"]
+
+
+def test_primary_platform_can_disagree_with_platform(store):
+    # WhatsApp is seen first (date) but Telegram carries more messages.
+    telegram = _chat("telegram", "t1", "", ("Mary Olver",))
+    whatsapp = _chat("whatsapp", "w1", "", ("Mary Olver",))
+    messages = [
+        _message(whatsapp, 0, "Mary Olver", is_self=False, day=0),
+    ] + [
+        _message(telegram, i, "Mary Olver", is_self=False, day=10) for i in range(4)
+    ]
+    _write(store, _result([telegram, whatsapp], messages))
+
+    node = next(n for n in tools.graph_slice()["nodes"]
+                if n["id"] == "person:mary olver")
+    assert node["platform"] == "whatsapp"       # first by date
+    assert node["primaryPlatform"] == "telegram"  # most messages
+    assert node["dominance"] == 0.8
+
+
+def test_a_single_platform_node_has_full_dominance(store):
+    chat = _chat("telegram", "t1", "", ("Mary Olver",))
+    _write(store, _result([chat], [_message(chat, 0, "Mary Olver", is_self=False)]))
+
+    node = next(n for n in tools.graph_slice()["nodes"]
+                if n["id"] == "person:mary olver")
+    assert node["primaryPlatform"] == "telegram"
+    assert node["dominance"] == 1.0
+
+
+def test_a_correspondent_with_no_messages_still_gets_a_primary_platform(store):
+    # A thread with no messages: `write()` mints no Thread row, so the `WITH` MATCH
+    # finds nothing and the node lands with no edge. The node itself still exists,
+    # and it must still answer `primaryPlatform` — the canvas would otherwise get a
+    # null leash target.
+    chat = _chat("telegram", "t1", "", ("Mary Olver",))
+    _write(store, _result([chat], []))
+
+    node = next(n for n in tools.graph_slice()["nodes"]
+                if n["id"] == "person:mary olver")
+    assert node["primaryPlatform"] == "telegram"
+    assert node["dominance"] == 1.0
+    assert node["thread_count"] == 0
+
+
+def test_the_platform_filter_finds_a_merged_node_by_either_platform(store):
+    # `platform` is one string (the first by date); the filter must read `platforms`,
+    # or a merged node disappears when the user filters by anything but the first.
+    telegram = _chat("telegram", "t1", "", ("Mary Olver",))
+    whatsapp = _chat("whatsapp", "w1", "", ("Mary Olver",))
+    messages = [
+        _message(telegram, 0, "Mary Olver", is_self=False, day=0),
+        _message(whatsapp, 0, "Mary Olver", is_self=False, day=5),
+    ]
+    _write(store, _result([telegram, whatsapp], messages))
+
+    try:
+        tools.configure_platforms(["whatsapp"])
+        ids = {node["id"] for node in tools.graph_slice()["nodes"]}
+        assert "person:mary olver" in ids
+    finally:
+        tools.configure_platforms(None)
+
+
+def test_re_ingest_does_not_duplicate_a_platform_in_the_list(store):
+    telegram = _chat("telegram", "t1", "", ("Mary Olver",))
+    result = _result([telegram], [_message(telegram, 0, "Mary Olver", is_self=False)])
+    _write(store, result)
+    _write(store, result)
+
+    node = _node(store, "person:mary olver")
+    assert node["platforms"] == ["telegram"]
 
 
 # ------------------------------------------------------------------ thread titles

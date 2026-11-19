@@ -15924,12 +15924,12 @@
     const elements = (0, import_react7.useMemo)(() => {
       const theme2 = themeRef.current;
       if (!data) return [];
+      const platformsOf = (node) => Array.isArray(node.platforms) && node.platforms.length ? node.platforms : [node.platform];
       const chosen = theme2.filter.platforms || [];
-      const hiddenPlatforms = chosen.length ? new Set(
-        (data.nodes || []).map((node) => node.platform).filter((platform) => !chosen.includes(platform))
-      ) : /* @__PURE__ */ new Set();
       const allNodes = (data.nodes || []).filter((node) => {
-        if (hiddenPlatforms.has(node.platform)) return false;
+        if (chosen.length && !platformsOf(node).some((p) => chosen.includes(p))) {
+          return false;
+        }
         if (hideSilent && node.type === "Thread" && node.is_silent) return false;
         return true;
       });

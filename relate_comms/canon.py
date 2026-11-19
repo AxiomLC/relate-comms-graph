@@ -14,7 +14,13 @@ four kinds:
     person        `Dave Sartori`      -> `david sartori`
     organization  `ABC Corp, Inc.`    -> `abc corp`
     place         `New York, NY`      -> `new york`
-    thing         `the Coke account`  -> `coke`
+    product       `the Coke account`  -> `coke`
+
+The four kind names are the **node type names**, not internal jargon: `Person`,
+`Organization`, `Place`, `Product`. `thing` and `company` were the old spellings and
+are gone — a caller passing one now fails loudly instead of silently taking the
+`person` branch, which would strip credentials and resolve nicknames on a product
+name.
 
 `Person` extracted from a message body uses the same pipe as a `Correspondent` taken
 from export metadata. Nothing here assumes a person.
@@ -55,7 +61,11 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Iterable, Literal
 
-Kind = Literal["person", "organization", "place", "thing"]
+Kind = Literal["person", "organization", "place", "product"]
+
+# The kind names, in the order the UI lists them. `Correspondent` is deliberately
+# absent: it is written by ingest, not extracted from a body.
+KINDS: tuple[str, ...] = ("person", "organization", "place", "product")
 
 # --------------------------------------------------------------------------- tables
 
@@ -325,7 +335,14 @@ def canonical(
     `owner` is every form the caller knows the Owner by on this platform — a display
     name, a user id, an address. Supplying all of them is what makes the guard work
     where a single identifier did not.
+
+    An unknown `kind` raises. The pipeline's last branch is `person`, so a typo or an
+    old spelling (`thing`, `company`) would silently strip credentials and resolve
+    nicknames on a product name — a wrong merge that looks like a working call.
     """
+    if kind not in KINDS:
+        raise ValueError(f"unknown kind {kind!r}; known kinds are {list(KINDS)}")
+
     text = (raw or "").strip()
     if not text:
         return Canonical(raw="", key="", display="", kind=kind, evidence="raw")
@@ -406,7 +423,7 @@ def _canonical_text(text: str, kind: Kind) -> Canonical:
                     if evidence == "raw":
                         evidence = "suffix"
         words = joined.split()
-    elif kind == "thing":
+    elif kind == "product":
         if len(words) > 1 and words[0] in ARTICLES:
             words = words[1:]
             if evidence == "raw":

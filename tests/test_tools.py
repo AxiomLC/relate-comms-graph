@@ -161,7 +161,28 @@ def test_graph_slice_never_inherits_a_ui_toggle(store):
 
 def test_graph_slice_rejects_an_unknown_type(store):
     with pytest.raises(tools.ToolError, match="unknown type"):
-        tools.graph_slice(node_types=["Person"])
+        tools.graph_slice(node_types=["Company"])
+
+
+def test_the_extracted_kinds_are_queryable_but_empty(store):
+    """`Person`/`Place`/`Organization`/`Product` exist as queries, not as rows.
+
+    They are in `_NODE_QUERIES` so the query is written before the extractor that
+    fills it, and so a caller can ask for one explicitly. Zero rows is the honest
+    answer today, not a bug — and they are not drawn by default.
+    """
+    for kind in tools.ENTITY_KINDS:
+        slice_ = tools.graph_slice(node_types=[kind])
+        assert slice_["nodes"] == []
+        assert slice_["total"] == 0
+    assert set(tools.ENTITY_KINDS) == {"Person", "Place", "Organization", "Product"}
+    assert not set(tools.ENTITY_KINDS) & set(tools.DRAWABLE_NODE_TYPES)
+
+
+def test_company_is_not_a_kind(store):
+    """The naming decision: `Organization`, never `Company`."""
+    assert "Company" not in tools._NODE_QUERIES
+    assert "Organization" in tools._NODE_QUERIES
 
 
 def test_graph_slice_reports_the_total_it_truncated(store):
@@ -344,8 +365,11 @@ def test_types_present_lists_only_types_with_rows(store):
     counts = {t["type"]: t["count"] for t in present["node_types"]}
     assert counts["Thread"] == 3
     assert counts["Message"] == 12
-    # One per (platform, name): Ada is two nodes, one per platform (§5.6).
-    assert counts["Correspondent"] == 4
+    # One per canonical name, not per (platform, name): Ada is on Telegram and
+    # WhatsApp and is one node, so three correspondents, not four.
+    assert counts["Correspondent"] == 3
+    # `Merged` is a marker label, not a node type — it must not become a toggle.
+    assert "Merged" not in counts
     assert all(t["count"] > 0 for t in present["node_types"])
     assert all(t["count"] > 0 for t in present["edge_types"])
 

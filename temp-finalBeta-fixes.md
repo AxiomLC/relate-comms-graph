@@ -9,6 +9,67 @@ Everything below marked **VERIFIED** was checked against the code and a live ing
 
 ---
 
+## STATUS — 2026-11-19 (read this first)
+
+**`pytest tests -q` → 380 passed, 2 skipped.**
+
+| Edit | State |
+|---|---|
+| **1. Node structure** | **DONE** |
+| **2. `tools.py` API shape** | **DONE** |
+| **3. UI node types** | **NOT STARTED** |
+| **4. `link.py` cross-connect** | **NOT STARTED** — this is the next thing to build |
+
+**Where to resume:** edit 4 (`relate_comms/link.py`). Edits 1–2 are stable and tested;
+edit 3 is UI-only and independent of 4, so either order works, but 4 is the one that
+produces the merged nodes the samples were built to exercise.
+
+### What edit 1 actually did — and where it deviated from this plan
+
+Three things below were **wrong or incomplete** in the plan as written. They are now
+resolved in code; do not re-derive them.
+
+1. **Relate rejects map properties.** `SET c.handles = {…}` raises
+   `DataError: InvalidPropertyType`. The plan's `handles: map` is stored **flat** as
+   `handle_<platform>` / `seen_<platform>`, and `writer.handles_from()` assembles the dict
+   at the API edge. Do not try to store a map.
+
+2. **Relate evaluates every `UNWIND` row against the node as it stood *before* the
+   statement.** Two rows for one key both read the old value, so the last row wins.
+   Accumulating in Cypher is therefore impossible. The row statement writes only
+   per-platform facts; `writer._reconcile()` computes `platform`, `platforms`,
+   `display_name`, `first_seen_utc`, `platform_label` and `:Merged` afterwards.
+
+3. **`first_seen_utc` is built from `result.messages`,** as the plan said, but the
+   participant list is the only source for a thread with no messages — those nodes get
+   `first_seen_utc = null` and sort last. 11 of 93 on the sample store.
+
+**Measured on the seven sample variants:** 93 correspondents, **34 merged across
+platforms**, 2 placeholders. Re-ingest is byte-identical.
+
+### What edit 2 actually did — plus one addition not in this plan
+
+- `_platform_clause()` → `ANY(p IN $platforms WHERE p IN coalesce(alias.platforms, [alias.platform]))`.
+  One clause serves every node type.
+- `_NODE_ALIAS` replaces the `if` chain.
+- `Person` / `Place` / `Organization` / `Product`: node query, count query, three sort
+  entries, `MENTIONS_<KIND>` edge query. **All return 0** until extraction lands.
+- `POSSIBLY` edge query added.
+- **Not in the plan: `primaryPlatform` + `dominance`.** `graph_slice` now returns both per
+  Correspondent, derived from a two-stage per-platform message count. `primaryPlatform` is
+  **most messages**; `platform` stays **first by date**. On the sample store **17 of 34
+  merged nodes disagree**, so they are genuinely two fields. `dominance` is the leash
+  length the canvas will use — see `CytoGravityRecommend.md`.
+
+### Naming — settled
+
+`canon.KINDS = ("person", "organization", "place", "product")` is the single source;
+`tools.ENTITY_KINDS` is derived from it. `kind="thing"` is gone. `canon.canonical()` now
+**raises** on an unknown kind — the pipeline's last branch is `person`, so a typo would
+silently strip credentials off a product name. `Company` appears nowhere.
+
+---
+
 ## Where the store actually stands
 
 Live store rebuilt 2026-11-18 from the six sample variants that mirror `sample_writer/in/`.
@@ -61,6 +122,9 @@ like a dialect bug earlier today.
 Four edits. **The order matters** — each one depends on the last.
 
 ### 1. Node structure — `Correspondent.key` becomes `person:<canonical>`
+
+> **DONE 2026-11-19.** Kept below as the record of what the edit had to handle. Three
+> corrections were needed beyond this text — see *STATUS* at the top.
 
 **VERIFIED: this is the foundation, and the doc's original version of it was wrong in
 three ways.** Read all of this before writing code.
@@ -123,6 +187,9 @@ node type. Filter it out there.
 
 ### 2. `tools.py` — the API shape
 
+> **DONE 2026-11-19.** Plus `primaryPlatform` / `dominance`, which this plan did not
+> anticipate — see *STATUS*.
+
 Must land before the UI: the UI cannot render a `platforms` array the API does not return.
 
 **`_platform_clause()` reads the list:**
@@ -150,6 +217,10 @@ platform out of a key" is false. Do not rely on it.
 ---
 
 ### 3. Node types in the UI
+
+> **NOT STARTED.** One item is already done: the canvas platform filter now reads
+> `platforms` (landed with edit 1, because a merged node vanished otherwise). The rest of
+> this section stands.
 
 **`GraphCanvas.jsx` becomes `NODE_TYPES`-driven.** Today it tests strings:
 
@@ -182,6 +253,9 @@ Person, Place, Organization, Product   D / E / F
 ---
 
 ### 4. Cross-connect wiring — the actual merge
+
+> **NOT STARTED — resume here.** Edits 1–2 are stable. `POSSIBLY` already has an
+> `_EDGE_QUERIES` entry, so the edge will draw the moment `link.py` writes one.
 
 Last, because it needs 1–3 stable. **This is the edit that produces merged nodes.**
 
@@ -227,6 +301,10 @@ immediately. That is the test.
 
 ## Knobs — the audit story
 
+> **NOT BUILT.** `FUZZY_REPORT = 0.85` exists in `canon.py`. `NICKNAME_ENABLED` and
+> `FOLD_ON_NAME` do not — they belong with `link.py` (edit 4), which is what would honour
+> them. Do not add them before there is a fold to switch off.
+
 Three switches in `canon.py`, so a bad class of merge can be turned off without a code change:
 
 ```python
@@ -260,7 +338,7 @@ and `:Merged` means "one place, several spellings". Same schema, different meani
 
 ---
 
-## Naming decisions
+## Naming decisions — DONE
 
 | Use | Not |
 |---|---|
@@ -268,8 +346,9 @@ and `:Merged` means "one place, several spellings". Same schema, different meani
 | `Product` | `Thing` |
 | `Person` (extraction only, never the Owner) | — |
 
-`TECHREADME.md:155` still says `Company` — stale. `canon.py` uses `kind="thing"` — rename to
-`kind="product"`.
+Settled 2026-11-19. `canon.KINDS` is the single source; `tools.ENTITY_KINDS` derives from
+it. `kind="thing"` renamed to `kind="product"`; an unknown kind now raises instead of
+falling through to the `person` branch. `Company` appears nowhere in the codebase.
 
 ---
 
@@ -310,10 +389,15 @@ and `:Merged` means "one place, several spellings". Same schema, different meani
 
 | Item | Note |
 |---|---|
+| **Edit 3 — UI node types** | `GraphCanvas` still tests `node.type === "Thread"` strings. The platform filter is fixed; the rest is not. |
+| **Edit 4 — `link.py`** | The next build. Folds differing keys (phone-only vs named); fuzzy → `POSSIBLY`. |
 | Messenger group titles | 117 of 134 real threads are groups; the adapter names each after `others[0]` (a participant) rather than the `<h1>`. The generated samples happen to be right for `Neighbourhood Watch` and wrong for the rest, so **the samples will not catch this**. |
-| Body-entity extraction | `Person`, `Place`, `Organization`, `Product`. Blocked on a candidate generator. |
-| `MENTIONS` edges | Needs the extracted nodes to exist. |
+| Body-entity extraction | `Person`, `Place`, `Organization`, `Product`. Blocked on a candidate generator. **The queries already exist and return 0** — only the writer is missing. |
+| `MENTIONS` edges | Needs the extracted nodes to exist. The `MENTIONS_<KIND>` query entries are already written. |
+| Canvas gravity / compound bags | `CytoGravityRecommend.md`. Needs `parent` on elements before any fcose param does anything. `dominance` is already on the API for the leash. |
 | LinkedIn "Sponsored" HTML | 74 messages with raw `spinmail-quill-editor` markup. |
 | Email: one mailbox per run | Two `--email` values currently merge into one platform. |
 | Re-export mints a new thread | LinkedIn/WhatsApp/Email derive `chat_id`; a changed derivation duplicates the thread. WhatsApp's title-prefix case is now fixed; the general hazard remains. |
 | Outlook correspondents | 0 by design (single-account fixture). Revisit only with a real multi-party `.pst`. |
+| 11 correspondents with no `first_seen_utc` | 10 SMS phone-only contacts + 1 email address, all in threads with no messages. Correct by construction. |
+| `App.jsx:249` parses a platform out of a key | Still true. It runs on a Thread key so it is safe, but do not extend the pattern — Correspondent keys are now `person:…`. |
