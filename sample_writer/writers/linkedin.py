@@ -45,8 +45,10 @@ def _rows(plan: Plan, world: World, rng: Random) -> list[dict[str, str]]:
         # that are not people. The placeholder name replaces the correspondent's.
         sender_name = (getattr(thread, "placeholder_sender", "")
                        or person.label("linkedin"))
-        for is_owner, body in thread.lines:
+        for index, (is_owner, body) in enumerate(thread.lines):
             sender = world.owner if is_owner else sender_name
+            moment = (thread.times[index] if thread.times and index < len(thread.times)
+                      else thread.start)
             rows.append({
                 "CONVERSATION ID": conversation,
                 "CONVERSATION TITLE": "",
@@ -56,7 +58,7 @@ def _rows(plan: Plan, world: World, rng: Random) -> list[dict[str, str]]:
                 "TO": person.label("linkedin") if is_owner else world.owner,
                 "RECIPIENT PROFILE URLS": _profile(person) if is_owner
                 else "https://www.linkedin.com/in/mark-jones-fixture",
-                "DATE": thread.start.strftime("%Y-%m-%d %H:%M:%S") + " UTC",
+                "DATE": moment.strftime("%Y-%m-%d %H:%M:%S") + " UTC",
                 "SUBJECT": subject if is_owner == (len(rows) == 0) else "",
                 "CONTENT": body,
                 "FOLDER": "INBOX",

@@ -551,6 +551,87 @@ class World:
         weights = [config.MESSAGE_WEIGHTS[c] for c in counts]
         return rng.choices(counts, weights=weights, k=1)[0]
 
+    def message_times(self, start: datetime, count: int, rng: random.Random) -> list[datetime]:
+        """When each message in a thread was sent — deliberately irregular.
+
+        Real threads are not evenly spread. They arrive in **bursts**: three messages
+        on one evening, silence for eight months, two more, then nothing for a year.
+        A thread of fifteen messages can therefore span two calendar years, while a
+        thread of three may span one day. Spreading them uniformly (the old model)
+        made every thread look machine-generated and left the app's month histogram
+        flat.
+
+        The shape, all from `config.TIMING_*`:
+
+          1. draw a burst count for this thread (`min..max`)
+          2. give each burst a random weight, so one burst dominates and the rest are
+             one or two messages
+          3. choose the burst days across a span up to `TIMING_SPAN_DAYS`
+          4. jitter the time of day inside each burst, sometimes seconds apart
+
+        Returns `count` datetimes in ascending order, the first equal to `start`.
+        """
+        from datetime import timedelta
+
+        if count <= 0:
+            return []
+        if count == 1:
+            return [start]
+
+        low, high = config.TIMING_BURSTS
+        bursts = max(1, min(count, rng.randint(low, high)))
+
+        # Weighted split: one big burst, the rest small. Drawing every burst from the
+        # same distribution gave an even spread and lost the "sudden burst" feel.
+        weights = [rng.uniform(0.5, 1.0) ** 2 for _ in range(bursts)]
+        weights[rng.randrange(bursts)] *= rng.uniform(2.0, 4.0)
+        total = sum(weights)
+        sizes = [max(1, round(count * w / total)) for w in weights]
+
+        # Correct rounding drift so the sizes always sum to `count`.
+        while sum(sizes) > count:
+            biggest = sizes.index(max(sizes))
+            if sizes[biggest] == 1:
+                sizes.pop()
+                break
+            sizes[biggest] -= 1
+        while sum(sizes) < count:
+            sizes[sizes.index(min(sizes))] += 1
+
+        span_days = max(1.0, float(config.TIMING_SPAN_DAYS))
+        # Never run past the world's end: 730 days from a 2025 start reached 2027, which
+        # put messages outside the export window the app is told about.
+        room = max(0.0, (self.end - start).total_seconds() / 86400)
+        span_days = min(span_days, room) or 0.0
+        # Burst starts, sorted, each somewhere in the window after `start`.
+        offsets = sorted(rng.uniform(0, span_days) for _ in range(len(sizes))) if span_days else [0.0] * len(sizes)
+        # A thread's first burst IS its start time, so the earliest is pinned to day 0.
+        offsets[0] = 0.0
+
+        moments: list[datetime] = []
+        for burst_index, (size, offset) in enumerate(zip(sizes, offsets)):
+            burst_start = start + timedelta(days=offset)
+            # Inside a burst messages are minutes apart, occasionally seconds. The
+            # first burst keeps `start`'s time of day so the thread really begins at
+            # `start`; later bursts pick their own hour.
+            if burst_index or not size:
+                burst_start = burst_start.replace(
+                    hour=rng.randint(7, 22), minute=rng.randint(0, 59),
+                    second=rng.randint(0, 59))
+            cursor = burst_start
+            for index in range(size):
+                if index:
+                    gap = (timedelta(seconds=rng.randint(20, 600))
+                           if rng.random() < 0.55
+                           else timedelta(minutes=rng.randint(10, 240)))
+                    cursor = cursor + gap
+                moments.append(min(cursor, self.end))
+        # No re-stamping of `moments[0]` here: the first burst already begins at
+        # `start`, and forcing it afterwards put a late hour in front of an earlier
+        # one, which made some threads end before they began (span -1).
+        moments.sort()
+        return moments[:count]
+
 
 def build(seed: int | None = None) -> World:
     return World.build(seed)

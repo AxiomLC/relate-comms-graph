@@ -776,11 +776,17 @@ def detect(path: Path) -> bool:
 
     Detection is by content shape, never by the folder's name: one `.eml` is
     enough, and a folder holding none is not email.
+
+    **Recursive on purpose.** `parse_eml` reads with `rglob`, and the folders that
+    actually hold saved mail nest one level (`INBOX/Sent/`, `<thread>/NNN.eml`).
+    A non-recursive `iterdir()` here reported `False` for a tree the parser could read
+    perfectly well, so the export was filed as unrecognised and never ingested —
+    exactly the shape `sample_writer` writes.
     """
     if path.is_dir():
         try:
             return any(entry.is_file() and entry.suffix.lower() == _EML_SUFFIX
-                       for entry in path.iterdir())
+                       for entry in path.rglob(f"*{_EML_SUFFIX}"))
         except OSError:
             return False
     return path.suffix.lower() == _EML_SUFFIX

@@ -78,12 +78,16 @@ def _rows(thread: Thread, world: World, rng: Random) -> list[tuple[datetime, str
               for is_owner, body in thread.lines]
     )
 
-    step = timedelta(seconds=max(60, int(
-        ((thread.end or moment + timedelta(days=30)) - moment).total_seconds()
-        / max(1, len(rows))
-    )))
-    for sender, body in rows:
-        moment = moment + step
+    # Real timestamps from the thread's irregular schedule (bursts, long silences),
+    # not an even step. `plan()` fills `thread.times`; the index offsets past the
+    # system rows already emitted above.
+    offset = len(out)
+    for index, (sender, body) in enumerate(rows):
+        slot = offset + index
+        if thread.times and slot < len(thread.times):
+            moment = thread.times[slot]
+        elif thread.times:
+            moment = thread.times[-1]
         if config.INCLUDE_MEDIA_ROWS and rng.random() < 0.04:
             body = rng.choice(MEDIA_BODIES)
         out.append((moment, sender, body))

@@ -36,6 +36,9 @@ class Thread:
     group_lines: list[tuple[str, str]] = field(default_factory=list)
     # (is_owner, body) for 1:1 threads.
     lines: list[tuple[bool, str]] = field(default_factory=list)
+    # When each message was sent. Filled by `plan()` from `world.message_times`, so
+    # every writer renders one clock and the schedule is irregular (bursts, silences).
+    times: list[datetime] = field(default_factory=list)
     # Messenger folder, "" when the platform has no folder concept.
     folder: str = ""
     subject: str = ""
@@ -451,9 +454,11 @@ def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False)
     for thread in threads:
         if thread.silent:
             continue
-        # Spread messages over time so a 500-message thread spans months, not an hour:
-        # the UI's month histogram depends on it.
-        thread.end = thread.start + timedelta(days=max(1, int(thread.count / 4)))
+        # Message times are decided once, here, so every writer renders the same clock.
+        # They arrive in bursts with long silences between them (`world.message_times`),
+        # not spread evenly — an even spread made every thread look machine-generated.
+        thread.times = world.message_times(thread.start, thread.count, rng)
+        thread.end = thread.times[-1] if thread.times else thread.start
 
     return Plan(platform=platform, threads=threads, observations=observations)
 

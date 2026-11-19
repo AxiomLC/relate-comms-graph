@@ -72,7 +72,13 @@ def _service(msg_id: int, moment: datetime, action: str, actor: str | None = Non
 
 
 def _spread(thread: Thread, index: int, total: int) -> datetime:
-    """Distribute messages between `start` and `end`, so a 500-message thread spans time."""
+    """When message `index` was sent, from the thread's irregular schedule.
+
+    `plan()` fills `thread.times` from `world.message_times`, so a 500-message thread
+    spans months in bursts rather than an even trickle.
+    """
+    if thread.times and index < len(thread.times):
+        return thread.times[index]
     if not total:
         return thread.start
     start = thread.start

@@ -291,10 +291,14 @@ def test_outlook_fixture_is_copied_and_detects(generated):
 
 
 def test_email_eml_tree_parses_through_the_real_parser(generated):
-    """§3: no `.eml` adapter exists, so drive `_parse_raw` — the real key logic."""
+    """§3: the saved-mailbox parser must read the generated tree.
+
+    The writer emits `Inbox/<thread>/` and `Sent/<thread>/`, so the path is nested and
+    the silent-thread fixture lives under `Inbox/`.
+    """
     from relate_comms.schema import IngestResult
 
-    thread_dir = generated / "email" / "email_eml" / "email_long-silent-12"
+    thread_dir = generated / "email" / "email_eml" / "Inbox" / "email_long-silent-12"
     assert thread_dir.exists(), "no 12-message silent thread written"
     files = sorted(thread_dir.glob("*.eml"))
     assert len(files) == 12
@@ -312,9 +316,36 @@ def test_email_eml_tree_parses_through_the_real_parser(generated):
     assert not any(getattr(m, "is_self", False) for m in result.messages)
 
 
+def test_email_layout_splits_inbox_and_sent(generated):
+    """Ownership is structural: `Sent/` is the only folder signal a saved mailbox has.
+
+    A flat `<thread>/NNN.eml` tree made `folder_is_sent()` unreachable, so the sample
+    could only ever exercise the address-match fallback.
+    """
+    root = generated / "email" / "email_eml"
+    assert (root / "Inbox").is_dir() and (root / "Sent").is_dir()
+    assert list((root / "Inbox").rglob("*.eml")), "no Inbox mail written"
+    assert list((root / "Sent").rglob("*.eml")), "no Sent mail written"
+
+    result = email_imap.parse(root)
+    assert result.messages, "the saved mailbox parsed to nothing"
+    assert any(m.is_self for m in result.messages), "nothing marked as the Owner's"
+
+
 def test_email_boundary_10_parses_as_ten(generated):
-    thread_dir = generated / "email" / "email_eml" / "email_boundary-kept"
+    thread_dir = generated / "email" / "email_eml" / "Inbox" / "email_boundary-kept"
     assert len(list(thread_dir.glob("*.eml"))) == config.EMAIL_BOUNDARY_KEPT
+
+
+def test_email_export_is_discovered_by_ingest(generated):
+    """The whole point: the UI/`discover()` must recognise the generated folder.
+
+    `detect()` used a non-recursive `iterdir()` while `parse_eml` used `rglob`, so a
+    nested tree was reported unrecognised and never ingested.
+    """
+    root = generated / "email" / "email_eml"
+    assert ingest.detect_platform(root) == "email"
+    assert email_imap.detect(root)
 
 
 def test_messenger_zip_ingests(generated):
@@ -541,3 +572,30 @@ def test_fuzz_knobs_at_zero_produce_no_variants(monkeypatch):
     empty = world_module.build(config.SEED)
     assert empty.fuzz_summary() == {"labelled": 0, "cross": 0, "intra": 0}
     assert not empty.body_orgs and not empty.body_places and not empty.body_persons
+
+
+def test_staging_the_email_folder_keeps_it_whole(generated, tmp_path):
+    """The UI drop zone stages; staging must not shred a folder export into files.
+
+    Regression: `stage()` walked into the dropped folder and copied every `.eml`
+    individually, so each landed under `unrecognised/` (no single file is a mailbox)
+    and the drop zone reported success while writing nothing.
+    """
+    spool = tmp_path / "spool"
+    staged = ingest.stage([generated / "email" / "email_eml"], root=spool)
+    assert len(staged) == 1, f"staged {len(staged)} items, expected the one folder"
+    assert staged[0].is_dir()
+
+    report = ingest.ingest(root=spool, store=tmp_path / "g.rl")
+    assert report.written > 0, "the staged email folder wrote nothing"
+    assert not report.unrecognised
+    assert {batch.platform for batch in report.batches} == {"email"}
+
+
+def test_staging_the_messenger_folder_keeps_it_whole(generated, tmp_path):
+    """Same rule for the other folder export: one batch, not one per file."""
+    spool = tmp_path / "spool"
+    staged = ingest.stage([generated / "messenger" / "messenger_dir"], root=spool)
+    assert len(staged) == 1 and staged[0].is_dir()
+    report = ingest.ingest(root=spool, store=tmp_path / "g.rl")
+    assert report.written > 0

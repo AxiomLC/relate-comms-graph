@@ -269,6 +269,10 @@ def turn_pairs(world: World, person: Person, count: int, rng: random.Random,
         # A question must draw an answer, not another question, most of the time.
         if _is_question(last_body) and rng.random() < 0.75:
             body = _fill(rng.choice(STATEMENTS), topics, rng)
+        elif not _is_question(body):
+            # Short templates get a follow-on sentence at the weighted rate, so a
+            # third of messages run to two or three sentences rather than one line.
+            body = _extend(body, topics, rng)
 
         out.append((owner_turn, body))
         last_body = body
@@ -279,6 +283,33 @@ def turn_pairs(world: World, person: Person, count: int, rng: random.Random,
             out.append((not owner_turn, rng.choice(CLOSERS)))
             break
     return out[:count]
+
+
+def sentence_count(rng: random.Random) -> int:
+    """How many sentences this message runs to, from `BODY_SENTENCES_WEIGHTS`.
+
+    Default is 55/30/15 — most are one short line, but a third of messages carry two
+    or three sentences, which is what makes a message-length view worth looking at.
+    """
+    from .config import BODY_SENTENCES_WEIGHTS
+
+    counts = list(BODY_SENTENCES_WEIGHTS)
+    weights = [BODY_SENTENCES_WEIGHTS[c] for c in counts]
+    return rng.choices(counts, weights=weights, k=1)[0]
+
+
+def _extend(body: str, topics: list[str], rng: random.Random) -> str:
+    """Append follow-on sentences until `sentence_count` is reached.
+
+    The first sentence is whatever the caller chose; this only makes a short line into
+    a two-or-three-sentence message. A follow-on is a statement or a question, never a
+    sign-off, so a body does not end `thanks.\n\ncheers`.
+    """
+    target = sentence_count(rng)
+    parts = [body]
+    while len(parts) < target:
+        parts.append(_fill(rng.choice(STATEMENTS), topics, rng))
+    return " ".join(parts)
 
 
 def spam_turns(count: int, rng: random.Random) -> list[str]:

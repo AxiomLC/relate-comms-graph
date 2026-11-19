@@ -52,8 +52,9 @@ def _messages(plan: Plan, world: World, rng: Random) -> list[dict]:
         if placeholders and index % 5 == 4:
             contact = placeholders[index % len(placeholders)]
         moment = thread.start
-        for is_owner, body in thread.lines:
-            moment = moment + timedelta(minutes=rng.randint(1, 300))
+        for index, (is_owner, body) in enumerate(thread.lines):
+            moment = (thread.times[index] if thread.times and index < len(thread.times)
+                      else moment + timedelta(minutes=rng.randint(1, 300)))
             rows.append({
                 "address": counterpart,
                 "date": int(moment.timestamp() * 1000),

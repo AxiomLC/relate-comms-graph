@@ -24,8 +24,7 @@ KIND = "messenger"
 FOLDER = "your_facebook_activity/messages"
 
 
-def _stamp(thread: Thread) -> str:
-    moment = thread.start
+def _stamp(moment) -> str:
     hour = moment.hour % 12 or 12
     suffix = "am" if moment.hour < 12 else "pm"
     return moment.strftime("%b %d, %Y") + f" {hour}:{moment:%M:%S} {suffix}"
@@ -54,6 +53,13 @@ def _page(title: str, sections: list[str]) -> str:
     )
 
 
+def _moment(thread: Thread, index: int):
+    """The timestamp of message `index`, from the thread's irregular schedule."""
+    if thread.times and index < len(thread.times):
+        return thread.times[index]
+    return thread.end or thread.start
+
+
 def _sections(thread: Thread, world: World) -> list[str]:
     if thread.mark == "zero_message":
         return []
@@ -69,16 +75,19 @@ def _sections(thread: Thread, world: World) -> list[str]:
     sections: list[str] = []
     run_sender: str | None = None
     run_body: list[str] = []
+    run_start = 0
     for index, (sender, body) in enumerate(rows):
         if sender == run_sender:
             run_body.append(body)          # back-to-back, joined with <br>
             continue
         if run_sender is not None:
-            sections.append(_section(run_sender, "<br>".join(run_body), stamp, len(sections)))
-        run_sender, run_body = sender, [body]
-        stamp = _stamp(thread)
+            sections.append(_section(run_sender, "<br>".join(run_body),
+                                     _stamp(_moment(thread, run_start)),
+                                     len(sections)))
+        run_sender, run_body, run_start = sender, [body], index
     if run_sender is not None:
-        sections.append(_section(run_sender, "<br>".join(run_body), stamp, len(sections)))
+        sections.append(_section(run_sender, "<br>".join(run_body),
+                                 _stamp(_moment(thread, run_start)), len(sections)))
     return sections
 
 

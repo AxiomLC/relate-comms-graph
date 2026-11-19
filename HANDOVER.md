@@ -9,13 +9,19 @@ Durable facts: [`TECHREADME.md`](TECHREADME.md). Human overview: [`README.md`](R
 
 ## Where it stands
 
-`pytest tests -q` → **356 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
+`pytest tests -q` → **360 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
 
-**Live store:** rebuilt 2026-11-18 from the six sample variants — **1,853 messages / 133
-threads / 131 correspondents / 140 `WITH` edges**. messenger 29 · telegram 26 · sms 27 ·
-linkedin 23 · whatsapp 22 · outlook 6. Zero failed, zero unverified, zero unrecognised.
-The Owner is no longer a Correspondent anywhere. Outlook's 0 correspondents is correct: the
-`.pst` fixture is a single-account demo mailbox.
+**Live store:** rebuilt from the sample variants — **1,981 messages**, and email **is** present
+(128 messages / 20 threads / 20 correspondents). Per platform: telegram 851 · messenger 657 ·
+sms 138 · email 128 · whatsapp 108 · linkedin 93 · outlook 6.
+
+> **Currently testing ingest.** Drag-and-drop and folder-pick do **not** show what they staged
+> (see *Ingest UI — known broken*). **Pasting a path works**, which is how email was ingested:
+paste `sample_writer\out\email\email_eml`, the whole folder, not `Inbox/` or `Sent/`.
+>
+> **The graph is fine.** It shows email correctly once the paste-path ingest runs. The only
+> defect is in the modal's drop box and folder select — the staging happens silently and the
+> box stays empty, so the user cannot tell whether it worked.
 
 **Legs built:** Telegram, WhatsApp (native `chat.txt` **and** HTML), Messenger, LinkedIn,
 Email (IMAP **and** saved `.eml`), Outlook (`.pst`), SMS. All seven are in the live store.
@@ -120,9 +126,76 @@ reuse it, the way `identity.json` already persists the Owner — not a change to
 
 ---
 
-## Done — one line each
+## Ingest UI — known broken (being tested now)
+
+The **graph is not affected** — it renders email correctly. The defects are confined to the
+modal's two picker routes, which stage silently and leave the box showing nothing.
+
+| Path | Behaviour |
+|---|---|
+| **Paste a path** | **Works.** This is the reliable route. Email ingested this way. |
+| **Drag and drop** | Does not work, and the staged list never shows whether staging succeeded. |
+| **Select file / select folder** | Selection is not reflected in the box either. |
+
+**Two defects are confirmed in the upload route, and they are the likely cause:**
+
+1. `app/ui/src/lib/api.js` — `body.append("files", file, file.name)` sends only the
+   **bare filename**. `webkitRelativePath` is never sent, so the folder a folder-pick hold
+   is lost before it reaches the server. The route already has `parts[-2]` logic to keep the
+   parent folder; it can never fire.
+2. `app/routers/ingest.py::upload` — detects **per uploaded file**. A dropped or picked
+   `email_eml/` folder arrives as ~190 individual `.eml` files, none of which is a mailbox
+   on its own, so every one is filed under `spool/real/unrecognised/`. The same folder works
+   when pasted, because `stage()` now asks `detect_platform()` about the **directory** first.
+
+**Fix, in order:** (a) send `file.webkitRelativePath || file.name` in `api.js`; (b) make
+`upload` group files by their top folder and ask `detect_platform()` about the reconstructed
+folder the way `stage()` does, instead of admitting every leaf file; (c) show the staged
+result — `stagedCount > 0` already renders, so if nothing appears the response is empty, and
+surfacing `result.ok` / the error text is what proves it.
+
+---
+
+## Done — 2026-11-19 — app files I edited (not just `sample_writer`)
+
+Three app-side bugs, all on the **email drop-in path**. `sample_writer` changes are listed
+under its own heading below.
+
+- **`relate_comms/adapters/email_imap.py::detect()`** — used a non-recursive
+  `path.iterdir()`, while `parse_eml()` reads with `rglob()`. A folder holding
+  `<thread>/NNN.eml` was reported **not email**, so `discover()` filed the whole export as
+  unrecognised and the modal sat at "ingesting…" forever. Now recursive, matching the parser.
+- **`relate_comms/ingest.py::stage()`** — walked **into** a dropped folder and copied every
+  file individually. Each `.eml` then hit `detect_platform()` alone and landed in
+  `unrecognised/`, so a pasted `email_eml/` staged ~190 files and wrote nothing. Now a
+  directory that `detect_platform()` claims **as a whole** is copied intact with
+  `copytree` — the same rule `discover()` already had. Verified: `email_eml` → 1 batch /
+  151 messages; `messenger_dir` → 655; `linkedin_dir` → 93.
+- **New tests** (`tests/test_sample_writer.py`): `test_email_layout_splits_inbox_and_sent`,
+  `test_email_export_is_discovered_by_ingest`, and two staging tests, one per folder export.
+
+**Not yet fixed:** the upload route and `api.js` (see *Ingest UI* above). Paste-path works;
+no other route does.
 
 Everything before **2026-11-18** is in `git log`; only the current round is listed.
+
+- **2026-11-19** — `sample_writer` fuzz: sender labels and body entities can now carry
+  different spellings per platform (`Chris`/`Christopher`, `Celestica`/`Celstica`,
+  `North Dakota`/`N Dakota`). Derived by rule (`sample_writer/fuzz.py`); one small nickname
+  table, no data files. The **Owner is never fuzzed**. Knobs `FUZZ_*` in
+  `sample_writer/config.py`; `plan.assert_contract` fails if a knob produces less than it
+  asked for.
+- **2026-11-19** — `sample_writer` timing: threads are no longer evenly spread. Messages
+  arrive in bursts with long silences (`TIMING_BURSTS`, `TIMING_SPAN_DAYS`), so a thread can
+  put three messages in one year and two in the next. Spans 0-729 days, clamped to the
+  export window.
+- **2026-11-19** — `sample_writer` bodies: mixed sentence counts
+  (`BODY_SENTENCES_WEIGHTS`, 55/30/15) plus a sign-off pool.
+- **2026-11-19** — `sample_writer` email: writes `Inbox/<thread>/` and `Sent/<thread>/` so
+  `folder_is_sent()` fires and ownership is decided **structurally**, not only by address
+  match.
+- **2026-11-19** — **Email is now ingestible from the UI by pasting a path** — the first time
+  the email leg has worked outside a test. See the app fixes above.
 
 - **2026-11-18** — Docs consolidated: one spool queue, no stale claims.
 - **2026-11-18** — `sample_writer` finished: `add` writes alongside `out/` with Windows-style

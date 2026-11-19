@@ -156,6 +156,21 @@ FUZZ_ORG_ABBREV = False
 # 3-sentence paragraphs, which is what real exports look like.
 BODY_SENTENCES = (1, 3)
 
+# --------------------------------------------------------------- thread timing
+#
+# Messages are NOT spread evenly across a thread's life. Real threads arrive in bursts,
+# with long silences between them: three messages in one evening, then eight months of
+# nothing, then two more. Even spacing made every thread read as machine-generated and
+# left the month histogram flat.
+
+TIMING_BURSTS = (1, 5)        # (min, max) bursts of activity in one thread
+TIMING_SPAN_DAYS = 730        # how far after `start` the last burst may land (~2 years)
+
+# How many messages a body runs to. A thread mixes one-word acknowledgements with
+# two-and-three-sentence paragraphs; the long tail is what makes a message-length
+# view interesting.
+BODY_SENTENCES_WEIGHTS = {1: 55, 2: 30, 3: 15}
+
 
 def fuzz_lines(world, summary: dict[str, int]) -> list[str]:
     """The build log's one-line report of what the fuzz knobs produced.

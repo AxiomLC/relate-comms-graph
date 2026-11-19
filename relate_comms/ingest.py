@@ -1165,8 +1165,14 @@ def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> 
         if not given.exists():
             raise FileNotFoundError(f"no such export: {given}")
 
+        # A directory an adapter claims **as a whole** is staged as one thing, exactly
+        # as `discover()` treats it. Staging its files one-by-one filed every `.eml`
+        # under `unrecognised/` (no single file is a mailbox) and lost the folder that
+        # gives Messenger and email their thread ids — the drop zone then reported
+        # success and wrote nothing.
+        whole = given.is_dir() and detect_platform(given) is not None
         candidates = [given]
-        if given.is_dir():
+        if given.is_dir() and not whole:
             candidates = [p for p in sorted(given.rglob("*")) if p.is_file()
                           and p.suffix.lower() in _CONSIDER_SUFFIXES]
 
@@ -1181,6 +1187,15 @@ def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> 
                 platform = "unrecognised"
             target_root = top / platform
             target_root.mkdir(parents=True, exist_ok=True)
+
+            if item.is_dir():
+                # Copy the recognised folder tree intact, with its own name as the
+                # one level kept — `email_eml/` and `messenger_dir/` both rely on it.
+                destination = target_root / item.name
+                if not destination.exists():
+                    shutil.copytree(item, destination)
+                staged.append(destination)
+                continue
 
             # Keep one folder level so two chats sharing a filename never collide.
             destination = target_root / item.parent.name / item.name
