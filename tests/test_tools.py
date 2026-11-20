@@ -134,7 +134,9 @@ def test_unimplemented_tools_are_not_registered():
 def test_graph_slice_draws_threads_and_correspondents_by_default(store):
     slice_ = tools.graph_slice()
     assert slice_["node_types"] == ["Thread", "Correspondent"]
-    assert slice_["edge_types"] == ["WITH"]
+    # `POSSIBLY` is drawn by default too: both endpoints are Correspondents and the
+    # line is the product. It holds no rows until `link.py` has run.
+    assert slice_["edge_types"] == ["WITH", "POSSIBLY"]
     assert slice_["counts"]["nodes"] > 0
     types = {node["type"] for node in slice_["nodes"]}
     assert types == {"Thread", "Correspondent"}
@@ -142,6 +144,20 @@ def test_graph_slice_draws_threads_and_correspondents_by_default(store):
     ids = {node["id"] for node in slice_["nodes"]}
     for edge in slice_["edges"]:
         assert edge["source"] in ids and edge["target"] in ids
+
+
+def test_every_correspondent_reports_its_merged_flag(store):
+    """The canvas uses `merged` as the bag-membership test, so it must always be there.
+
+    A missing key would read as `false` in JS and quietly bag a merged node — the
+    exact failure the `:Merged`-inverted rule exists to prevent.
+    """
+    correspondents = [n for n in tools.graph_slice()["nodes"]
+                      if n["type"] == "Correspondent"]
+    assert correspondents
+    for node in correspondents:
+        assert "merged" in node, node["id"]
+        assert isinstance(node["merged"], bool)
 
 
 def test_graph_slice_truncation_is_reported(store):

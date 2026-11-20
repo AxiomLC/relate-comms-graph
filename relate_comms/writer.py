@@ -193,6 +193,7 @@ def write_correspondents(
         forms.append(owner)
 
     first_seen = _first_seen_by_person(result, forms)
+    contacts = _contact_ids(result, forms)
 
     # One row per (thread, person), but the *per-platform* facts are decided once per
     # (key, platform). Relate evaluates every row of an `UNWIND` against the node as
@@ -228,6 +229,12 @@ def write_correspondents(
             slot = (key, chat.platform)
             fact = facts.get(slot)
             if fact is None:
+                # A phone-only contact's key IS its digits, so the evidence is enough.
+                # A *named* contact has no address in its key at all — the export's
+                # `sender_id` is the only place a phone or an address ever appears, and
+                # without it `link.py` could never fold `person:david sartori` onto
+                # `person:+27845189029`.
+                contact = contacts.get((chat.platform, record.key), {})
                 fact = facts[slot] = {
                     "key": key,
                     "platform": chat.platform,
@@ -236,8 +243,10 @@ def write_correspondents(
                     "seen_prop": f"{SEEN_PREFIX}{chat.platform}",
                     "first_seen_utc": first_seen.get((chat.platform, record.key)),
                     "merged_by": _MERGED_BY.get(record.evidence, "exact_name"),
-                    "email": record.key if record.evidence == "email" else None,
-                    "phone_e164": record.key if record.evidence == "phone" else None,
+                    "email": (record.key if record.evidence == "email"
+                              else contact.get("email")),
+                    "phone_e164": (record.key if record.evidence == "phone"
+                                   else contact.get("phone")),
                 }
             rows.append({**fact, "thread_key": tkey})
 
@@ -247,6 +256,43 @@ def write_correspondents(
     _reconcile(cur, keys)
     conn.commit()
     return {"correspondents": len(keys)}
+
+
+def _contact_ids(
+    result: IngestResult, owner_forms: Iterable[str],
+) -> dict[tuple[str, str], dict[str, str]]:
+    """`(platform, canonical) -> {"phone": …, "email": …}` from the export's ids.
+
+    A sender field is a *name*; the address a platform actually knows the person by
+    lives in `sender_id` (SMS writes the phone, email writes the address, Telegram
+    writes a user id). Without this the store holds no phone for a named contact, so
+    a phone fold has nothing to compare and `link.py` can only ever match on names —
+    which edit 1 already did at write time.
+
+    Only a value that *is* a phone or an address is kept. A Telegram user id
+    (`user1426445212`) is neither, and storing it as a phone would be a lie.
+    """
+    from .canon import canonical, is_email, is_phone, phone_digits
+
+    forms = list(owner_forms)
+    found: dict[tuple[str, str], dict[str, str]] = {}
+    for message in result.messages:
+        raw_id = (message.sender_id or "").strip()
+        name = (message.sender_name or "").strip()
+        if not raw_id or not name:
+            continue
+        record = canonical(name, kind="person", owner=forms)
+        if record.is_owner or not record.key or record.is_placeholder:
+            continue
+
+        slot = found.setdefault((message.platform, record.key), {})
+        if is_phone(raw_id):
+            digits = phone_digits(raw_id)
+            if digits:
+                slot.setdefault("phone", digits)
+        elif is_email(raw_id):
+            slot.setdefault("email", raw_id.strip().strip(".,;:").casefold())
+    return found
 
 
 def _first_seen_by_person(

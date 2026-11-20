@@ -14,7 +14,7 @@ export default function SetupModal({ onClose }) {
   const chat = useFetch(() => api.chatHealth(), []);
 
   return (
-    <Modal title="Setup" onClose={onClose} wide>
+    <Modal title="Setup" onClose={onClose} side>
       <div className="prose">
         <p>
           A local, private window into every conversation you have had, laid out as one

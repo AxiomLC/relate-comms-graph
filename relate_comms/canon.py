@@ -168,6 +168,21 @@ except ImportError:  # pragma: no cover
 # Nothing is merged on a fuzzy score — see `candidates()`.
 FUZZY_REPORT = 0.85
 
+# --- fold knobs, read by `link.py` (edit 4) ----------------------------------
+#
+# Three switches, so a bad class of merge can be turned off without a code change.
+# They live here rather than in `link.py` because `NICKNAME_ENABLED` has to be
+# honoured by the pipe itself: a nickname is resolved into the *key* at write time,
+# so turning it off in `link.py` alone could not undo it.
+
+# Off = `Dave` and `David` stay separate, at write time and at link time.
+NICKNAME_ENABLED = True
+
+# Off = `link.py` folds only on phone and email, never on a name. A name fold is
+# normally a no-op (edit 1 already folds identical canonical names into one key);
+# it matters for a node whose *handle* is a name while its key is a phone.
+FOLD_ON_NAME = True
+
 
 # --------------------------------------------------------------------------- record
 
@@ -313,7 +328,7 @@ def _resolve_nicknames(words: list[str]) -> tuple[list[str], bool]:
     `Dave Sartori` -> `david sartori`. Deliberately first-token-only: a surname that
     happens to match a nickname (`Will` as a surname) must not be rewritten.
     """
-    if not words:
+    if not words or not NICKNAME_ENABLED:
         return words, False
     canonical = NICKNAMES.get(words[0].casefold())
     if canonical and canonical != words[0].casefold():
@@ -475,6 +490,25 @@ def _same_identity(a: str, b: str | None) -> bool:
     if is_email(a) and is_email(b):
         return a.strip().casefold() == b.strip().casefold()
     return _nickname_form(a) == _nickname_form(b)
+
+
+def nickname_form(raw: str) -> str:
+    """The name with its first token nickname-resolved. Used only for comparison.
+
+    Public because `link.py` needs the same form to decide whether two nodes are one
+    person: a private helper would make the fold's rule a second copy of this one.
+    """
+    return _nickname_form(raw)
+
+
+def score(a: str, b: str) -> float:
+    """Similarity for two already-canonical keys. Public twin of `_score`."""
+    return _score(a, b)
+
+
+def fuzzy_available() -> bool:
+    """Is `rapidfuzz` importable? Without it no fuzzy candidate can be scored."""
+    return _fuzz is not None
 
 
 def _nickname_form(raw: str) -> str:

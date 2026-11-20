@@ -126,6 +126,19 @@ button:disabled {
   cursor: default;
 }
 
+/*
+ * Pressed state. `filter: brightness()` alone was not enough: the label is
+ * `--orange-text` on `--orange`, and brightening both together keeps the contrast
+ * ratio the same, so a press looked identical to a hover. A press now inverts the
+ * pair — dark text on a light fill — which is unmistakable at a glance.
+ */
+button:active:not(:disabled) {
+  background: var(--orange-text);
+  color: #1a0d05;
+  border-color: var(--orange-text);
+  filter: none;
+}
+
 button.ghost {
   background: transparent;
   color: var(--text);
@@ -136,10 +149,40 @@ button.ghost:hover:not(:disabled) {
   background: rgb(92 143 214 / 0.1);
 }
 
+button.ghost:active:not(:disabled) {
+  background: var(--blue-glow);
+  color: #05070a;
+  border-color: var(--blue-glow);
+}
+
 button.active {
   background: rgb(92 143 214 / 0.16);
   border-color: var(--blue-glow);
   color: var(--text);
+}
+
+/*
+ * The primary action in a modal footer — "Re-run layout", "Ingest". It has to read
+ * as the thing to press, and it has to look pressed when it is. The fill is the
+ * bright end of the palette rather than the dark orange, so the dark label on it has
+ * real contrast in both states.
+ */
+button.primary {
+  background: var(--orange-text);
+  color: #1a0d05;
+  border-color: var(--orange-text);
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+button.primary:active:not(:disabled) {
+  background: #f0a35e;
+  color: #0d0603;
+  border-color: #f0a35e;
+  filter: none;
 }
 
 button.icon {
@@ -437,10 +480,12 @@ textarea::placeholder {
 }
 
 .result-meta {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   margin-top: 3px;
+  /* A path or a warning must wrap inside a narrow panel, not overflow it. */
+  overflow-wrap: anywhere;
 }
 
 /* messages */
@@ -531,9 +576,10 @@ textarea::placeholder {
 }
 
 .pager-info {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 /* ------------------------------------------------------------------ chat */
@@ -650,6 +696,46 @@ textarea::placeholder {
   width: min(980px, 100%);
 }
 
+/*
+ * A side-docked panel. Right-justified and narrower than the default modal, so the
+ * canvas stays visible while the panel is open.
+ *
+ * **Every modal uses this**, not just Gravity. The graph is the product; a centred
+ * dialog that covers it means you cannot see the effect of anything you change. The
+ * backdrop is transparent and does not block clicks, so the canvas stays usable
+ * behind the panel. Escape and the X still close it.
+ */
+.modal-backdrop.side {
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 0;
+  background: transparent;
+  backdrop-filter: none;
+  pointer-events: none;
+}
+
+.modal.side {
+  width: min(570px, 100%);
+  max-height: 100vh;
+  height: 100vh;
+  border-radius: 0;
+  border-right: 0;
+  border-top: 0;
+  border-bottom: 0;
+  pointer-events: auto;
+  box-shadow: -18px 0 48px rgb(0 0 0 / 0.55);
+}
+
+/*
+ * A narrow panel cannot hold two columns of key/value rows side by side, so the
+ * pair collapses to one. Used by the Evidence modal's node/edge type lists.
+ */
+.kv-pair {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
 .modal-head {
   display: flex;
   align-items: center;
@@ -659,7 +745,7 @@ textarea::placeholder {
 }
 
 .modal-title {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -668,7 +754,11 @@ textarea::placeholder {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 14px;
+  padding: 16px;
+  /* A narrow panel must wrap rather than scroll sideways. */
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 .modal-foot {
@@ -681,12 +771,15 @@ textarea::placeholder {
 
 /* ------------------------------------------------------------------ misc */
 h2.section {
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
+  font-size: 11.5px;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: var(--muted);
+  /* Brighter than `--muted`: these are the only structure a long panel has, so they
+     have to read as headings rather than as captions. */
+  color: var(--text);
   margin: 0 0 8px;
   font-weight: 600;
+  opacity: 0.85;
 }
 
 h2.section:not(:first-child) {
@@ -698,6 +791,7 @@ h2.section:not(:first-child) {
   padding: 18px 4px;
   font-size: 12px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .error {
@@ -717,13 +811,16 @@ h2.section:not(:first-child) {
 
 .kv {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  /* `minmax(0, max-content)` so a long key wraps instead of pushing the value out
+     of a narrow panel. */
+  grid-template-columns: minmax(0, max-content) 1fr;
   gap: 4px 14px;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .kv dt {
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .kv dd {
@@ -758,29 +855,62 @@ h2.section:not(:first-child) {
   letter-spacing: 0.06em;
 }
 
+/*
+ * A field is now a block: a row (label, control, value) plus an optional note under
+ * it. The note is what makes a narrow panel usable — the control names do not explain
+ * themselves, and a hover tooltip is invisible until you already know to look.
+ */
 .field {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
+  display: block;
+  margin-bottom: 12px;
   font-size: 12px;
 }
 
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .field label {
-  flex: 0 0 190px;
-  color: var(--muted);
+  flex: 0 0 150px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  /* A long knob name wraps rather than pushing the slider off the panel. */
+  overflow-wrap: anywhere;
 }
 
 .field input[type="range"] {
   flex: 1;
+  min-width: 0;
   accent-color: var(--blue-glow);
 }
 
 .field .value {
-  flex: 0 0 62px;
+  flex: 0 0 52px;
   text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--text);
+}
+
+.field-note {
+  margin: 3px 0 0;
+  padding-left: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  /* The panel is narrow, so a note must wrap rather than clip. */
+  overflow-wrap: anywhere;
+}
+
+/* A checkbox field: the box and its label on one line, the note under both. */
+.check-field {
+  margin-bottom: 12px;
+}
+
+.check-field .check {
+  margin-bottom: 0;
 }
 
 .field input[type="text"],

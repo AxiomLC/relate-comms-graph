@@ -14574,11 +14574,11 @@
   });
 
   // app/ui/src/main.jsx
-  var import_react14 = __toESM(require_react(), 1);
+  var import_react15 = __toESM(require_react(), 1);
   var import_client = __toESM(require_client(), 1);
 
   // app/ui/src/App.jsx
-  var import_react13 = __toESM(require_react(), 1);
+  var import_react14 = __toESM(require_react(), 1);
 
   // app/ui/src/lib/api.js
   async function request(path, options = {}) {
@@ -14723,14 +14723,32 @@
     physics: {
       nodeRepulsion: 2e4,
       // 8000 = tight clumps, 40000 = airy
-      idealEdgeLength: 60,
-      // 40 = dense, 120 = sparse
+      idealEdgeLength: 22,
+      // 12 = very dense, 60 = airy
+      // fcose adds each compound's estimated size to every edge that crosses a bag
+      // boundary (`layout-base.js` `calcIdealEdgeLengths`). With a 31-node Telegram bag
+      // that is ~250px of ideal length on every merged-node edge — the long lines.
+      // Off, an inter-bag edge is just `idealEdgeLength` like any other.
+      smartEdgeLength: false,
+      // true = the old, very long cross-bag edges
       gravity: 0.2,
       // 0 = drifts apart, 0.5 = pulled into a ball
       nodeSeparation: 75,
       // BETWEEN disconnected components only
       numIter: 2500,
       // 1000 = fast and messy, 5000 = slow and settled
+      // Compound gravity. Each platform is a bag (an invisible parent node), and this
+      // is what squeezes a bag's children toward its own centre — NOT `gravity`, which
+      // pulls everything toward the middle of the screen and would crush all seven bags
+      // into one ball. 1.0 is fcose's default; raise it if a big bag sprawls.
+      gravityCompound: 1,
+      // 0.5 = loose bag, 2.0 = tight ball
+      gravityRangeCompound: 1.5,
+      // how far the compound pull reaches, in bag radii
+      // Labels are part of a node's layout box. Without this a 120px label sits on a
+      // 18px node and the solver has no idea it is there — which is most of the
+      // "nodes on top of nodes" overlap.
+      nodeDimensionsIncludeLabels: true,
       randomize: true,
       // MANDATORY: elements are re-added on filter change and
       // fresh nodes all start at (0,0) — without this the layout has no spread
@@ -14767,10 +14785,11 @@
      * global threshold flattens every source but the biggest into the same dust
      * cloud. Cutting bands inside each source keeps every cluster legible.
      *
-     * Which letters each kind may use:
+     * Which letters each kind may use — declared per kind in `nodeTypes.js`
+     * (`sizeLadder`), not here:
      *   Thread        A / C / E   — A is the standout, so threads skip B
      *   Correspondent B / D / F   — B is the biggest correspondent, below A
-     *   Person, Place, Organization, Thing (future)  D / E / F
+     *   Person, Place, Organization, Product  D / E / F
      *
      * The two ladders interleave, so a thread always outranks the correspondent of
      * the same band: A thread, B correspondent, C thread, D correspondent, E thread,
@@ -14874,7 +14893,25 @@
     layout: {
       name: "fcose",
       fit: true,
-      padding: 40
+      padding: 40,
+      // Pin the platform bags to a ring, so the picture is "platforms around the
+      // outside, bridges in the middle" rather than seven blobs wherever the solver
+      // happened to leave them.
+      //
+      // Applied AFTER the solver, as a translation of each bag's children — not as a
+      // `fixedNodeConstraint`. That constraint is fatal on a compound node: fcose's
+      // `spectralLayout` never indexes parents, so the constraint reads `undefined` and
+      // turns every coordinate into `NaN`. See `placeBagsOnRing`.
+      //
+      // It is what makes the middle meaningful: a merged node is pulled by its real
+      // edges toward every bag it touches, and the bags are arranged so those pulls
+      // point inward from all sides.
+      //
+      // Off = free-floating, exactly as before bags existed.
+      bagRing: true,
+      // Multiplier on the ring radius. 1.0 packs the bags shoulder to shoulder;
+      // raise it to open the middle up for the bridges.
+      bagRingSpread: 1
     },
     /* ------------------------------------------------------------------ filter
      * VIEW ONLY. A hidden toggle must never narrow what an agent can query
@@ -14889,7 +14926,14 @@
      * keeps the ones that went silent — the question this app exists to answer.
      */
     filter: {
+      // The default set. The four entity kinds are drawable but hold zero rows until
+      // body-entity extraction lands, so they are off until someone ticks them.
       nodeTypes: ["Thread", "Correspondent"],
+      // One invisible bag per platform, so fcose clusters threads by source instead of
+      // letting them float free. Client-side only — a bag is a body for the layout, not
+      // data, and it never reaches the server or any count. Off is a real option: with
+      // it off the canvas is exactly what it was before bags existed.
+      bags: true,
       // Every platform on by default, and the toggle is a plain on/off per platform —
       // the same shape as the node-type list above it. An empty list means "not
       // chosen yet", which the canvas reads as "all on", so a platform added later
@@ -14912,7 +14956,7 @@
     return JSON.parse(JSON.stringify(theme));
   }
   var STORAGE_KEY = "relate.graphStyle";
-  var THEME_VERSION = 6;
+  var THEME_VERSION = 9;
   function loadTheme() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -15337,8 +15381,23 @@
   __iconData6.node;
   var LoaderCircle = createLucideIcon(__iconData6);
 
-  // node_modules/lucide-react/dist/esm/icons/palette.mjs
+  // node_modules/lucide-react/dist/esm/icons/orbit.mjs
   var __iconData7 = {
+    name: "orbit",
+    size: 24,
+    node: [
+      ["path", { d: "M20.341 6.484A10 10 0 0 1 10.266 21.85", key: "1enhxb" }],
+      ["path", { d: "M3.659 17.516A10 10 0 0 1 13.74 2.152", key: "1crzgf" }],
+      ["circle", { cx: "12", cy: "12", r: "3", key: "1v7zrd" }],
+      ["circle", { cx: "19", cy: "5", r: "2", key: "mhkx31" }],
+      ["circle", { cx: "5", cy: "19", r: "2", key: "v8kfzx" }]
+    ]
+  };
+  __iconData7.node;
+  var Orbit = createLucideIcon(__iconData7);
+
+  // node_modules/lucide-react/dist/esm/icons/palette.mjs
+  var __iconData8 = {
     name: "palette",
     size: 24,
     node: [
@@ -15355,11 +15414,11 @@
       ["circle", { cx: "8.5", cy: "7.5", r: ".5", fill: "currentColor", key: "fotxhn" }]
     ]
   };
-  __iconData7.node;
-  var Palette = createLucideIcon(__iconData7);
+  __iconData8.node;
+  var Palette = createLucideIcon(__iconData8);
 
   // node_modules/lucide-react/dist/esm/icons/rotate-ccw.mjs
-  var __iconData8 = {
+  var __iconData9 = {
     name: "rotate-ccw",
     size: 24,
     node: [
@@ -15367,11 +15426,11 @@
       ["path", { d: "M3 3v5h5", key: "1xhq8a" }]
     ]
   };
-  __iconData8.node;
-  var RotateCcw = createLucideIcon(__iconData8);
+  __iconData9.node;
+  var RotateCcw = createLucideIcon(__iconData9);
 
   // node_modules/lucide-react/dist/esm/icons/search.mjs
-  var __iconData9 = {
+  var __iconData10 = {
     name: "search",
     size: 24,
     node: [
@@ -15379,11 +15438,11 @@
       ["circle", { cx: "11", cy: "11", r: "8", key: "4ej97u" }]
     ]
   };
-  __iconData9.node;
-  var Search = createLucideIcon(__iconData9);
+  __iconData10.node;
+  var Search = createLucideIcon(__iconData10);
 
   // node_modules/lucide-react/dist/esm/icons/send.mjs
-  var __iconData10 = {
+  var __iconData11 = {
     name: "send",
     size: 24,
     node: [
@@ -15397,11 +15456,11 @@
       ["path", { d: "m21.854 2.147-10.94 10.939", key: "12cjpa" }]
     ]
   };
-  __iconData10.node;
-  var Send = createLucideIcon(__iconData10);
+  __iconData11.node;
+  var Send = createLucideIcon(__iconData11);
 
   // node_modules/lucide-react/dist/esm/icons/sliders-horizontal.mjs
-  var __iconData11 = {
+  var __iconData12 = {
     name: "sliders-horizontal",
     size: 24,
     node: [
@@ -15416,11 +15475,11 @@
       ["path", { d: "M8 12H3", key: "a7s4jb" }]
     ]
   };
-  __iconData11.node;
-  var SlidersHorizontal = createLucideIcon(__iconData11);
+  __iconData12.node;
+  var SlidersHorizontal = createLucideIcon(__iconData12);
 
   // node_modules/lucide-react/dist/esm/icons/sparkles.mjs
-  var __iconData12 = {
+  var __iconData13 = {
     name: "sparkles",
     size: 24,
     node: [
@@ -15437,11 +15496,11 @@
     ],
     aliases: ["stars"]
   };
-  __iconData12.node;
-  var Sparkles = createLucideIcon(__iconData12);
+  __iconData13.node;
+  var Sparkles = createLucideIcon(__iconData13);
 
   // node_modules/lucide-react/dist/esm/icons/terminal.mjs
-  var __iconData13 = {
+  var __iconData14 = {
     name: "terminal",
     size: 24,
     node: [
@@ -15449,11 +15508,11 @@
       ["path", { d: "m4 17 6-6-6-6", key: "1yngyt" }]
     ]
   };
-  __iconData13.node;
-  var Terminal = createLucideIcon(__iconData13);
+  __iconData14.node;
+  var Terminal = createLucideIcon(__iconData14);
 
   // node_modules/lucide-react/dist/esm/icons/trash.mjs
-  var __iconData14 = {
+  var __iconData15 = {
     name: "trash",
     size: 24,
     node: [
@@ -15465,11 +15524,11 @@
     ],
     aliases: ["trash-2"]
   };
-  __iconData14.node;
-  var Trash = createLucideIcon(__iconData14);
+  __iconData15.node;
+  var Trash = createLucideIcon(__iconData15);
 
   // node_modules/lucide-react/dist/esm/icons/upload.mjs
-  var __iconData15 = {
+  var __iconData16 = {
     name: "upload",
     size: 24,
     node: [
@@ -15478,11 +15537,11 @@
       ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }]
     ]
   };
-  __iconData15.node;
-  var Upload = createLucideIcon(__iconData15);
+  __iconData16.node;
+  var Upload = createLucideIcon(__iconData16);
 
   // node_modules/lucide-react/dist/esm/icons/x.mjs
-  var __iconData16 = {
+  var __iconData17 = {
     name: "x",
     size: 24,
     node: [
@@ -15490,8 +15549,8 @@
       ["path", { d: "m6 6 12 12", key: "d8bk6v" }]
     ]
   };
-  __iconData16.node;
-  var X = createLucideIcon(__iconData16);
+  __iconData17.node;
+  var X = createLucideIcon(__iconData17);
 
   // app/ui/src/components/ChatPanel.jsx
   var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
@@ -15776,6 +15835,18 @@
           ]
         }
       ),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
+        "button",
+        {
+          className: "ghost",
+          onClick: () => onOpenModal("gravity"),
+          title: "Gravity \u2014 force simulation and label threshold, live",
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Orbit, { size: 13 }),
+            " Gravity"
+          ]
+        }
+      ),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
         "button",
         {
@@ -15798,13 +15869,80 @@
       drawable: true,
       shape: "ellipse",
       label: "Thread",
-      hint: "one conversation; size = message count"
+      hint: "one conversation; size = message count",
+      // Which letters of the A..F ladder this kind may use, biggest first. Threads
+      // skip B so a thread always outranks the correspondent of the same band.
+      sizeLadder: ["A", "C", "E"],
+      countKey: "message_count",
+      labelMax: 34,
+      // The field that weights an edge leaving this node. `WITH` stores no count, so
+      // the thread's own size is the only signal the canvas has.
+      edgeWeight: "message_count",
+      // Only threads can be "silent" — a correspondent has no is_self of its own.
+      hideWhenSilent: true,
+      iconKind: "platform"
     },
     Correspondent: {
       drawable: true,
-      shape: "round-rectangle",
+      shape: "ellipse",
       label: "Correspondent",
-      hint: "a person on one platform (not a Person)"
+      hint: "a person on one platform (not a Person)",
+      sizeLadder: ["B", "D", "F"],
+      countKey: "thread_count",
+      labelMax: 28,
+      // Correspondents glow permanently, so they read as a different class of thing
+      // against the threads. Selection therefore cannot also be a glow.
+      glow: true,
+      iconKind: "person"
+    },
+    // The four extracted kinds draw as the DEFAULT FILLED CIRCLE — no glyph, by
+    // decision. `iconKind: null` is what makes that true: `nodeIcon()` returns null,
+    // the `icon` class is never added, and the base `node` rule (a filled circle in
+    // the platform colour) is what you see. Do not give them a glyph until there is
+    // one file per platform colour, the way `PERSON_ICONS` has.
+    Person: {
+      drawable: true,
+      shape: "ellipse",
+      label: "Person",
+      hint: "a name mentioned in a body \u2014 extraction, not ingest",
+      sizeLadder: ["D", "E", "F"],
+      countKey: "mention_count",
+      labelMax: 28,
+      glow: true,
+      iconKind: null
+    },
+    Place: {
+      drawable: true,
+      shape: "ellipse",
+      label: "Place",
+      hint: "a location mentioned in a body",
+      sizeLadder: ["D", "E", "F"],
+      countKey: "mention_count",
+      labelMax: 28,
+      glow: true,
+      iconKind: null
+    },
+    Organization: {
+      drawable: true,
+      shape: "ellipse",
+      label: "Organization",
+      hint: "a company or body mentioned in a body",
+      sizeLadder: ["D", "E", "F"],
+      countKey: "mention_count",
+      labelMax: 28,
+      glow: true,
+      iconKind: null
+    },
+    Product: {
+      drawable: true,
+      shape: "ellipse",
+      label: "Product",
+      hint: "a product or thing mentioned in a body",
+      sizeLadder: ["D", "E", "F"],
+      countKey: "mention_count",
+      labelMax: 28,
+      glow: true,
+      iconKind: null
     },
     Message: {
       drawable: false,
@@ -15817,6 +15955,7 @@
       hint: "refs only, never bytes"
     }
   };
+  var DRAWABLE_TYPES = Object.entries(NODE_TYPES).filter(([, meta]) => meta.drawable).map(([type]) => type);
   var PLATFORM_COLORS = {
     messenger: "#3b6fd4",
     // medium blue (Facebook)
@@ -15862,6 +16001,16 @@
   };
   function personIcon(platform) {
     return PERSON_ICONS[String(platform || "").toLowerCase()] || null;
+  }
+  function nodeIcon(type, platform) {
+    const kind = NODE_TYPES[type]?.iconKind;
+    if (kind === "platform") return platformIcon(platform);
+    if (kind === "person") return personIcon(platform);
+    return null;
+  }
+  function kindClass(type) {
+    const kind = NODE_TYPES[type]?.iconKind;
+    return kind && kind !== "platform" ? kind : null;
   }
   var FALLBACK_COLOR = "#6b7a90";
   function platformColor(platform) {
@@ -15911,6 +16060,16 @@
     "sms"
   ];
   var PLANNED_PLATFORMS = /* @__PURE__ */ new Set([]);
+  var FALLBACK_META = {
+    drawable: true,
+    shape: "ellipse",
+    sizeLadder: ["D", "E", "F"],
+    countKey: "mention_count",
+    labelMax: 28,
+    iconKind: null
+  };
+  var metaOf = (node) => NODE_TYPES[node.type] || FALLBACK_META;
+  var bagId = (platform) => `bag:${platform}`;
   var GraphCanvas = (0, import_react7.forwardRef)(function GraphCanvas2({ data, theme, onNodeClick, onBackgroundClick, onLayoutDone }, ref) {
     const hostRef = (0, import_react7.useRef)(null);
     const cyRef = (0, import_react7.useRef)(null);
@@ -15920,6 +16079,7 @@
     const stylesheet = (0, import_react7.useMemo)(() => buildStylesheet(theme), [theme]);
     const sizeKey = JSON.stringify(theme.tiers.sizes);
     const platformKey = (theme.filter.platforms || []).join(",");
+    const bagsOn = !!theme.filter.bags;
     const hideSilent = !!theme.filter.hideSilent;
     const elements = (0, import_react7.useMemo)(() => {
       const theme2 = themeRef.current;
@@ -15930,41 +16090,51 @@
         if (chosen.length && !platformsOf(node).some((p) => chosen.includes(p))) {
           return false;
         }
-        if (hideSilent && node.type === "Thread" && node.is_silent) return false;
+        if (hideSilent && metaOf(node).hideWhenSilent && node.is_silent) return false;
         return true;
       });
-      const threadLetters = assignBands(
-        allNodes.filter((node) => node.type === "Thread"),
-        "message_count",
-        ["A", "C", "E"],
-        theme2.tiers.bands
-      );
-      const correspondentLetters = assignBands(
-        allNodes.filter((node) => node.type === "Correspondent"),
-        "thread_count",
-        ["B", "D", "F"],
-        theme2.tiers.bands
-      );
-      const threadCounts = new Map(
-        allNodes.filter((node) => node.type === "Thread").map((node) => [node.id, node.message_count || 0])
+      const lettersByType = /* @__PURE__ */ new Map();
+      for (const [type, meta] of Object.entries(NODE_TYPES)) {
+        if (!meta.drawable || !meta.sizeLadder) continue;
+        const group = allNodes.filter((node) => node.type === type);
+        if (!group.length) continue;
+        lettersByType.set(
+          type,
+          assignBands(group, meta.countKey, meta.sizeLadder, theme2.tiers.bands)
+        );
+      }
+      const edgeWeights = new Map(
+        allNodes.map((node) => {
+          const meta = metaOf(node);
+          return [node.id, node[meta.edgeWeight || meta.countKey] || 0];
+        })
       );
       const nodes = allNodes.map((node) => {
-        const isThread = node.type === "Thread";
-        const letter = isThread ? threadLetters.get(node.id) : correspondentLetters.get(node.id);
+        const meta = metaOf(node);
+        if (node.type === "Bag") {
+          return {
+            group: "nodes",
+            classes: "synthetic bag",
+            data: { id: node.id, type: "Bag", platform: node.platform || "" }
+          };
+        }
+        const letter = lettersByType.get(node.type)?.get(node.id);
         const tier = theme2.tiers.sizes[letter] || theme2.tiers.sizes.F;
         const base = platformColor(node.platform);
-        const glyph = isThread ? platformIcon(node.platform) : personIcon(node.platform);
+        const glyph = nodeIcon(node.type, node.platform);
+        const kind = kindClass(node.type);
+        const classes = [kind, glyph ? "icon" : null].filter(Boolean).join(" ");
         return {
           group: "nodes",
           // A CLASS, not a data field. Cytoscape's `[key]` selector tests whether the
           // field EXISTS, so `image: null` matched every node and stripped the fill
           // from the whole graph. A class is unambiguous.
-          classes: glyph ? isThread ? "icon" : "icon person" : "",
+          classes,
           data: {
             id: node.id,
             // One line, same as every other node. The source is already carried by
             // the node's icon — a SOURCE line above the title was redundant.
-            label: isThread ? truncateLabel(node.label || node.id, 34) : truncateLabel(node.label || node.id, 28),
+            label: truncateLabel(node.label || node.id, meta.labelMax),
             rawLabel: node.label || node.id,
             type: node.type,
             platform: node.platform || "",
@@ -15973,6 +16143,9 @@
             firstTs: node.first_ts || null,
             lastTs: node.last_ts || null,
             isGroup: !!node.is_group,
+            // `:Merged` is the bag-membership test, inverted: a merged node stays
+            // outside every bag and is pulled by its real edges instead.
+            merged: !!node.merged,
             // A shade of the platform colour, deterministic from the id, so a cluster
             // reads as a family and the picture is identical on every load.
             color: shade(base, node.id, theme2.visual.shadeJitter),
@@ -15986,9 +16159,28 @@
           }
         };
       });
+      const bagNodes = [];
+      if (theme2.filter.bags) {
+        const platformsInUse = /* @__PURE__ */ new Set();
+        for (const node of nodes) {
+          const platforms = platformsOf(node.data);
+          if (node.data.merged || platforms.length !== 1) continue;
+          const platform = platforms[0];
+          if (!platform) continue;
+          node.data.parent = bagId(platform);
+          platformsInUse.add(platform);
+        }
+        for (const platform of platformsInUse) {
+          bagNodes.push({
+            group: "nodes",
+            classes: "synthetic bag",
+            data: { id: bagId(platform), type: "Bag", platform }
+          });
+        }
+      }
       const ids = new Set(nodes.map((n) => n.data.id));
       const edges = (data.edges || []).filter((edge) => ids.has(edge.source) && ids.has(edge.target)).map((edge) => {
-        const tier = rungFor(theme2.tiers.edge, "min", threadCounts.get(edge.source) ?? 0);
+        const tier = rungFor(theme2.tiers.edge, "min", edgeWeights.get(edge.source) ?? 0);
         const platform = nodes.find((n) => n.data.id === edge.source)?.data.platform || "";
         return {
           group: "edges",
@@ -16005,8 +16197,8 @@
           }
         };
       });
-      return [...nodes, ...edges];
-    }, [data, sizeKey, platformKey, hideSilent]);
+      return [...bagNodes, ...nodes, ...edges];
+    }, [data, sizeKey, platformKey, hideSilent, bagsOn]);
     (0, import_react7.useEffect)(() => {
       if (!hostRef.current || cyRef.current) return void 0;
       if (window.cytoscapeFcose && !window.__fcoseRegistered) {
@@ -16074,7 +16266,10 @@
       if (!elements.length) return;
       cy.add(elements);
       runLayout(cy, themeRef.current, () => {
-        onLayoutDone?.({ nodes: cy.nodes().length, edges: cy.edges().length });
+        onLayoutDone?.({
+          nodes: cy.nodes().not(".synthetic").length,
+          edges: cy.edges().not(".synthetic").length
+        });
         startReveal(cy, themeRef.current, revealTimer);
       });
     }, [elements]);
@@ -16231,7 +16426,9 @@
       // empty string, and it would also defeat the renderer's image cache.
       //
       // `node.icon` (threads) and `node.icon.person` (correspondents) are separate
-      // selectors, so a platform's two glyphs never collide.
+      // selectors, so a platform's two glyphs never collide. `Person` / `Place` /
+      // `Organization` / `Product` have no glyph by decision, so they match no rule
+      // here and keep the base filled circle.
       // `iconScaleByPlatform` is the optical correction: the SVGs share a 24x24 box,
       // but a wide envelope and a compact speech bubble do not read as the same size at
       // the same scale. A platform with no entry keeps the base scale.
@@ -16251,15 +16448,28 @@
           "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`
         }
       })),
-      {
-        // Selector grammar needs spaces around the operator: `[type = "x"]`.
-        // A correspondent keeps a permanent glow in its OWN source colour — that glow
-        // is what makes it read as a different class of thing from a thread, now that
-        // both are glyphs. The fill and border are left to the base rule and the icon
-        // override; only the glow is added here.
-        selector: 'node[type = "Correspondent"]',
+      // Shape and glow are generated from `NODE_TYPES`, so a new kind is a config
+      // entry rather than a rule. Both are static literals — never `data()` — because
+      // a mapper that fails to parse takes the whole stylesheet down with it.
+      //
+      // `Bag` is excluded: it is synthetic, it has its own rule above, and giving it a
+      // shape or a glow would draw it.
+      //
+      // Selector grammar needs spaces around the operator: `[type = "x"]`.
+      ...Object.entries(NODE_TYPES).filter(([, meta]) => meta.drawable && meta.shape).map(([type, meta]) => ({
+        selector: `node[type = "${type}"]`,
+        style: { shape: meta.shape }
+      })),
+      ...Object.entries(NODE_TYPES).filter(([, meta]) => meta.drawable && meta.glow).map(([type]) => ({
+        // A non-thread kind keeps a permanent glow in its OWN source colour — that
+        // glow is what makes it read as a different class of thing from a thread,
+        // now that both are glyphs. The fill and border are left to the base rule
+        // and the icon override; only the glow is added here.
+        //
+        // This is keyed on `type`, not on the kind class, so a kind with no glyph
+        // file yet still glows instead of looking like a plain circle.
+        selector: `node[type = "${type}"]`,
         style: {
-          shape: "ellipse",
           color: labels.correspondentColor,
           "border-color": "data(color)",
           "border-opacity": 1,
@@ -16269,18 +16479,7 @@
           "shadow-offset-x": 0,
           "shadow-offset-y": 0
         }
-      },
-      {
-        // The glyph replaces the fill, but the glow and border stay: a correspondent
-        // must still read as a different class of thing from a thread.
-        selector: 'node[type = "Correspondent"].icon',
-        style: {
-          "background-opacity": 0,
-          "border-width": 0,
-          "background-image-opacity": 1,
-          "background-clip": "none"
-        }
-      },
+      })),
       {
         // Selection cannot also be a glow now that correspondents glow by default, so
         // it is a bright border plus a much larger blur. Threads keep the glow-only
@@ -16313,8 +16512,64 @@
         }
       },
       {
+        // A fuzzy identity guess, never a fact. Dashed and thin so it reads as a
+        // question beside a solid `WITH` line — the same distinction the store makes
+        // between a fold and an edge (direction.md §5).
+        selector: 'edge[type = "POSSIBLY"]',
+        style: {
+          "line-style": "dashed",
+          "line-dash-pattern": [6, 6],
+          width: 1,
+          opacity: 0.55
+        }
+      },
+      {
         selector: ".reveal-hidden",
         style: { opacity: 0 }
+      },
+      {
+        // A bag: an invisible, inert body for fcose. One per platform, never seen.
+        //
+        // **This rule is LAST on purpose.** Cytoscape applies stylesheet blocks in
+        // order, so a bag rule placed before the base `node` rule loses to it: the base
+        // sets `background-opacity: 0.92` and `background-color: data(color)`, and a bag
+        // carries no `color`, so `data(color)` falls back to Cytoscape's default grey.
+        // That is exactly how the first version rendered — grey boxes around every
+        // platform. Do not move this block up.
+        //
+        // Four traps, each of which silently breaks the feature:
+        //  1. NEVER `display: "none"` — hiding a parent hides its children and breaks
+        //     the compound relationship. Invisibility is `background-opacity: 0`.
+        //  2. `events: "no"` is what makes it non-clickable; `selectable: false` alone
+        //     still lets the bag swallow taps on its padding.
+        //  3. `z-compound-depth: "bottom"` is what puts it behind its children;
+        //     `z-index` alone does not.
+        //  4. `padding` + `compound-sizing-wrt-labels: "exclude"` keep the body tied to
+        //     the children's real geometry rather than an empty label box.
+        selector: 'node[type = "Bag"]',
+        style: {
+          // Every property the base rule sets that could paint anything, overridden
+          // explicitly. `background-color` is set to the page colour rather than left
+          // to `data(color)`, so there is no fallback grey to leak through.
+          "background-color": palette.bg,
+          "background-opacity": 0,
+          "background-image": "none",
+          "background-image-opacity": 0,
+          "border-width": 0,
+          "border-opacity": 0,
+          "shadow-opacity": 0,
+          "overlay-opacity": 0,
+          label: "",
+          "text-opacity": 0,
+          events: "no",
+          selectable: false,
+          grabbable: false,
+          "z-compound-depth": "bottom",
+          "z-index-compare": "manual",
+          "z-index": 0,
+          padding: 24,
+          "compound-sizing-wrt-labels": "exclude"
+        }
       }
     ];
   }
@@ -16408,8 +16663,49 @@
     const part = (value) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0");
     return `#${part(r)}${part(g)}${part(b)}`;
   }
+  function placeBagsOnRing(cy, spread = 1) {
+    const bags = cy.nodes('[type = "Bag"]');
+    if (bags.length < 2) return;
+    const widest = Math.max(
+      ...bags.map((bag) => Math.max(bag.outerWidth(), bag.outerHeight()))
+    );
+    const base = Number.isFinite(widest) && widest > 0 ? widest * 1.6 : 260;
+    const radius = Math.max(base, 260) * (spread || 1);
+    const ordered = bags.toArray().sort((a, b) => {
+      const ai = LEGEND_PLATFORMS.indexOf(a.data("platform"));
+      const bi = LEGEND_PLATFORMS.indexOf(b.data("platform"));
+      return (ai < 0 ? LEGEND_PLATFORMS.length : ai) - (bi < 0 ? LEGEND_PLATFORMS.length : bi);
+    });
+    cy.batch(() => {
+      ordered.forEach((bag, index) => {
+        const children = bag.children();
+        if (!children.length) return;
+        const angle = 2 * Math.PI * index / ordered.length - Math.PI / 2;
+        const target = { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+        const box = children.boundingBox();
+        const dx = target.x - (box.x1 + box.w / 2);
+        const dy = target.y - (box.y1 + box.h / 2);
+        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+        children.forEach((child) => {
+          const position = child.position();
+          child.position({ x: position.x + dx, y: position.y + dy });
+        });
+      });
+    });
+  }
+  function setSmartEdgeLength(enabled) {
+    const targets = [
+      window.layoutBase?.FDLayoutConstants,
+      window.coseBase?.CoSEConstants
+    ].filter(Boolean);
+    for (const constants of targets) {
+      constants.DEFAULT_USE_SMART_IDEAL_EDGE_LENGTH_CALCULATION = !!enabled;
+    }
+    return targets.length > 0;
+  }
   function runLayout(cy, theme, done) {
     const { physics, layout } = theme;
+    setSmartEdgeLength(physics.smartEdgeLength);
     const options = {
       name: layout.name,
       quality: "default",
@@ -16420,14 +16716,29 @@
       nodeRepulsion: physics.nodeRepulsion,
       idealEdgeLength: physics.idealEdgeLength,
       gravity: physics.gravity,
+      // Compound gravity is what squeezes each bag toward its own centre. Global
+      // `gravity` pulls everything toward the middle of the screen and would crush the
+      // seven bags into one ball, so the two are not interchangeable.
+      //
+      // Both only act on a graph fcose considers DISCONNECTED (`cose-base.js`
+      // `calculateNodesToApplyGravitationTo`), so on a fully wired store they are
+      // mostly inert. They are not the lever for clustering — the ring is.
+      gravityCompound: physics.gravityCompound,
+      gravityRangeCompound: physics.gravityRangeCompound,
       nodeSeparation: physics.nodeSeparation,
       numIter: physics.numIter,
-      // fcose samples every node pair; at 1.5k nodes the default is fine, but
-      // `packComponents` keeps disconnected clusters from overlapping.
+      // Labels are part of a node's box. Without this the solver places an 18px node
+      // and then draws a 120px label over its neighbours.
+      nodeDimensionsIncludeLabels: !!physics.nodeDimensionsIncludeLabels,
+      // `packComponents` is a NO-OP here: fcose gates it on `cy.layoutUtilities`, a
+      // separate plugin that is not vendored. Left on because it is harmless and would
+      // start working the day the plugin is added.
       packComponents: true,
       uniformNodeDimensions: false
     };
     const finish = () => {
+      if (layout.bagRing) placeBagsOnRing(cy, layout.bagRingSpread);
+      if (layout.fit) cy.fit(cy.elements().not(".synthetic"), layout.padding);
       const distance = physics.zoomDistance || 1;
       if (distance !== 1) cy.zoom(cy.zoom() * distance);
       done?.();
@@ -16444,10 +16755,10 @@
   }
   function startReveal(cy, theme, timerRef) {
     if (!theme.reveal.enabled) {
-      cy.elements().removeClass("reveal-hidden");
+      cy.elements().not(".synthetic").removeClass("reveal-hidden");
       return;
     }
-    const nodes = cy.nodes().toArray();
+    const nodes = cy.nodes().not(".synthetic").toArray();
     if (!nodes.length) return;
     const ordered = [...nodes].sort((a, b) => {
       const at = a.data("firstTs");
@@ -16461,12 +16772,12 @@
     ordered.forEach((node, index) => order.set(node.id(), index));
     const total = ordered.length;
     const edgeOrder = /* @__PURE__ */ new Map();
-    cy.edges().forEach((edge) => {
+    cy.edges().not(".synthetic").forEach((edge) => {
       const a = order.get(edge.data("source")) ?? total;
       const b = order.get(edge.data("target")) ?? total;
       edgeOrder.set(edge.id(), Math.max(a, b));
     });
-    cy.elements().addClass("reveal-hidden");
+    cy.elements().not(".synthetic").addClass("reveal-hidden");
     const steps = Math.max(1, theme.reveal.steps);
     const interval = Math.max(16, theme.reveal.durationMs / steps);
     let step = 0;
@@ -16477,7 +16788,7 @@
         ordered.forEach((node, index) => {
           if (index < threshold) node.removeClass("reveal-hidden");
         });
-        cy.edges().forEach((edge) => {
+        cy.edges().not(".synthetic").forEach((edge) => {
           if ((edgeOrder.get(edge.id()) ?? total) < threshold) {
             edge.removeClass("reveal-hidden");
           }
@@ -16486,7 +16797,7 @@
       if (step < steps) {
         timerRef.current = setTimeout(tick, interval);
       } else {
-        cy.elements().removeClass("reveal-hidden");
+        cy.elements().not(".synthetic").removeClass("reveal-hidden");
         timerRef.current = null;
       }
     };
@@ -16577,9 +16888,13 @@
       entry?.kind === "results" && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(ResultsView, { entry, onOpen, onHalo, onFocus }),
       entry?.kind === "node" && entry.nodeType === "Thread" && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(ThreadView, { entry, onOpen }),
       entry?.kind === "node" && entry.nodeType === "Correspondent" && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(CorrespondentView, { entry, onOpen }),
-      entry?.kind === "node" && entry.nodeType === "Message" && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(MessageView, { entry, onOpen })
+      entry?.kind === "node" && entry.nodeType === "Message" && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(MessageView, { entry, onOpen }),
+      entry?.kind === "node" && ENTITY_TYPES.has(entry.nodeType) && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(EntityView, { entry, onOpen })
     ] });
   }
+  var ENTITY_TYPES = new Set(
+    Object.entries(NODE_TYPES).filter(([, meta]) => meta.countKey === "mention_count").map(([type]) => type)
+  );
   function EmptyViewer() {
     return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "pane-body", children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "empty", children: [
       "Click a thread on the canvas to read it.",
@@ -17031,6 +17346,69 @@
       ] })
     ] });
   }
+  function EntityView({ entry, onOpen }) {
+    const [rows, setRows] = (0, import_react8.useState)(null);
+    const [error, setError] = (0, import_react8.useState)(null);
+    const meta = NODE_TYPES[entry.nodeType] || {};
+    (0, import_react8.useEffect)(() => {
+      let cancelled = false;
+      setRows(null);
+      setError(null);
+      api.search({
+        mode: "cypher",
+        query: "MATCH (t:Thread)-[:MENTIONS]->(e {key: $k}) OPTIONAL MATCH (t)<-[:IN]-(m:Message) RETURN t.key AS key, t.title AS label, t.platform AS platform,        count(m) AS n, max(m.ts_utc) AS last_ts ORDER BY last_ts DESC",
+        params: { k: entry.id },
+        limit: 200
+      }).then((result) => {
+        if (!cancelled) setRows(result.rows || []);
+      }).catch((err) => {
+        if (!cancelled) setError(err.message);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [entry.id]);
+    return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(import_jsx_runtime4.Fragment, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "viewer-head", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h1", { className: "viewer-title", children: entry.label }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "viewer-sub", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill kind", children: meta.label || entry.nodeType }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill platform", style: { color: platformColor(entry.platform) }, children: platformLabel(entry.platform) })
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "pane-body tight", children: [
+        error && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "error", children: error }),
+        !rows && !error && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "empty", children: "Loading\u2026" }),
+        rows?.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "empty", children: [
+          "No threads mention this ",
+          String(meta.label || "entity").toLowerCase(),
+          " yet. Body-entity extraction has not run."
+        ] }),
+        (rows || []).map((row) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
+          "button",
+          {
+            className: "result-row",
+            onClick: () => onOpen?.({
+              kind: "node",
+              nodeType: "Thread",
+              id: row.key,
+              label: row.label,
+              platform: row.platform
+            }),
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "result-snippet", children: row.label || row.key }),
+              /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "result-meta", children: [
+                formatCount(row.n),
+                " messages",
+                row.last_ts ? ` \xB7 last ${formatDate(row.last_ts)}` : ""
+              ] })
+            ]
+          },
+          row.key
+        ))
+      ] })
+    ] });
+  }
   function MessageView({ entry, onOpen }) {
     const [message, setMessage] = (0, import_react8.useState)(null);
     const [error, setError] = (0, import_react8.useState)(null);
@@ -17104,7 +17482,14 @@
   // app/ui/src/components/modals/Modal.jsx
   var import_react9 = __toESM(require_react(), 1);
   var import_jsx_runtime5 = __toESM(require_jsx_runtime(), 1);
-  function Modal({ title, onClose, children, footer, wide = false }) {
+  function Modal({
+    title,
+    onClose,
+    children,
+    footer,
+    wide = false,
+    side = false
+  }) {
     (0, import_react9.useEffect)(() => {
       const onKey = (event) => {
         if (event.key === "Escape") onClose();
@@ -17112,38 +17497,66 @@
       window.addEventListener("keydown", onKey);
       return () => window.removeEventListener("keydown", onKey);
     }, [onClose]);
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "modal-backdrop", onMouseDown: (event) => {
-      if (event.target === event.currentTarget) onClose();
-    }, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: `modal${wide ? " wide" : ""}`, role: "dialog", "aria-modal": "true", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "modal-head", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "modal-title", children: title }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { className: "ghost icon", style: { marginLeft: "auto" }, onClick: onClose, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(X, { size: 14 }) })
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "modal-body", children }),
-      footer && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "modal-foot", children: footer })
-    ] }) });
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+      "div",
+      {
+        className: `modal-backdrop${side ? " side" : ""}`,
+        onMouseDown: (event) => {
+          if (event.target === event.currentTarget) onClose();
+        },
+        children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+          "div",
+          {
+            className: `modal${wide ? " wide" : ""}${side ? " side" : ""}`,
+            role: "dialog",
+            "aria-modal": "true",
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "modal-head", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "modal-title", children: title }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { className: "ghost icon", style: { marginLeft: "auto" }, onClick: onClose, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(X, { size: 14 }) })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "modal-body", children }),
+              footer && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "modal-foot", children: footer })
+            ]
+          }
+        )
+      }
+    );
   }
-  function Slider({ label, value, min, max, step = 1, onChange, hint }) {
+  function Slider({ label, value, min, max, step = 1, onChange, hint, note }) {
     return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "field", title: hint || "", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("label", { children: label }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-        "input",
-        {
-          type: "range",
-          min,
-          max,
-          step,
-          value,
-          onChange: (event) => onChange(Number(event.target.value))
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "value", children: value })
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "field-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("label", { children: label }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+          "input",
+          {
+            type: "range",
+            min,
+            max,
+            step,
+            value,
+            onChange: (event) => onChange(Number(event.target.value))
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "value", children: value })
+      ] }),
+      note && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "field-note", children: note })
     ] });
   }
-  function Check({ label, checked, onChange, hint }) {
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "check", title: hint || "", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("input", { type: "checkbox", checked, onChange: (event) => onChange(event.target.checked) }),
-      label
+  function Check({ label, checked, onChange, hint, note }) {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "field check-field", title: hint || "", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "check", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+          "input",
+          {
+            type: "checkbox",
+            checked,
+            onChange: (event) => onChange(event.target.checked)
+          }
+        ),
+        label
+      ] }),
+      note && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "field-note", children: note })
     ] });
   }
   function TextField({
@@ -17152,21 +17565,25 @@
     onChange,
     placeholder,
     hint,
+    note,
     type = "text",
     autoComplete
   }) {
     return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "field", title: hint || "", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("label", { children: label }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-        "input",
-        {
-          type,
-          value,
-          placeholder,
-          autoComplete,
-          onChange: (event) => onChange(event.target.value)
-        }
-      )
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "field-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("label", { children: label }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+          "input",
+          {
+            type,
+            value,
+            placeholder,
+            autoComplete,
+            onChange: (event) => onChange(event.target.value)
+          }
+        )
+      ] }),
+      note && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "field-note", children: note })
     ] });
   }
   function useFetch(fn, deps = []) {
@@ -17189,9 +17606,24 @@
   // app/ui/src/components/modals/CanvasModal.jsx
   var import_jsx_runtime6 = __toESM(require_jsx_runtime(), 1);
   var SORTS = [
-    { key: "messages", label: "Most messages", hint: "the biggest threads first" },
-    { key: "recent", label: "Most recent", hint: "the live ones first" },
-    { key: "quiet", label: "Quietest", hint: "the ones that went silent first" }
+    {
+      key: "messages",
+      label: "Most messages",
+      hint: "the biggest threads first",
+      note: "Keeps the busiest conversations and drops the quiet ones."
+    },
+    {
+      key: "recent",
+      label: "Most recent",
+      hint: "the live ones first",
+      note: "Keeps whatever was active last, however small."
+    },
+    {
+      key: "quiet",
+      label: "Quietest",
+      hint: "the ones that went silent first",
+      note: "Keeps the threads that stopped \u2014 the question this app exists to answer."
+    }
   ];
   var LIMITS = [500, 1e3, 2e3, 5e3, 1e4, 2e4];
   function isPlatformOn(chosen, platform, rows) {
@@ -17208,7 +17640,6 @@
     platforms
   }) {
     const [draft, setDraft] = (0, import_react10.useState)(() => cloneTheme(theme));
-    const [styling, setStyling] = (0, import_react10.useState)(false);
     const types = useFetch(() => api.types(), []);
     (0, import_react10.useEffect)(() => {
       onChange(draft);
@@ -17228,25 +17659,12 @@
     const shown = graph?.counts?.nodes ?? 0;
     const total = graph?.total ?? shown;
     const hidden = Math.max(0, total - shown);
-    if (styling) {
-      return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-        StylingModal,
-        {
-          draft,
-          setDraft,
-          set,
-          onBack: () => setStyling(false),
-          onClose,
-          onRerunLayout
-        }
-      );
-    }
     return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
       Modal,
       {
         title: "Canvas",
         onClose,
-        wide: true,
+        side: true,
         footer: /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_jsx_runtime6.Fragment, { children: [
           /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("span", { className: "pager-info", children: [
             shown.toLocaleString(),
@@ -17257,7 +17675,7 @@
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "spacer" }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "ghost", onClick: onClose, children: "Close" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { onClick: onRerunLayout, children: "Re-run layout" })
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "primary", onClick: onRerunLayout, children: "Re-run layout" })
         ] }),
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Sort \u2014 which nodes survive the cutoff" }),
@@ -17274,7 +17692,8 @@
                 }));
                 onReload?.({ sort: sort.key });
               },
-              hint: sort.hint
+              hint: sort.hint,
+              note: sort.note
             },
             sort.key
           )),
@@ -17349,22 +17768,32 @@
                 ...prev,
                 filter: { ...prev.filter, hideSilent: value }
               })),
-              hint: "View only. A thread you never replied in is often a broadcast or a group you were added to \u2014 hidden here, still searchable."
+              hint: "View only. A thread you never replied in is often a broadcast or a group you were added to \u2014 hidden here, still searchable.",
+              note: "A thread you never replied in is usually a broadcast or a group you were added to."
             }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { marginTop: 18 }, children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "ghost", onClick: () => setStyling(true), children: "Styling \u2014 force and labels" }) })
+          )
         ]
       }
     );
   }
-  function StylingModal({ draft, setDraft, set, onBack, onClose, onRerunLayout }) {
-    return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
+
+  // app/ui/src/components/modals/GravityModal.jsx
+  var import_react11 = __toESM(require_react(), 1);
+  var import_jsx_runtime7 = __toESM(require_jsx_runtime(), 1);
+  function GravityModal({ theme, onChange, onClose, onRerunLayout }) {
+    const [draft, setDraft] = (0, import_react11.useState)(() => cloneTheme(theme));
+    (0, import_react11.useEffect)(() => {
+      onChange(draft);
+    }, [draft, onChange]);
+    const set = (group, key) => (value) => setDraft((prev) => ({ ...prev, [group]: { ...prev[group], [key]: value } }));
+    return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
       Modal,
       {
-        title: "Styling",
+        title: "Gravity",
         onClose,
-        footer: /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(import_jsx_runtime6.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
+        side: true,
+        footer: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
             "button",
             {
               className: "ghost",
@@ -17373,18 +17802,17 @@
                 onRerunLayout?.();
               },
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(RotateCcw, { size: 13 }),
-                " Reset to defaults"
+                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(RotateCcw, { size: 13 }),
+                " Reset"
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "ghost", onClick: onBack, children: "Back" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { onClick: onRerunLayout, children: "Re-run layout" })
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "primary", onClick: onRerunLayout, children: "Re-run layout" })
         ] }),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Force \u2014 fcose" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Force \u2014 fcose" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Slider,
             {
               label: "nodeRepulsion",
@@ -17393,22 +17821,34 @@
               max: 6e4,
               step: 1e3,
               onChange: set("physics", "nodeRepulsion"),
-              hint: "8000 = tight clumps, 40000 = airy"
+              hint: "how hard nodes push each other apart",
+              note: "Higher spreads everything out. Lower lets clusters collapse."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Slider,
             {
               label: "idealEdgeLength",
               value: draft.physics.idealEdgeLength,
-              min: 20,
+              min: 10,
               max: 200,
-              step: 5,
+              step: 2,
               onChange: set("physics", "idealEdgeLength"),
-              hint: "40 = dense, 120 = sparse"
+              hint: "the length an edge wants to be",
+              note: "The main lever on edge length. Lower pulls the whole picture in."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Check,
+            {
+              label: "smart edge length",
+              checked: !!draft.physics.smartEdgeLength,
+              onChange: set("physics", "smartEdgeLength"),
+              hint: "adds each bag's size to every edge that crosses it",
+              note: "On, a cross-platform edge gets hundreds of px of extra length. Off is much tighter."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Slider,
             {
               label: "gravity",
@@ -17417,10 +17857,37 @@
               max: 1,
               step: 0.05,
               onChange: set("physics", "gravity"),
-              hint: "0 = drifts apart, 0.5 = pulled into a ball"
+              hint: "pulls everything toward the middle of the screen",
+              note: "Only acts on disconnected pieces, so it does little on a fully wired store."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Slider,
+            {
+              label: "gravityCompound",
+              value: draft.physics.gravityCompound,
+              min: 0,
+              max: 3,
+              step: 0.1,
+              onChange: set("physics", "gravityCompound"),
+              hint: "squeezes each platform bag toward its own centre",
+              note: "The knob for a sprawling bag. Same caveat as gravity: disconnected graphs only."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Slider,
+            {
+              label: "gravityRangeCompound",
+              value: draft.physics.gravityRangeCompound,
+              min: 0.5,
+              max: 4,
+              step: 0.1,
+              onChange: set("physics", "gravityRangeCompound"),
+              hint: "how far the bag pull reaches",
+              note: "Measured in bag radii. Raise it if a bag's edges still drift outward."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Slider,
             {
               label: "nodeSeparation",
@@ -17429,10 +17896,11 @@
               max: 200,
               step: 5,
               onChange: set("physics", "nodeSeparation"),
-              hint: "between disconnected components only"
+              hint: "initial spectral spacing only",
+              note: "Does not space the settled layout. Changing it rarely shows."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Slider,
             {
               label: "numIter",
@@ -17441,10 +17909,11 @@
               max: 6e3,
               step: 250,
               onChange: set("physics", "numIter"),
-              hint: "1000 = fast and messy, 5000 = slow and settled"
+              hint: "how long the solver runs",
+              note: "1000 is fast and messy, 5000 is slow and settled."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Slider,
             {
               label: "zoomDistance",
@@ -17453,10 +17922,11 @@
               max: 3,
               step: 0.1,
               onChange: set("physics", "zoomDistance"),
-              hint: "multiplies the post-layout fit zoom"
+              hint: "multiplies the zoom after the layout fits",
+              note: "Raise it if the graph lands too small to read."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Slider,
             {
               label: "wheelSensitivity",
@@ -17465,20 +17935,56 @@
               max: 8,
               step: 0.2,
               onChange: set("physics", "wheelSensitivity"),
-              hint: "default 1.0 is genuinely slow"
+              hint: "how fast the wheel zooms",
+              note: "The default of 1.0 feels broken on a trackpad."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Check,
             {
-              label: "randomize node positions before layout",
+              label: "randomize before layout",
               checked: draft.physics.randomize,
               onChange: set("physics", "randomize"),
-              hint: "mandatory in practice: fresh nodes all start at (0,0) and clicks land wrong"
+              hint: "start nodes at random positions",
+              note: "Leave on. Fresh nodes all start at (0,0) and clicks land on the wrong one."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Labels \u2014 a zoom reward" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Check,
+            {
+              label: "count labels in the layout box",
+              checked: !!draft.physics.nodeDimensionsIncludeLabels,
+              onChange: set("physics", "nodeDimensionsIncludeLabels"),
+              hint: "the solver reserves room for the label",
+              note: "Off, it places an 18px node and draws a 120px label over its neighbours."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Bags \u2014 platforms around the outside" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Check,
+            {
+              label: "pin bags to a ring",
+              checked: !!draft.layout.bagRing,
+              onChange: set("layout", "bagRing"),
+              hint: "place each platform bag on a circle after the layout",
+              note: "Off, the bags float wherever the solver leaves them and the middle stops meaning anything."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Slider,
+            {
+              label: "ring spread",
+              value: draft.layout.bagRingSpread,
+              min: 1,
+              max: 2.5,
+              step: 0.05,
+              onChange: set("layout", "bagRingSpread"),
+              hint: "how wide the circle is",
+              note: "1.0 packs the bags shoulder to shoulder. Raise it to open the middle for bridges."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Labels \u2014 a zoom reward" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Slider,
             {
               label: "min-zoomed-font-size",
@@ -17487,10 +17993,11 @@
               max: 30,
               step: 1,
               onChange: set("labels", "minZoomedFontSize"),
-              hint: "text is hidden when font-size \xD7 zoom falls below this"
+              hint: "text is hidden below this size on screen",
+              note: "Labels appear as you zoom in, never on hover."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
             Slider,
             {
               label: "text-max-width",
@@ -17499,7 +18006,8 @@
               max: 260,
               step: 10,
               onChange: set("labels", "maxWidth"),
-              hint: "px, with text-wrap: wrap"
+              hint: "how wide a label may grow before wrapping",
+              note: "Wider labels are easier to read but collide more."
             }
           )
         ]
@@ -17508,8 +18016,8 @@
   }
 
   // app/ui/src/components/modals/IngestModal.jsx
-  var import_react11 = __toESM(require_react(), 1);
-  var import_jsx_runtime7 = __toESM(require_jsx_runtime(), 1);
+  var import_react12 = __toESM(require_react(), 1);
+  var import_jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
   var WINDOWS = [
     { key: "3m", label: "3 months", months: 3 },
     { key: "6m", label: "6 months", months: 6 },
@@ -17567,40 +18075,40 @@
     return known[domain] || "custom";
   }
   function IngestModal({ onClose, onIngested }) {
-    const [paths, setPaths] = (0, import_react11.useState)("");
-    const [picked, setPicked] = (0, import_react11.useState)([]);
-    const [staged, setStaged] = (0, import_react11.useState)([]);
-    const dropRef = (0, import_react11.useRef)(null);
-    const fileRef = (0, import_react11.useRef)(null);
-    const folderRef = (0, import_react11.useRef)(null);
-    const [imapEmail, setImapEmail] = (0, import_react11.useState)("");
-    const [imapPassword, setImapPassword] = (0, import_react11.useState)("");
-    const [imapHost, setImapHost] = (0, import_react11.useState)("");
-    const [imapPort, setImapPort] = (0, import_react11.useState)("993");
-    const [envStatus, setEnvStatus] = (0, import_react11.useState)(null);
-    const [envSaved, setEnvSaved] = (0, import_react11.useState)(null);
-    const [tzOffset, setTzOffset] = (0, import_react11.useState)("");
-    const [window_, setWindow] = (0, import_react11.useState)("all");
-    const [silentGroups, setSilentGroups] = (0, import_react11.useState)(true);
-    const [silentPlatforms, setSilentPlatforms] = (0, import_react11.useState)({
+    const [paths, setPaths] = (0, import_react12.useState)("");
+    const [picked, setPicked] = (0, import_react12.useState)([]);
+    const [staged, setStaged] = (0, import_react12.useState)([]);
+    const dropRef = (0, import_react12.useRef)(null);
+    const fileRef = (0, import_react12.useRef)(null);
+    const folderRef = (0, import_react12.useRef)(null);
+    const [imapEmail, setImapEmail] = (0, import_react12.useState)("");
+    const [imapPassword, setImapPassword] = (0, import_react12.useState)("");
+    const [imapHost, setImapHost] = (0, import_react12.useState)("");
+    const [imapPort, setImapPort] = (0, import_react12.useState)("993");
+    const [envStatus, setEnvStatus] = (0, import_react12.useState)(null);
+    const [envSaved, setEnvSaved] = (0, import_react12.useState)(null);
+    const [tzOffset, setTzOffset] = (0, import_react12.useState)("");
+    const [window_, setWindow] = (0, import_react12.useState)("all");
+    const [silentGroups, setSilentGroups] = (0, import_react12.useState)(true);
+    const [silentPlatforms, setSilentPlatforms] = (0, import_react12.useState)({
       telegram: true,
       whatsapp: true,
       messenger: true
     });
-    const [spamThreads, setSpamThreads] = (0, import_react11.useState)(true);
-    const [spamPlatforms, setSpamPlatforms] = (0, import_react11.useState)({ email: true, outlook: true });
-    const [spamGroups, setSpamGroups] = (0, import_react11.useState)(false);
-    const [pruneKeep, setPruneKeep] = (0, import_react11.useState)("off");
-    const [writeEnabled, setWriteEnabled] = (0, import_react11.useState)(false);
-    const [busy, setBusy] = (0, import_react11.useState)(false);
-    const [report, setReport] = (0, import_react11.useState)(null);
-    const [error, setError] = (0, import_react11.useState)(null);
-    const [preview, setPreview] = (0, import_react11.useState)(null);
-    const [log, setLog] = (0, import_react11.useState)([]);
-    const [halted, setHalted] = (0, import_react11.useState)(null);
-    const [wipeStep, setWipeStep] = (0, import_react11.useState)(0);
-    const [wipeResult, setWipeResult] = (0, import_react11.useState)(null);
-    (0, import_react11.useEffect)(() => {
+    const [spamThreads, setSpamThreads] = (0, import_react12.useState)(true);
+    const [spamPlatforms, setSpamPlatforms] = (0, import_react12.useState)({ email: true, outlook: true });
+    const [spamGroups, setSpamGroups] = (0, import_react12.useState)(false);
+    const [pruneKeep, setPruneKeep] = (0, import_react12.useState)("off");
+    const [writeEnabled, setWriteEnabled] = (0, import_react12.useState)(false);
+    const [busy, setBusy] = (0, import_react12.useState)(false);
+    const [report, setReport] = (0, import_react12.useState)(null);
+    const [error, setError] = (0, import_react12.useState)(null);
+    const [preview, setPreview] = (0, import_react12.useState)(null);
+    const [log, setLog] = (0, import_react12.useState)([]);
+    const [halted, setHalted] = (0, import_react12.useState)(null);
+    const [wipeStep, setWipeStep] = (0, import_react12.useState)(0);
+    const [wipeResult, setWipeResult] = (0, import_react12.useState)(null);
+    (0, import_react12.useEffect)(() => {
       api.envStatus().then(setEnvStatus).catch(() => setEnvStatus(null));
       refreshPreview();
     }, []);
@@ -17745,14 +18253,14 @@
     };
     const stagedCount = staged.length;
     const hasInput = stagedCount > 0 || pathList().length > 0 || imapEmail.trim() !== "";
-    return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
       Modal,
       {
         title: "Ingest",
         onClose,
-        wide: true,
-        footer: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+        side: true,
+        footer: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             Check,
             {
               label: "Ingest Ready",
@@ -17761,15 +18269,23 @@
               hint: "Arms the Ingest button. Ingest writes to the store, so it is a deliberate second step and is never remembered."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: onClose, children: "Close" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("button", { onClick: run, disabled: busy || !writeEnabled || !hasInput, children: [
-            busy ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(LoaderCircle, { size: 13, className: "spin" }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Upload, { size: 13 }),
-            "Ingest"
-          ] })
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: onClose, children: "Close" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
+            "button",
+            {
+              className: "primary",
+              onClick: run,
+              disabled: busy || !writeEnabled || !hasInput,
+              children: [
+                busy ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(LoaderCircle, { size: 13, className: "spin" }) : /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Upload, { size: 13 }),
+                "Ingest"
+              ]
+            }
+          )
         ] }),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
             "div",
             {
               style: {
@@ -17782,33 +18298,33 @@
                 borderRadius: "var(--radius-sm)"
               },
               children: [
-                wipeStep === 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "pager-info", style: { flex: 1 }, children: wipeResult ? `store truncated \xB7 ${wipeResult.removed.length} file(s) removed` : "Wipe the graph and start again. The dedup record goes with it." }),
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: () => setWipeStep(1), disabled: busy, children: "Truncate Relate DB" })
+                wipeStep === 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { flex: 1 }, children: wipeResult ? `store truncated \xB7 ${wipeResult.removed.length} file(s) removed` : "Wipe the graph and start again. The dedup record goes with it." }),
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setWipeStep(1), disabled: busy, children: "Truncate Relate DB" })
                 ] }),
-                wipeStep === 1 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "pager-info", style: { flex: 1, color: "var(--orange-text)" }, children: [
+                wipeStep === 1 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("span", { className: "pager-info", style: { flex: 1, color: "var(--orange-text)" }, children: [
                     "This deletes ",
-                    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "store/graph.rl" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: "store/graph.rl" }),
                     " and the list of files already ingested. Your exports in ",
-                    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "spool/real/" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: "spool/real/" }),
                     " are kept. There is no undo."
                   ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: () => setWipeStep(0), disabled: busy, children: "Keep it" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { onClick: () => setWipeStep(2), disabled: busy, children: "Yes, delete" })
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setWipeStep(0), disabled: busy, children: "Keep it" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { onClick: () => setWipeStep(2), disabled: busy, children: "Yes, delete" })
                 ] }),
-                wipeStep === 2 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "pager-info", style: { flex: 1, color: "var(--orange-text)" }, children: "Last chance. Pressing this empties the graph." }),
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: () => setWipeStep(0), disabled: busy, children: "Cancel" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("button", { onClick: truncate, disabled: busy || !writeEnabled, children: [
-                    busy ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(LoaderCircle, { size: 13, className: "spin" }) : null,
+                wipeStep === 2 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { flex: 1, color: "var(--orange-text)" }, children: "Last chance. Pressing this empties the graph." }),
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setWipeStep(0), disabled: busy, children: "Cancel" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("button", { onClick: truncate, disabled: busy || !writeEnabled, children: [
+                    busy ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(LoaderCircle, { size: 13, className: "spin" }) : null,
                     "Delete everything"
                   ] })
                 ] })
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             "input",
             {
               ref: fileRef,
@@ -17822,7 +18338,7 @@
               }
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             "input",
             {
               ref: folderRef,
@@ -17838,7 +18354,7 @@
               }
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
             "div",
             {
               className: "dropzone",
@@ -17852,27 +18368,27 @@
               onDrop,
               style: { cursor: "pointer" },
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(FileUp, { size: 18, style: { marginBottom: 6 } }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("br", {}),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: "Drop one or many files here, or click to choose." }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("br", {}),
+                /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(FileUp, { size: 18, style: { marginBottom: 6 } }),
+                /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("br", {}),
+                /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("strong", { children: "Drop one or many files here, or click to choose." }),
+                /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("br", {}),
                 "Everything stays on this machine. Nothing is uploaded anywhere."
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { style: { display: "flex", gap: 8, marginTop: 8 }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: () => fileRef.current?.click(), children: "Choose files" }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: () => folderRef.current?.click(), children: "Choose a folder" }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "pager-info", style: { alignSelf: "center" }, children: "a folder is for Telegram (a directory holding result.json) or an unzipped archive" })
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { display: "flex", gap: 8, marginTop: 8 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => fileRef.current?.click(), children: "Choose files" }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => folderRef.current?.click(), children: "Choose a folder" }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { alignSelf: "center" }, children: "a folder is for Telegram (a directory holding result.json) or an unzipped archive" })
           ] }),
-          stagedCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { marginTop: 8 }, children: staged.map((item, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "result-snippet", children: item.name }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-meta", children: [
+          stagedCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { marginTop: 8 }, children: staged.map((item, index) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "result-snippet", children: item.name }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-meta", children: [
               item.platform,
               item.recognised ? "" : " \xB7 not recognised, kept"
             ] })
           ] }, index)) }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             TextField,
             {
               label: "\u2026or paste a path",
@@ -17882,36 +18398,36 @@
               hint: "One per line. For a folder export (Telegram writes a directory) or a file too large to upload. Files are COPIED into spool/real/<platform>/, chosen by content, never by filename."
             }
           ),
-          preview && preview.legs.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Already in the spool" }),
-            preview.legs.map((leg, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-snippet", children: [
+          preview && preview.legs.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Already in the spool" }),
+            preview.legs.map((leg, index) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-snippet", children: [
                 leg.platform || "?",
                 " \xB7 ",
                 leg.path.split(/[\\/]/).slice(-2).join("/")
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-meta", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-meta", children: [
                 formatBytes(leg.bytes),
                 leg.duplicate ? ` \xB7 already ingested${leg.ingested_at ? ` ${leg.ingested_at.slice(0, 10)}` : ""}` : " \xB7 new",
                 leg.large ? " \xB7 large file" : "",
                 leg.recognised ? "" : " \xB7 not recognised, kept"
               ] })
             ] }, index)),
-            preview.duplicates > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "pager-info", style: { marginBottom: 8 }, children: [
+            preview.duplicates > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "pager-info", style: { marginBottom: 8 }, children: [
               preview.duplicates,
               " file(s) already ingested. Re-running is safe \u2014 every write is a MERGE on a stable key \u2014 but it costs the parse again."
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "IMAP mailbox" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "IMAP mailbox" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
             "For a live mailbox. A ",
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: ".pst" }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: ".pst" }),
             " is a file \u2014 drop it above instead. Outlook.com and O365 no longer allow password sign-in over IMAP; export a",
             " ",
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: ".pst" }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: ".pst" }),
             " for those."
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             TextField,
             {
               label: "email",
@@ -17924,7 +18440,7 @@
               autoComplete: "off"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             TextField,
             {
               label: "password",
@@ -17935,7 +18451,7 @@
               autoComplete: "new-password"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             TextField,
             {
               label: "host",
@@ -17944,7 +18460,7 @@
               placeholder: "filled from the address; edit if wrong"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             TextField,
             {
               label: "port",
@@ -17953,13 +18469,13 @@
               placeholder: "993"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
             "Local app, manual entry. Never read by MCP or AI. Writes to ",
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: "./.env" }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: "./.env" }),
             "."
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
               "button",
               {
                 className: "ghost",
@@ -17968,7 +18484,7 @@
                 children: "Save credentials"
               }
             ),
-            envSaved && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { className: "pager-info", children: [
+            envSaved && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("span", { className: "pager-info", children: [
               "saved ",
               envSaved.provider,
               " \u2192 ",
@@ -17976,9 +18492,9 @@
               ":",
               envSaved.port
             ] }),
-            !envSaved && envStatus && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { className: "pager-info", children: Object.entries(envStatus.providers || {}).filter(([, row]) => row.email_present && row.password_present).map(([name]) => name).join(", ") || "no credentials on disk yet" })
+            !envSaved && envStatus && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", children: Object.entries(envStatus.providers || {}).filter(([, row]) => row.email_present && row.password_present).map(([name]) => name).join(", ") || "no credentials on disk yet" })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             "hr",
             {
               style: {
@@ -17988,9 +18504,9 @@
               }
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "How far back" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Applied to every leg at parse time. A message outside the window is counted as skipped, never silently dropped." }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: WINDOWS.map((option) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "How far back" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Applied to every leg at parse time. A message outside the window is counted as skipped, never silently dropped." }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: WINDOWS.map((option) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             "button",
             {
               className: window_ === option.key ? "active" : "ghost",
@@ -17999,7 +18515,7 @@
             },
             option.key
           )) }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             TextField,
             {
               label: "tz offset (hours)",
@@ -18009,8 +18525,8 @@
               hint: "e.g. -5 for US Eastern. Only Telegram, WhatsApp and Messenger accept it."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Groups" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Groups" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             Check,
             {
               label: "Exclude groups where the Owner never spoke",
@@ -18019,11 +18535,11 @@
               hint: "Parse time, permanent. A group you were added to and never spoke in is not a conversation you had. Ticked, those threads are dropped before any node is created."
             }
           ),
-          silentGroups && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { display: "flex", gap: 16, margin: "2px 0 10px 22px" }, children: [
+          silentGroups && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { display: "flex", gap: 16, margin: "2px 0 10px 22px" }, children: [
             ["telegram", "Telegram"],
             ["whatsapp", "WhatsApp"],
             ["messenger", "Fcbk Mssgr"]
-          ].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          ].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             Check,
             {
               label,
@@ -18032,9 +18548,9 @@
             },
             key
           )) }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8, marginLeft: 22 }, children: 'Not the same as the Canvas "hide threads where the owner never sent a message" \u2014 that one is a view toggle and is reversible. This one decides what is stored.' }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Email spam" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8, marginLeft: 22 }, children: 'Not the same as the Canvas "hide threads where the owner never sent a message" \u2014 that one is a view toggle and is reversible. This one decides what is stored.' }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Email spam" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             Check,
             {
               label: "Exclude email threads of 10+ messages with no Owner reply",
@@ -18043,7 +18559,7 @@
               hint: "Parse time, permanent. A long thread you never replied to is almost always a broadcast, a notification chain or a mailing list. A short thread someone started with you is kept."
             }
           ),
-          spamThreads && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { display: "flex", gap: 16, margin: "2px 0 10px 22px" }, children: [["email", "Email"], ["outlook", "Outlook"]].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          spamThreads && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { display: "flex", gap: 16, margin: "2px 0 10px 22px" }, children: [["email", "Email"], ["outlook", "Outlook"]].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             Check,
             {
               label,
@@ -18052,7 +18568,7 @@
             },
             key
           )) }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             Check,
             {
               label: "Exclude Facebook groups with 50%+ non-conversation messages",
@@ -18061,14 +18577,14 @@
               hint: "Fcbk Mssgr only. Drops group threads where at least half the rows are housekeeping \u2014 'sent a link', 'added X to the group', 'left the group'. Real group chats sit far below that ratio."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Prune prior ingests" }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Deletes spool files from earlier runs once this one has verified. A file that failed to land is never deleted." }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Prune prior ingests" }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Deletes spool files from earlier runs once this one has verified. A file that failed to land is never deleted." }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: [
             ["off", "Off"],
             ["0", "All"],
             ["1", "Keep last"],
             ["2", "Keep last 2"]
-          ].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          ].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             "button",
             {
               className: pruneKeep === key ? "active" : "ghost",
@@ -18077,47 +18593,47 @@
             },
             key
           )) }),
-          error && /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "error", style: { marginTop: 12 }, children: error }),
-          halted && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "error", style: { marginTop: 12 }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("strong", { children: [
+          error && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "error", style: { marginTop: 12 }, children: error }),
+          halted && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "error", style: { marginTop: 12 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("strong", { children: [
               halted.failed.length,
               " leg(s) could not be ingested."
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { marginTop: 6 }, children: halted.failed.map((batch) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { marginTop: 6 }, children: halted.failed.map((batch) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { children: [
               batch.platform,
               ": ",
               batch.error
             ] }, batch.platform)) }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { style: { display: "flex", gap: 8, marginTop: 10 }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { onClick: continueWithout, disabled: busy, children: "Exclude and continue" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("button", { className: "ghost", onClick: cancelRun, disabled: busy, children: "Cancel" })
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { display: "flex", gap: 8, marginTop: 10 }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { onClick: continueWithout, disabled: busy, children: "Exclude and continue" }),
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: cancelRun, disabled: busy, children: "Cancel" })
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "pager-info", style: { marginTop: 8 }, children: "Continuing re-runs the whole ingest without that leg. Every write is a MERGE on a stable key, so nothing already written is duplicated." })
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "pager-info", style: { marginTop: 8 }, children: "Continuing re-runs the whole ingest without that leg. Every write is a MERGE on a stable key, so nothing already written is duplicated." })
           ] }),
-          report && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Report" }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("dl", { className: "kv", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dt", { children: "store" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dd", { className: "mono", children: report.store }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dt", { children: "elapsed" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("dd", { children: [
+          report && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Report" }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("dl", { className: "kv", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "store" }),
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { className: "mono", children: report.store }),
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "elapsed" }),
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("dd", { children: [
                 Number(report.elapsed_s || 0).toFixed(2),
                 "s"
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dt", { children: "workers" }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dd", { children: report.workers }),
-              report.owner_note && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dt", { children: "owner" }),
-                /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dd", { children: report.owner_note })
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "workers" }),
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { children: report.workers }),
+              report.owner_note && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "owner" }),
+                /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { children: report.owner_note })
               ] })
             ] }),
-            (report.batches || []).map((batch, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-snippet", children: [
+            (report.batches || []).map((batch, index) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-snippet", children: [
                 batch.platform || "?",
                 " \xB7 ",
                 batch.path
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-meta", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-meta", children: [
                 batch.messages,
                 " msgs \xB7 ",
                 batch.attachments,
@@ -18126,13 +18642,13 @@
                 batch.pruned ? " \xB7 pruned" : "",
                 batch.error ? ` \xB7 ${batch.error}` : ""
               ] }),
-              Object.entries(batch.skipped || {}).map(([reason, count]) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "result-meta", children: [
+              Object.entries(batch.skipped || {}).map(([reason, count]) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-meta", children: [
                 "skipped ",
                 count,
                 ": ",
                 reason
               ] }, reason)),
-              (batch.warnings || []).map((warning, warningIndex) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+              (batch.warnings || []).map((warning, warningIndex) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
                 "div",
                 {
                   className: "result-meta",
@@ -18142,12 +18658,12 @@
                 warningIndex
               ))
             ] }, index)),
-            (report.unrecognised || []).length > 0 && /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Not recognised \u2014 kept, not guessed" }),
-              report.unrecognised.map((path, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "mono", style: { color: "var(--orange-text)" }, children: path }, index))
+            (report.unrecognised || []).length > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Not recognised \u2014 kept, not guessed" }),
+              report.unrecognised.map((path, index) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "mono", style: { color: "var(--orange-text)" }, children: path }, index))
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             "hr",
             {
               style: {
@@ -18157,8 +18673,8 @@
               }
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Ingest log" }),
-          log.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "empty", style: { paddingTop: 0 }, children: "Nothing yet. Press Ingest to start." }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { style: { maxHeight: 220, overflowY: "auto" }, children: log.map((entry, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Ingest log" }),
+          log.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "empty", style: { paddingTop: 0 }, children: "Nothing yet. Press Ingest to start." }) : /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { maxHeight: 220, overflowY: "auto" }, children: log.map((entry, index) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
             "div",
             {
               className: "result-meta",
@@ -18180,84 +18696,84 @@
   }
 
   // app/ui/src/components/modals/LogModal.jsx
-  var import_jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
+  var import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
   function LogModal({ onClose }) {
     const health = useFetch(() => api.health(), []);
     const stats = useFetch(() => api.stats(), []);
     const types = useFetch(() => api.types(), []);
-    return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(Modal, { title: "Evidence", onClose, wide: true, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Store" }),
-      health.loading && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "empty", children: "Reading\u2026" }),
-      health.error && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "error", children: health.error }),
-      health.data && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("dl", { className: "kv", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "file" }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { className: "mono", children: health.data.store }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "size" }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { children: formatBytes(health.data.store_bytes) }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: "exists" }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { children: health.data.store_exists ? "yes" : "no \u2014 ingest something first" })
+    return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(Modal, { title: "Evidence", onClose, side: true, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "section", children: "Store" }),
+      health.loading && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "empty", children: "Reading\u2026" }),
+      health.error && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "error", children: health.error }),
+      health.data && /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("dl", { className: "kv", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "file" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { className: "mono", children: health.data.store }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "size" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: formatBytes(health.data.store_bytes) }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: "exists" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: health.data.store_exists ? "yes" : "no \u2014 ingest something first" })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Counts" }),
-      stats.loading && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "empty", children: "Counting\u2026" }),
-      stats.error && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "error", children: stats.error }),
-      stats.data && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "stat-grid", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Stat, { label: "messages", value: stats.data.messages }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Stat, { label: "threads", value: stats.data.threads }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Stat, { label: "correspondents", value: stats.data.correspondents }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Stat, { label: "attachments", value: stats.data.attachments }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Stat, { label: "withheld", value: stats.data.withheld_total }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Stat, { label: "non-text", value: stats.data.non_text_total })
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "section", children: "Counts" }),
+      stats.loading && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "empty", children: "Counting\u2026" }),
+      stats.error && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "error", children: stats.error }),
+      stats.data && /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(import_jsx_runtime9.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "stat-grid", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Stat, { label: "messages", value: stats.data.messages }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Stat, { label: "threads", value: stats.data.threads }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Stat, { label: "correspondents", value: stats.data.correspondents }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Stat, { label: "attachments", value: stats.data.attachments }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Stat, { label: "withheld", value: stats.data.withheld_total }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Stat, { label: "non-text", value: stats.data.non_text_total })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Withheld \u2014 aliased, not deleted" }),
-        Object.keys(stats.data.withheld || {}).length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "empty", children: "Nothing was withheld. Either the scrub gate is off, or this store holds no PII in the classes it watches." }) : /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dl", { className: "kv", children: Object.entries(stats.data.withheld).map(([kind, count]) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Row, { label: kind.replace(/_/g, " "), value: formatCount(count) }, kind)) }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "empty", style: { paddingTop: 6 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "section", children: "Withheld \u2014 aliased, not deleted" }),
+        Object.keys(stats.data.withheld || {}).length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "empty", children: "Nothing was withheld. Either the scrub gate is off, or this store holds no PII in the classes it watches." }) : /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dl", { className: "kv", children: Object.entries(stats.data.withheld).map(([kind, count]) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Row, { label: kind.replace(/_/g, " "), value: formatCount(count) }, kind)) }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "empty", style: { paddingTop: 6 }, children: [
           "Aliases like ",
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: "PHONE-1" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: "PHONE-1" }),
           " stay in the message bodies, so the relation stays visible while the value does not. The alias \u2192 real mapping is memory-only and is never written to disk."
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Platforms" }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dl", { className: "kv", children: Object.entries(stats.data.platforms || {}).map(([platform, count]) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Row, { label: platform, value: formatCount(count) }, platform)) }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Not plain text" }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dl", { className: "kv", children: Object.entries(stats.data.non_text || {}).map(([kind, count]) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Row, { label: kind, value: formatCount(count) }, kind)) }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "empty", style: { paddingTop: 6 }, children: "Counted and reported, never dropped. A poll, a sticker or a call is a fact about the conversation even when there is no body to read." })
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "section", children: "Platforms" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dl", { className: "kv", children: Object.entries(stats.data.platforms || {}).map(([platform, count]) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Row, { label: platform, value: formatCount(count) }, platform)) }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "section", children: "Not plain text" }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dl", { className: "kv", children: Object.entries(stats.data.non_text || {}).map(([kind, count]) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Row, { label: kind, value: formatCount(count) }, kind)) }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "empty", style: { paddingTop: 6 }, children: "Counted and reported, never dropped. A poll, a sticker or a call is a fact about the conversation even when there is no body to read." })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Types in the store" }),
-      types.error && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "error", children: types.error }),
-      types.data && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Nodes" }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dl", { className: "kv", children: types.data.node_types.map((type) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Row, { label: type.type, value: formatCount(type.count) }, type.type)) })
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "section", children: "Types in the store" }),
+      types.error && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "error", children: types.error }),
+      types.data && /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "kv-pair", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Nodes" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dl", { className: "kv", children: types.data.node_types.map((type) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Row, { label: type.type, value: formatCount(type.count) }, type.type)) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Edges" }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dl", { className: "kv", children: types.data.edge_types.map((type) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Row, { label: type.type, value: formatCount(type.count) }, type.type)) })
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Edges" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dl", { className: "kv", children: types.data.edge_types.map((type) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Row, { label: type.type, value: formatCount(type.count) }, type.type)) })
         ] })
       ] })
     ] });
   }
   function Stat({ label, value }) {
-    return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "stat", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "stat-value", children: formatCount(value) }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "stat-label", children: label })
+    return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "stat", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "stat-value", children: formatCount(value) }),
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "stat-label", children: label })
     ] });
   }
   function Row({ label, value }) {
-    return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dt", { children: label }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("dd", { children: value })
+    return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(import_jsx_runtime9.Fragment, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: label }),
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: value })
     ] });
   }
 
   // app/ui/src/components/modals/UtilitiesModal.jsx
-  var import_react12 = __toESM(require_react(), 1);
-  var import_jsx_runtime9 = __toESM(require_jsx_runtime(), 1);
+  var import_react13 = __toESM(require_react(), 1);
+  var import_jsx_runtime10 = __toESM(require_jsx_runtime(), 1);
   function UtilitiesModal({ onClose, onChanged }) {
-    const [rows, setRows] = (0, import_react12.useState)(null);
-    const [enabled, setEnabled] = (0, import_react12.useState)(null);
-    const [busy, setBusy] = (0, import_react12.useState)(false);
-    const [error, setError] = (0, import_react12.useState)(null);
-    (0, import_react12.useEffect)(() => {
+    const [rows, setRows] = (0, import_react13.useState)(null);
+    const [enabled, setEnabled] = (0, import_react13.useState)(null);
+    const [busy, setBusy] = (0, import_react13.useState)(false);
+    const [error, setError] = (0, import_react13.useState)(null);
+    (0, import_react13.useEffect)(() => {
       let cancelled = false;
       api.platforms().then((data) => {
         if (cancelled) return;
@@ -18292,27 +18808,28 @@
     };
     const all = (rows || []).map((row) => row.platform);
     const everythingOn = enabled && all.length > 0 && all.every((p) => enabled.includes(p));
-    return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
       Modal,
       {
         title: "Utilities \u2014 platforms",
         onClose,
-        footer: /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(import_jsx_runtime9.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { className: "pager-info", children: [
+        side: true,
+        footer: /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(import_jsx_runtime10.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "pager-info", children: [
             enabled ? `${enabled.length} of ${all.length} on` : "\u2026",
-            busy && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(LoaderCircle, { size: 12, className: "spin", style: { marginLeft: 6 } })
+            busy && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(LoaderCircle, { size: 12, className: "spin", style: { marginLeft: 6 } })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { className: "ghost", onClick: () => apply([]), disabled: busy, children: "None" }),
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { className: "ghost", onClick: () => apply(null), disabled: busy, children: "All" }),
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { onClick: onClose, children: "Done" })
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("button", { className: "ghost", onClick: () => apply([]), disabled: busy, children: "None" }),
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("button", { className: "ghost", onClick: () => apply(null), disabled: busy, children: "All" }),
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("button", { onClick: onClose, children: "Done" })
         ] }),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "empty", style: { paddingTop: 0 }, children: "Unticking a platform removes its threads, correspondents and messages from the graph \u2014 and from search and the AI chat. The store is untouched; this is a view, and it is reversible." }),
-          error && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "error", children: error }),
-          !rows && !error && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "empty", children: "Reading the store\u2026" }),
-          (rows || []).map((row) => /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("label", { className: "check", style: { marginBottom: 8 }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "empty", style: { paddingTop: 0 }, children: "Unticking a platform removes its threads, correspondents and messages from the graph \u2014 and from search and the AI chat. The store is untouched; this is a view, and it is reversible." }),
+          error && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "error", children: error }),
+          !rows && !error && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "empty", children: "Reading the store\u2026" }),
+          (rows || []).map((row) => /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("label", { className: "check", style: { marginBottom: 8 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
               "input",
               {
                 type: "checkbox",
@@ -18321,7 +18838,7 @@
                 disabled: busy || !row.built
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
               "span",
               {
                 className: "legend-swatch",
@@ -18332,11 +18849,11 @@
                 }
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { style: { minWidth: 90 }, children: platformLabel(row.platform) }),
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "pager-info", children: row.built ? `${formatCount(row.count)} messages` : "not built yet" })
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { style: { minWidth: 90 }, children: platformLabel(row.platform) }),
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "pager-info", children: row.built ? `${formatCount(row.count)} messages` : "not built yet" })
           ] }, row.platform)),
-          rows?.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "empty", children: "No messages in the store yet \u2014 ingest something first." }),
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { style: { marginTop: 14 }, children: /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+          rows?.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "empty", children: "No messages in the store yet \u2014 ingest something first." }),
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { style: { marginTop: 14 }, children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
             Check,
             {
               label: "Everything on (no filter)",
@@ -18351,25 +18868,25 @@
   }
 
   // app/ui/src/App.jsx
-  var import_jsx_runtime10 = __toESM(require_jsx_runtime(), 1);
+  var import_jsx_runtime11 = __toESM(require_jsx_runtime(), 1);
   function App() {
-    const [theme, setTheme] = (0, import_react13.useState)(loadTheme);
-    const [chatOpen, setChatOpen] = (0, import_react13.useState)(true);
-    const [chatExpanded, setChatExpanded] = (0, import_react13.useState)(false);
-    const [viewerExpanded, setViewerExpanded] = (0, import_react13.useState)(false);
-    const [modal, setModal] = (0, import_react13.useState)(null);
-    const [searchMode, setSearchMode] = (0, import_react13.useState)("substring");
-    const [graph, setGraph] = (0, import_react13.useState)(null);
-    const [graphError, setGraphError] = (0, import_react13.useState)(null);
-    const [stats, setStats] = (0, import_react13.useState)(null);
-    const [storeOk, setStoreOk] = (0, import_react13.useState)(true);
-    const [searchBusy, setSearchBusy] = (0, import_react13.useState)(false);
-    const [platforms, setPlatforms] = (0, import_react13.useState)({ active: null, total: 0 });
-    const [platformRows, setPlatformRows] = (0, import_react13.useState)({ rows: [] });
-    const canvasRef = (0, import_react13.useRef)(null);
+    const [theme, setTheme] = (0, import_react14.useState)(loadTheme);
+    const [chatOpen, setChatOpen] = (0, import_react14.useState)(true);
+    const [chatExpanded, setChatExpanded] = (0, import_react14.useState)(false);
+    const [viewerExpanded, setViewerExpanded] = (0, import_react14.useState)(false);
+    const [modal, setModal] = (0, import_react14.useState)(null);
+    const [searchMode, setSearchMode] = (0, import_react14.useState)("substring");
+    const [graph, setGraph] = (0, import_react14.useState)(null);
+    const [graphError, setGraphError] = (0, import_react14.useState)(null);
+    const [stats, setStats] = (0, import_react14.useState)(null);
+    const [storeOk, setStoreOk] = (0, import_react14.useState)(true);
+    const [searchBusy, setSearchBusy] = (0, import_react14.useState)(false);
+    const [platforms, setPlatforms] = (0, import_react14.useState)({ active: null, total: 0 });
+    const [platformRows, setPlatformRows] = (0, import_react14.useState)({ rows: [] });
+    const canvasRef = (0, import_react14.useRef)(null);
     const viewer = useViewerStack();
-    const deepLinked = (0, import_react13.useRef)(false);
-    (0, import_react13.useEffect)(() => {
+    const deepLinked = (0, import_react14.useRef)(false);
+    (0, import_react14.useEffect)(() => {
       if (deepLinked.current) return;
       const match = /^#thread=(.+)$/.exec(window.location.hash || "");
       if (!match) return;
@@ -18377,11 +18894,11 @@
       const key = decodeURIComponent(match[1]);
       viewer.push({ kind: "node", nodeType: "Thread", id: key, label: key });
     }, [viewer]);
-    const updateTheme = (0, import_react13.useCallback)((next) => {
+    const updateTheme = (0, import_react14.useCallback)((next) => {
       setTheme(next);
       saveTheme(next);
     }, []);
-    const loadGraph = (0, import_react13.useCallback)(async (nodeTypes, { sort, limit } = {}) => {
+    const loadGraph = (0, import_react14.useCallback)(async (nodeTypes, { sort, limit } = {}) => {
       setGraphError(null);
       try {
         const data = await api.graph({
@@ -18394,7 +18911,7 @@
         setGraphError(err.message);
       }
     }, []);
-    (0, import_react13.useEffect)(() => {
+    (0, import_react14.useEffect)(() => {
       let cancelled = false;
       Promise.all([api.health(), api.stats(), api.platforms()]).then(([health, counts, platformData]) => {
         if (cancelled) return;
@@ -18416,30 +18933,30 @@
       theme.filter.sort,
       theme.filter.limit
     ].join("|");
-    (0, import_react13.useEffect)(() => {
+    (0, import_react14.useEffect)(() => {
       loadGraph(theme.filter.nodeTypes);
     }, [filterKey]);
-    const openNode = (0, import_react13.useCallback)(
+    const openNode = (0, import_react14.useCallback)(
       (node) => {
         viewer.push({ kind: "node", ...node });
       },
       [viewer.push]
     );
-    (0, import_react13.useEffect)(() => {
+    (0, import_react14.useEffect)(() => {
       const entry = viewer.current;
       const next = entry?.kind === "node" && entry.nodeType === "Thread" ? `#thread=${encodeURIComponent(entry.id)}` : "";
       if (window.location.hash !== next) {
         window.history.replaceState(null, "", next || window.location.pathname);
       }
     }, [viewer.current]);
-    const onGraphNodeClick = (0, import_react13.useCallback)(
+    const onGraphNodeClick = (0, import_react14.useCallback)(
       (node) => {
         canvasRef.current?.halo(node.id);
         openNode(node);
       },
       [openNode]
     );
-    const onResultRow = (0, import_react13.useCallback)(
+    const onResultRow = (0, import_react14.useCallback)(
       (node) => {
         canvasRef.current?.halo(node.id);
         canvasRef.current?.focus(node.id);
@@ -18447,10 +18964,10 @@
       },
       [openNode]
     );
-    const onBack = (0, import_react13.useCallback)(() => {
+    const onBack = (0, import_react14.useCallback)(() => {
       viewer.back();
     }, [viewer.back]);
-    const runSearch = (0, import_react13.useCallback)(
+    const runSearch = (0, import_react14.useCallback)(
       async (query, mode) => {
         setSearchBusy(true);
         try {
@@ -18494,13 +19011,13 @@
       },
       [viewer.push]
     );
-    const onChatResults = (0, import_react13.useCallback)((entry) => viewer.push(entry), [viewer.push]);
-    const onIngested = (0, import_react13.useCallback)(() => {
+    const onChatResults = (0, import_react14.useCallback)((entry) => viewer.push(entry), [viewer.push]);
+    const onIngested = (0, import_react14.useCallback)(() => {
       api.stats().then(setStats).catch(() => {
       });
       loadGraph(theme.filter.nodeTypes);
     }, [loadGraph, theme.filter.nodeTypes]);
-    const onPlatformsChanged = (0, import_react13.useCallback)(
+    const onPlatformsChanged = (0, import_react14.useCallback)(
       (data) => {
         setPlatforms({ active: data.active, total: (data.platforms || []).length });
         loadGraph(theme.filter.nodeTypes);
@@ -18516,7 +19033,7 @@
       },
       [loadGraph, theme.filter.nodeTypes, viewer]
     );
-    const context = (0, import_react13.useMemo)(() => {
+    const context = (0, import_react14.useMemo)(() => {
       const entry = viewer.current;
       if (!entry) return null;
       if (entry.kind === "node") {
@@ -18524,8 +19041,8 @@
       }
       return { nodeType: "search results", label: entry.query };
     }, [viewer.current]);
-    return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "shell", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "shell", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
         CommandBar,
         {
           onSearch: runSearch,
@@ -18541,8 +19058,8 @@
           totalPlatforms: platforms.total
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "columns", children: [
-        chatOpen && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("aside", { className: `pane chat${chatExpanded ? " expanded" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "columns", children: [
+        chatOpen && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("aside", { className: `pane chat${chatExpanded ? " expanded" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
           ChatPanel,
           {
             theme,
@@ -18552,8 +19069,8 @@
             onToggleExpand: () => setChatExpanded((value) => !value)
           }
         ) }),
-        /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("main", { style: { flex: 1, position: "relative", minWidth: 0, display: "flex" }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("main", { style: { flex: 1, position: "relative", minWidth: 0, display: "flex" }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
             GraphCanvas_default,
             {
               ref: canvasRef,
@@ -18563,7 +19080,7 @@
               onBackgroundClick: () => canvasRef.current?.clearHalo()
             }
           ),
-          graphError && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+          graphError && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
             "div",
             {
               className: "error",
@@ -18571,7 +19088,7 @@
               children: graphError
             }
           ),
-          !graph && !graphError && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+          !graph && !graphError && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
             "div",
             {
               className: "empty",
@@ -18579,8 +19096,8 @@
               children: "Loading the graph\u2026"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "canvas-overlay", children: [
-            graph && /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("span", { className: "canvas-chip", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "canvas-overlay", children: [
+            graph && /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("span", { className: "canvas-chip", children: [
               graph.counts.nodes.toLocaleString(),
               " nodes \xB7",
               " ",
@@ -18588,10 +19105,10 @@
               " edges",
               graph.truncated ? " \xB7 truncated" : ""
             ] }),
-            searchBusy && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "canvas-chip", children: "searching\u2026" })
+            searchBusy && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "canvas-chip", children: "searching\u2026" })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("aside", { className: `pane viewer${viewerExpanded ? " expanded" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("aside", { className: `pane viewer${viewerExpanded ? " expanded" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
           Viewer,
           {
             entry: viewer.current,
@@ -18605,9 +19122,9 @@
           }
         ) })
       ] }),
-      modal === "log" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(LogModal, { onClose: () => setModal(null) }),
-      modal === "ingest" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(IngestModal, { onClose: () => setModal(null), onIngested }),
-      modal === "canvas" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+      modal === "log" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(LogModal, { onClose: () => setModal(null) }),
+      modal === "ingest" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(IngestModal, { onClose: () => setModal(null), onIngested }),
+      modal === "canvas" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
         CanvasModal,
         {
           theme,
@@ -18619,14 +19136,23 @@
           onReload: (overrides) => loadGraph(theme.filter.nodeTypes, overrides)
         }
       ),
-      modal === "utilities" && /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(UtilitiesModal, { onClose: () => setModal(null), onChanged: onPlatformsChanged })
+      modal === "gravity" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+        GravityModal,
+        {
+          theme,
+          onChange: updateTheme,
+          onClose: () => setModal(null),
+          onRerunLayout: () => canvasRef.current?.rerunLayout()
+        }
+      ),
+      modal === "utilities" && /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(UtilitiesModal, { onClose: () => setModal(null), onChanged: onPlatformsChanged })
     ] });
   }
 
   // app/ui/src/main.jsx
-  var import_jsx_runtime11 = __toESM(require_jsx_runtime(), 1);
+  var import_jsx_runtime12 = __toESM(require_jsx_runtime(), 1);
   (0, import_client.createRoot)(document.getElementById("root")).render(
-    /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(import_react14.StrictMode, { children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(App, {}) })
+    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(import_react15.StrictMode, { children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(App, {}) })
   );
 })();
 /*! Bundled license information:
@@ -18704,6 +19230,7 @@ lucide-react/dist/esm/icons/braces.mjs:
 lucide-react/dist/esm/icons/corner-down-right.mjs:
 lucide-react/dist/esm/icons/file-up.mjs:
 lucide-react/dist/esm/icons/loader-circle.mjs:
+lucide-react/dist/esm/icons/orbit.mjs:
 lucide-react/dist/esm/icons/palette.mjs:
 lucide-react/dist/esm/icons/rotate-ccw.mjs:
 lucide-react/dist/esm/icons/search.mjs:

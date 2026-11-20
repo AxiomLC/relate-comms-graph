@@ -15,7 +15,7 @@ Use these spellings in code, in Cypher, in the UI and in docs.
 | Term | Code / store | Definition | Deliberately NOT |
 |---|---|---|---|
 | **Owner** | `identity.py`, `store/profile/identity.json` | The account owner. Per platform, persisted, with `tz_offsets`. | Not a node. Not a `Correspondent`. |
-| **Correspondent** | `(:Correspondent {key, …})`, key `person:<canonical>` | The other party. A fact from the export, folded across platforms **by name only** — a phone-only contact and a named one stay apart until `link.py`. | Not one human across platforms (that is `link.py`). Not an extracted entity. |
+| **Correspondent** | `(:Correspondent {key, …})`, key `person:<canonical>` | The other party. A fact from the export. Folded across platforms by name at write time, then by phone / email / name in `link.py`. | Not one human across platforms (that is `link.py`). Not an extracted entity. |
 | **Platform** | `platform` property on every node; `_PLATFORMS` in `tools.py` | The source: `telegram`, `messenger`, `email`, `linkedin`, `whatsapp`, `outlook`, `sms`. | Not the export file. Not the provider — Outlook-over-IMAP is `email`. |
 | **Thread** | `(:Thread {key, platform, title, is_group})` | One conversation. | Not a message. |
 | **Message** | `(:Message {key, platform, chat_id, message_id, …})` | One message. | Not a thread. |
@@ -79,11 +79,12 @@ back; importing the library must not pull in FastAPI.
 | `schema.py` | Frozen dataclasses: `Message`, `Chat`, `AttachmentRef`, `IngestResult`. |
 | `paths.py` | `spool_dir()`, `real_dir()`, `store_path()`, `profile_dir()`, `ensure_layout()`. |
 | `ingest.py` | The pipeline: `_parser_for()`, `detect_platform()`, `discover()`, `parse_batches()`, `ingest()`, `preview()`, `stage()`, `_drop_spam_threads()`. |
-| `writer.py` | Cypher writer. `write()` (UNWIND 500), `write_correspondents()` + `_reconcile()`, `thread_display_title()`, `verify_present()`. |
-| `resolution.py` | Phones/emails/names matching. **Unwired** — counts reported, result discarded. |
+| `writer.py` | Cypher writer. `write()` (UNWIND 500), `write_correspondents()` + `_reconcile()` + `_contact_ids()`, `thread_display_title()`, `verify_present()`, `handles_from()`. |
+| `canon.py` | The flattening pipe. `canonical(raw, kind=…)` → `Canonical`; `KINDS`, `NICKNAMES`, `candidates()`, `nickname_form()`, `score()`, `fuzzy_available()`. Knobs `NICKNAME_ENABLED`, `FOLD_ON_NAME`, `FUZZY_REPORT`. |
+| `link.py` | **Cross-connect.** `link(conn)` — union-find fold over phone / email / name, `POSSIBLY` for fuzzy pairs. Runs once at the end of `ingest()`. |
 | `scrub.py` | `Verdict` (keep/hide/block), `AliasMap` (memory-only), Luhn check. |
 | `identity.py` · `manifest.py` | Who the **Owner** is (with `tz_offsets`) · what has been ingested (sampled fingerprint, a shortcut never the authority). |
-| `tools.py` | **The tool layer.** 12 tools, schema from each signature. |
+| `tools.py` | **The tool layer.** 12 tools, schema from each signature. `DRAWABLE_NODE_TYPES`, `DRAWABLE_EDGE_TYPES`, `ENTITY_KINDS`, `_NODE_QUERIES`, `_EDGE_QUERIES`, `_SORTS`. |
 | `models.py` · `cli.py` | Ollama model choice (`THINK = False`) · `python -m relate_comms`. |
 | `adapters/` | `parse(export_path, **kw)` + `detect(path)`. Built: `telegram`, `whatsapp`, `whatsapp_html`, `messenger`, `linkedin`, `email_imap`, `outlook_pst`, `sms`. **WhatsApp has two dialects** — native `chat.txt` and the extension's HTML — both reporting `whatsapp`; `_parser_for()` picks per file. |
 
@@ -107,8 +108,8 @@ React 19 + esbuild. `dist/app.js` is **committed** so a clone runs without npm.
 | `components/GraphCanvas.jsx` | Cytoscape + fcose. **Icons are the only node look.** |
 | `components/Viewer.jsx` | Two states, Back, budgeted loads, per-thread search, paging. |
 | `components/ChatPanel.jsx` · `CommandBar.jsx` | Ollama chat with tool trace · the title bar. |
-| `components/modals/` | `Modal.jsx` (+ `Slider`/`Check`/`TextField`), then the four the title bar opens: **Log**, **Ingest**, **Canvas** (+ Styling), **Utilities**. `SetupModal.jsx` exists but is not mounted. |
-| `config/theme.js` · `nodeTypes.js` | **Every tunable**, persisted · platform colours, icons, placeholders. |
+| `components/modals/` | `Modal.jsx` (+ `Slider`/`Check`/`TextField`, each with a hover `hint` and a visible `note`), then the five the title bar opens: **Log**, **Ingest**, **Canvas**, **Gravity**, **Utilities**. All are side-docked (`side`) so the graph stays visible. `SetupModal.jsx` exists but is not mounted. |
+| `config/theme.js` · `nodeTypes.js` | **Every tunable**, persisted (`THEME_VERSION` discards a stale saved theme) · `NODE_TYPES` (the single declaration of a kind), platform colours, icons, placeholders. |
 | `lib/api.js` · `useViewerStack.js` | The only server call site · the persisted state timeline. |
 
 ## 3. Key functions
@@ -138,8 +139,21 @@ _parser_for(path, platform)                      # WhatsApp's two dialects
 
 # relate_comms/writer.py
 write(conn, result, *, owner=None) -> dict[str, int]   # UNWIND, BATCH_SIZE = 500
+write_correspondents(conn, result, *, owner=None, owner_forms=None) -> dict
+_reconcile(cur, keys)                                  # derived props, after the rows
+_contact_ids(result, owner_forms) -> dict              # sender_id -> phone/email
 thread_display_title(chat, owner=None) -> str          # never empty
 verify_present(conn, result) -> tuple[bool, dict]
+handles_from(properties) -> dict[str, str]             # flat handle_<p> -> a map
+
+# relate_comms/canon.py — the flattening pipe
+canonical(raw, *, kind="person", owner=None) -> Canonical   # raises on unknown kind
+candidates(names, *, kind="person", threshold=FUZZY_REPORT) -> list[Candidate]
+nickname_form(raw) -> str      score(a, b) -> float      fuzzy_available() -> bool
+KINDS = ("person", "organization", "place", "product")
+
+# relate_comms/link.py — cross-connect, once per ingest
+link(conn, *, fold_on_name=None) -> dict   # {folded, merged_by, possibly, groups}
 ```
 
 
@@ -181,8 +195,12 @@ as `platform` — that is first-by-**date**, so the filter and label never drift
 ingests. Measured on the sample store: 17 of 34 merged nodes lean toward a platform
 other than their first-by-date one, so the two fields carry different information.
 
-The canvas uses `dominance` as leash length: a high-dominance bridge hugs its
-platform, a 50/50 bridge drifts between them. `platform` cannot serve that purpose.
+**They are not a layout input.** A merged node is pulled **equally** by every platform
+it touches; the dominance leash was designed and then withdrawn. See
+[`CytoGravityRecommend.md`](CytoGravityRecommend.md) §2.
+
+**`graph_slice` also returns `merged`** (the `:Merged` label as a boolean) on every
+Correspondent. The canvas uses it as the bag-membership test, inverted.
 
 `:Merged` is an additive label on a node spanning more than one platform. It is
 filtered out of `types_present()` — it is a marker, not a node type.
@@ -203,15 +221,67 @@ body-entity extraction lands. They are **not** in `DRAWABLE_NODE_TYPES`.
 **Designed but unwritten — do not query against these:** `Identity`, `MATCHED_BY`,
 `SENT`, `Draft`.
 
-`POSSIBLY` has an `_EDGE_QUERIES` entry (so it draws the moment `link.py` writes one)
-but zero rows today. Merging a phone-only contact with a named one is still unsolved —
-that is `link.py` (edit 4), not the key change.
+**Cross-connect is `relate_comms/link.py`, run once at the end of `ingest()`.** It folds
+the nodes whose keys differ — a phone-only contact onto a named one — by union-find over
+phone / email / name, re-pointing every `WITH` and `POSSIBLY` edge before the loser is
+deleted, then `writer._reconcile()` rebuilds `platforms` / `platform_label` / `:Merged`.
+Fuzzy pairs get a `POSSIBLY` edge instead and both nodes stay. `POSSIBLY` is in
+`DRAWABLE_EDGE_TYPES` and drawn dashed.
+
+**A named contact's phone or address comes from `sender_id`,** recorded by
+`writer._contact_ids()` — only when the value actually is a phone or an address. Without
+it a phone fold has nothing to compare, because a sender field is a name.
+
+**Fold knobs live in `canon.py`:** `NICKNAME_ENABLED` (honoured by the pipe itself, since
+a nickname is resolved into the *key* at write time) and `FOLD_ON_NAME`.
+
+### Thread title schema — LOCKED
+
+```
+<Platform>; <Name>; <MM-DD-YYYY>[-][>][ #n]
+```
+
+| Case | Example |
+|---|---|
+| 1:1, single day | `SMS; Bryan Rodgers; 06-02-2026` |
+| 1:1, spans days | `Facebook; Ryan Phillip; 02-13-2025->` |
+| Group | `Whatsapp; Come to Africa; 10-25-2026->` |
+| With subject | `LinkedIn; n8n Hackathon today - log in!🪐; 08-16-2025` |
+| Same person, same start date | `Facebook; Ryan Phillip; 02-13-2025-> #2` |
+| Name contains a date | `LinkedIn; Invoice due 08-16-2025; 08-16-2025` |
+| No messages | `Telegram; Mary Olver` (second `;` omitted) |
+
+**Parse from the outside in:** platform before the **first** `;`, date block after the
+**last** `;`, name between them.
+
+**Why `;`:** measured across 500 real titles — `;` 0 occurrences, `[`/`]` 0, `->` 0, `#` 0,
+`|` 3, `-` 6. `-` collides on day one; `;` does not.
+
+**Why `->` not an end date:** an end date changes on every ingest because `max(ts)` moves.
+`->` changes at most once, ever.
+
+**`#n` by date collision only**, ordered by `chat_id`, never ingest order.
+
+**Display only.** Never parse the title for the platform key; query the `platform` property.
+
+### Naming — settled
+
+| Use | Not |
+|---|---|
+| `Organization` | `Company` |
+| `Product` | `Thing` |
+| `Person` (extraction only, never the Owner) | — |
+
+`canon.KINDS` is the single source; `tools.ENTITY_KINDS` derives from it. An unknown kind
+raises rather than falling through to the `person` branch. `Company` appears nowhere.
 
 ## 5. Invariants — break these and things fail silently
 
 | Invariant | Why |
 |---|---|
 | `Message.key = platform:chat_id:message_id` | Makes re-ingest idempotent. Never an array index or timestamp. |
+| Canvas bags are `synthetic` | A bag is a layout body, not data. `cy.nodes().length` includes them, so nothing may use that raw — the reveal, `onLayoutDone` and every count filter `.synthetic`. |
+| Bag membership is `:Merged`, inverted | The label, not `platforms.length`. A Place mentioned on two platforms is `:Merged` and must stay outside; a length test would bag the world's geography. |
 | `ts_utc` everywhere | Telegram/WhatsApp/Messenger export wall-clock with no offset. |
 | **A platform is a source, not a provider** | `outlook` is a `.pst`; Outlook-over-IMAP is `email`. Different provenance, different keys. |
 | **A merged node is filtered on `platforms`, never `platform`** | `platform` is one string (first by date). Testing it hides a merged node whenever the user filters by any other platform. |
@@ -354,6 +424,7 @@ Ports in use: **8000 is taken** by another app — this project uses **8100**.
 
 | Topic | File |
 |---|---|
+| Canvas layout: bags, the ring, what fcose actually honours, and the **open long-edge problem** | [`CytoGravityRecommend.md`](CytoGravityRecommend.md) |
 | The generator spec — every shape the app has a switch for | [`archive_docs/UNDESIRABLES.md`](archive_docs/UNDESIRABLES.md) |
 | UI as built, every Cytoscape decision | [`archive_docs/UI-Cytoscape.md`](archive_docs/UI-Cytoscape.md) |
 | Per-platform export shapes and traps | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) |

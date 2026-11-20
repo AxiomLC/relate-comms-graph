@@ -1,292 +1,187 @@
 # CytoGravityRecommend.md
 
-**Can the Cytoscape canvas be told to cluster Threads by platform, with merged nodes
-pulled toward whichever platform they talk most on?**
+**Status: OPEN — edges are still far too long.** Everything else in this document is
+built and settled. The one unresolved problem is §6, and it is the reason this file
+still exists.
 
-Short answer: **yes**, and mostly without new libraries. But one part of the ask —
-"merged nodes lean toward the platform they message most on" — is *not* a gravity setting.
-It is a small computed value the backend has to hand the canvas. Details below.
-
----
-
-## 1. Where we stand today
-
-- Library: `cytoscape` 3.35 + `cytoscape-fcose` 2.2, vendored as plain scripts (no build
-  step). `GraphCanvas.jsx` registers it on `window` before use.
-- Layout call: `runLayout()` in `app/ui/src/components/GraphCanvas.jsx` (~line 762).
-- Tunables: `theme.physics` in `app/ui/src/config/theme.js`.
-
-Right now the layout is **free-floating**: every node is pushed and pulled only by its
-edges and a weak global centering (`gravity: 0.2`). Two Telegram threads that share
-nothing end up wherever they happen to land, next to WhatsApp threads. There is no
-notion of "this belongs with its platform".
-
-Note: `store/graph.rl` is the database itself (binary), not a schema file. Nothing in this
-note asks the database to change. Everything here is either (a) a layout option in the
-UI, or (b) one extra number on each node the API already returns.
+Read §6 first if you are picking this up cold.
 
 ---
 
-## 2. The three mechanisms, in plain terms
+## 1. What is built
 
-fcose gives us three ways to make things group. Only one is worth using.
-
-### A. "Bags" around each platform — *recommended*
-
-Cytoscape supports **compound nodes**: a parent node drawn as a container, with child
-nodes inside it. fcose is explicitly built for this (the **f** stands for *fast
-Compound*). A parent behaves like a body with real size — children cannot drift out,
-whole platforms repel each other, and edges that cross between platforms are stretched
-between the two bodies.
-
-**Terminology, settled:** compound node = container = bag = the same object. Cytoscape's
-term is "compound node"; this doc says **bag** from here on, and the code should use
-`type: "Bag"` so prose, code and CSS selectors all say the same word.
-
-This is what the ask describes, almost word for word. Each platform = one bag.
-Telegram's threads go in the Telegram bag. WhatsApp's in the WhatsApp bag. A Thread
-only ever belongs to one platform, so **every Thread goes in exactly one bag — no
-exceptions**. That is the clean part of this design.
-
-**A bag is invisible and inert.** It is not a thing the user can see, click, drag or
-question — it exists to give fcose a body to solve around, nothing more:
-
-```js
-// Bag style — one per platform. Invisible, inert, behind everything.
-{
-  selector: 'node[type = "Bag"]',
-  style: {
-    "background-opacity": 0,      // fully invisible body
-    "background-image": "none",
-    "border-width": 0,
-    "label": "",                  // no label at any zoom
-    "events": "no",               // not clickable, not hoverable, no tap
-    "selectable": false,
-    "grabbable": false,           // dragging a child must not drag the bag
-    "z-compound-depth": "bottom", // drawn behind its children
-    "z-index-compare": "manual",
-    "z-index": 0,
-    "padding": 24,                // breathing room around children
-    "compound-sizing-wrt-labels": "exclude",
-  },
-}
-```
-
-Four traps in that style block, each of which silently breaks the feature if missed:
-
-1. **Never `display: "none"`.** Hiding a parent hides its children and breaks the
-   compound relationship entirely. Invisibility must be `background-opacity: 0`, not
-   `display: none`.
-2. **`events: "no"` is what makes it non-clickable.** `selectable: false` alone still
-   lets the bag swallow taps — which is worse than it sounds: a tap on the bag's padding
-   would fire the background handler, or nothing at all.
-3. **`z-compound-depth: "bottom"`** is the property that puts the bag behind children.
-   `z-index` alone does not do it.
-4. **`padding` + `compound-sizing-wrt-labels: "exclude"`** keep the bag's body tied to
-   its children's real geometry. Without the exclude, the label's (empty) box still
-   participates in sizing and the bag's border-box drifts.
-
-**Bags must be built in the same pass that filters children** — the
-`theme.filter.platforms` path — never as a separate step. A separate step is how you get
-an orphan bag with no children, or a child whose parent was filtered away; fcose errors
-on the latter rather than degrading, so this is a hard requirement, not a tidiness note.
-
-### B. Pin platforms to fixed spots ("Telegram always left, WhatsApp always right")
-
-Possible (`relativePlacementConstraint` / `alignmentConstraint`). Useful if you want the
-same picture on every reload, but it doesn't itself pull members together, and it
-fights the random startup positions the canvas relies on today. **Not recommended now.**
-
-### C. Let the layout sort things by attribute on its own
-
-There is a `tilingCompareBy` option, but it only affects standalone pieces, not the main
-relaxation. It will not produce platform clusters. **Skip.**
-
----
-
-## 3. Recommendation in words
-
-1. **One bag per platform.** Seven platforms, seven bags. Invisible and inert — a body
-   for fcose, not a UI object.
-2. **Threads are children of their platform's container.** Always exactly one.
-3. **Any node with exactly one platform is a child of that platform's container** —
-   Threads, single-platform Correspondents, and future single-platform Person / Org /
-   Place / Product alike. No per-type branch.
-4. **Any node with more than one platform stays outside every container**, and leans
-   toward its dominant platform (§5).
-5. **Cross-platform edges stay as they are.** They are now the lines that tie the seven
-   bags into one picture, which is exactly the behaviour asked for. Each such edge pulls
-   bag-to-bag, so the pull is naturally equal in both directions.
-6. **Merged nodes lean toward their dominant platform.** Their position isn't guesswork —
-   it's decided by one number, `dominance`, described in §5.
-
-### The rule is `:Merged`, inverted
-
-Rule 3 and rule 4 are one predicate, not two, and the store already materialises it:
-
-> **A node goes in a bag if and only if it is not `:Merged`.**
-
-Threads are trivially single-platform, so they are trivially bagged. Merged nodes are
-`(:Correspondent:Merged)` etc., so they are trivially outside. That means `:Merged` IS
-the bag-membership test — not merely an audit annotation — and the canvas needs no
-per-kind judgement at all. This is what makes the rule survive Person / Org / Place /
-Product without further thought.
-
-Caveat: the predicate reads the **label**, not the `platforms` array. Two nodes could
-theoretically disagree (a node with one platform but labelled `:Merged`). Trust the
-label: it is the merge decision, and the array is a report of what that decision saw.
-
----
-
-## 4. The hard one: where do multi-platform Correspondents go?
-
-A merged Correspondent is, by definition, in Telegram *and* WhatsApp *and* email. It
-cannot live in three bags. Three options:
-
-| Option | What it looks like | Verdict |
+| Piece | Where | State |
 |---|---|---|
-| Put it in the bag with the most messages | Simple, but lies — the node visibly belongs to one platform while its edges go everywhere, and which bag it lands in changes when you re-ingest | Fragile |
-| Put it in every bag (copy it) | Visually "correct", but it's now several objects pretending to be one, and clicking one highlights the wrong thing | Confusing |
-| **Leave it outside the bags, and nudge it toward its dominant platform** | Sits in the space between containers, visibly tethered to the platform it's most active in | **Recommended** |
+| One invisible bag per platform | `GraphCanvas.jsx` element memo | **done** |
+| Bag membership = `:Merged`, inverted | `GraphCanvas.jsx` | **done** |
+| Bags pinned to a ring, post-layout | `placeBagsOnRing()` | **done** |
+| Labels counted in the layout box | `theme.physics.nodeDimensionsIncludeLabels` | **done** |
+| `merged` flag on the API | `tools.py` `_NODE_QUERIES["Correspondent"]` | **done** |
+| `POSSIBLY` edges drawn, dashed | `tools.py` `DRAWABLE_EDGE_TYPES` | **done** |
 
-Only **single-platform** correspondents are unambiguous, and **they do go in their
-platform's bag** — same rule as Threads, no special case. Multi-platform ones are the
-"bridges": they stay outside and lean (§5).
+Measured on the live store: **248 nodes, 166 edges, 7 bags, 214 bagged nodes, 34
+bridges** (merged Correspondents outside every bag).
 
-**The general rule that survives Person / Org / Place / Product:** not `:Merged` → bagged;
-`:Merged` → outside and leashed. Mechanical, no per-type judgement, which matters because
-the schema is heading toward five merged kinds. See §3 for why the label, not the
-`platforms` array, is the test.
-
-**A Place is the case that proves the rule.** §"Future kinds" of the build plan notes
-that a Place's `platforms` means "which platforms *mentioned* it", not "where it lives".
-A Place mentioned on Telegram and WhatsApp and nowhere else would still be `:Merged` and
-still sit outside the bags — even though `platforms` has two real entries. The label
-handles this correctly; a `platforms.length === 1` test on Places would have quietly
-given you a bag containing the world's geography.
-
----
-
-## 5. "Pulled toward whichever platform had more messages" — how
-
-This is the only part that needs data the canvas doesn't have. And it must be done with
-**soft pull, not hard pinning** — otherwise you're back to fighting randomize.
-
-**Two new fields — and neither is `platform`.**
-
-`platform` must **not** be redefined. It is deliberately *first by date*, so the filter
-and the `platform_label` do not drift between ingests. "Most messages" is a different
-question that can legitimately give a different answer, and swapping the definition would
-reintroduce exactly the ingest-to-ingest instability the date rule exists to prevent.
-Keep them separate:
-
-| Field | Definition | Stability |
-|---|---|---|
-| `platform` | first platform seen, date order | **existing** — stable across ingests by design |
-| `platforms` | all platforms, accumulated | **existing** |
-| `primaryPlatform` | platform with the most messages | **new** — can change as the store grows, and that is fine |
-| `dominance` | 0.0–1.0, how lopsided the message split is (1.0 = one platform only) | **new** — derived from the same counts |
-
-**Where it is computed: at query time, not at write time.** There is no per-platform
-message count in the store today (`seen_<p>` is a first *sighting*, not an activity
-measure). It is one traversal:
+Live theme values (`app/ui/src/config/theme.js`, `THEME_VERSION = 9`):
 
 ```
-(c)<-[:WITH]-(t)<-[:IN]-(m)  grouped by m.platform  ->  counts, then max/total
+physics.idealEdgeLength        22      (was 60)
+physics.smartEdgeLength        false   (was implicitly true)
+physics.gravityCompound        1.0
+physics.gravityRangeCompound   1.5
+physics.nodeDimensionsIncludeLabels  true
+layout.bagRing                 true
+layout.bagRingSpread           1.0     (was 1.35)
 ```
 
-That belongs in `_NODE_QUERIES["Correspondent"]`, **not** in `_reconcile()`. Query-time
-keeps it a derived view: correct as the store grows, with no re-ingest and no stale cached
-property. Same reasoning that keeps `primaryPlatform` allowed to change while `platform`
-may not.
+---
 
-Note `dominance` is meaningful for **single-platform nodes too** — it is exactly 1.0 — so
-the UI can use one field rather than branching on `:Merged`. And it is only defined where
-`WITH` edges reach a platform; an org or place with no messages gets `null`, not 0, and
-the leash is simply not drawn.
+## 2. The design, in one paragraph
 
-**What the canvas does with it.** Two things, both cheap:
+Each platform is a **bag**: an invisible compound parent whose only job is to give
+fcose a body to solve around. A node goes in a bag **if and only if it is not
+`:Merged`** — the label, not `platforms.length`, because a Place mentioned on two
+platforms is `:Merged` and must stay outside. Threads are trivially single-platform so
+they are trivially bagged. Merged nodes stay outside and are pulled by their real
+edges toward every bag they touch, which is what puts them in the middle. The bags are
+then moved onto a circle so the pulls point inward from all sides.
 
-1. **A short invisible "leash".** Give each multi-platform node one extra invisible edge
-   to a small invisible anchor node sitting in its dominant platform's bag. Give that
-   leash an ideal length proportional to `dominance`. High dominance = short leash = the
-   node hugs Telegram. Low dominance = long leash = it drifts between platforms. Set the
-   leash's elasticity high so it genuinely pulls but can still be outweighed by real
-   edges. This is the standard fcose trick for "soft gravity toward a point" and it
-   degrades gracefully — nothing breaks, the node just sits further from the anchor.
-   No `dominance` (no messages) means no leash at all; the node floats on its edges only.
-
-2. **A visual echo of dominance.** Where the node sits already reads correctly, but the
-   cost is that a high-dominance bridge looks identical to a 50/50 bridge. Suggest the
-   border colour or a thin ring on merged nodes uses their **primary platform's** colour,
-   and the merged state is already shown by the existing multi-platform label. No new
-   styling machinery.
-
-**Why not "just raise gravity"?** The existing `gravity` setting pulls *everything*
-toward the middle of the screen. That would crush all seven bags into one ball and
-destroy the clustering. The leash is per-node and per-target, which is the difference
-between "everything sinks" and "this node leans Telegram".
+**The leash was retracted.** The owner withdrew "pull a merged node toward the platform
+it messages most on" in favour of **equal pull from every platform**. Equal pull is
+fcose's default for a node outside every bag, so the leash would have broken the
+requirement. `primaryPlatform` / `dominance` remain on the API as honest data but are
+**not a layout input**. Do not add the leash back without asking.
 
 ---
 
-## 6. Things that will bite
+## 3. Traps that cost real time — do not repeat these
 
-| Risk | Why it matters | Mitigation |
-|---|---|---|
-| **Bags vs. the platform filter** | Hiding a platform (`theme.filter.platforms`) rebuilds the graph. If a bag survives without its children — or a child survives without its bag — fcose **throws**, it does not degrade | Bags must be built in the same pass that filters children. Never a separate step. See §2A |
-| **Bags vs. `randomize: true`** | Random start positions are mandatory today (comment in `theme.js`), and bags are less reliable with fully random starts | Accept slightly looser bags per run, or fix each bag's seed position. Do not turn randomize off unless quality moves to `proof` — that's slower |
-| **`packComponents: true`** | Already on. It packs *disconnected* pieces. With bags, most things are connected, so it mostly stops mattering — but don't assume it's doing the clustering. It isn't, today | Leave it on; expect it to do less |
-| **Bag labels vs. label easing** | Your labels are a zoom reward. Any bag label would ignore that and shout at every zoom level | Settled: bags carry no label at all (`.label: ""`). Not a tuning question |
-| **Big bags dominate** | Telegram has 26 threads, Outlook has 6 (and zero correspondents). Without care the big bags take the whole canvas | `gravityCompound` is the knob that squeezes each bag internally — tune it, don't tune global `gravity` |
-| **Synthetic nodes leak into every count** | Bags, leash anchors and leash edges are **client-side only** — same class of problem as `Merged` in `types_present()`. Layout, the reveal sequence, and the "N drawn" readout all count nodes, so ~7 bags + N anchors + N leashes would appear as data that does not exist | Exclude via a `synthetic` class: the reveal sequence, the `onLayoutDone` node/edge counts, and any node-count the Canvas modal shows. `cy.nodes()` includes bags — do not use its `.length` raw anywhere |
-| **Synthetics must never come from the server** | If bags or anchors are ever persisted, they hit `db.labels()` the same way `Merged` does and pollute `types_present()` | Bag/anchor construction stays in `GraphCanvas`'s element memo. If it ever moves server-side, it needs the same exclusion `Merged` gets in the Toggles modal |
-| **Merged nodes and the client filter** | The canvas currently reads `node.platform` to decide visibility. A merged node with `platform: telegram` but `platforms: [telegram, whatsapp]` will vanish when WhatsApp is unticked | Already a known item in the build plan (edit 3). Bags make it *worse* if unaddressed, because a child can be hidden while its bag stays |
+**Never put a bag in a `fixedNodeConstraint`.** This broke the app completely: blank
+canvas, stalled refresh. `spectralLayout` builds its `nodeIndexes` map with
+`if (!nodes[i].isParent())` (`cytoscape-fcose.js:1313`), so a compound is never in it.
+The constraint handler reads `xCoords[nodeIndexes.get(bagId)]` → `undefined`, and the
+Procrustes transform turns **every** coordinate into `NaN`. The ring is a post-layout
+translation instead.
 
----
+**The bag style rule must be LAST in the stylesheet array.** Cytoscape applies blocks
+in order. Placed first, the base `node` rule wins: `background-opacity: 0.92` plus
+`background-color: data(color)`, and a bag carries no `color`, so `data(color)` falls
+back to Cytoscape's default grey. That rendered as grey boxes around every platform.
 
-## 7. Suggested order of work
+**Never `display: "none"` on a bag.** Hiding a parent hides its children and breaks the
+compound relationship. Invisibility is `background-opacity: 0`.
 
-1. **Bags first, no leashes.** One bag per platform, single-platform nodes as children,
-   everything else outside. Add the bag style block from §2A verbatim, plus
-   `gravityCompound` in the theme. Exclude bags from the counts and the reveal in the same
-   commit — it is not a follow-up. Run it and look. This alone gets you 80% of the ask.
-2. **Then the leash.** Add `primaryPlatform` + `dominance` to the API response, then the
-   hidden anchor edges. Do this after step 1 because the leash is only meaningful once
-   bags exist to lean toward.
-3. **Then the visual echo.** Only if the picture still reads ambiguously.
+**`events: "no"` is what makes a bag non-clickable.** `selectable: false` alone still
+lets it swallow taps on its padding.
 
-Each step is independently revertible, and step 1 changes nothing about the data.
+**Bags are synthetic.** `cy.nodes().length` includes them. The reveal, `onLayoutDone`
+and every count filter `.synthetic`.
 
 ---
 
-## 8. Straight answer to the two questions asked
+## 4. What the vendored fcose source actually says
 
-- *"Can Cytoscape be configured so major node types cluster together?"*
-  **Yes.** One container per platform, nodes inside, and fcose does the rest. This is its
-  primary use case, not a workaround.
-- *"Are cross-cluster edges pulled at equal gravity?"*
-  **Yes, for free.** An edge between two bags pulls bag-to-bag with the same spring
-  constants on both ends. There is no per-platform weighting to add unless you *want*
-  cross-platform links to be weaker — that's one optional knob (`edgeElasticity`), not a
-  requirement.
+Checked against `app/static/vendor/`, not assumed. Several of these contradict the
+sliders' own hints.
+
+| Knob | Reality |
+|---|---|
+| `gravity`, `gravityCompound` | Only act on a graph fcose considers **disconnected** (`cose-base.js` `calculateNodesToApplyGravitationTo`). On a fully wired store they are **mostly inert**. Not the lever for clustering. |
+| `nodeSeparation` | Scales the **initial spectral BFS distances only** (`cytoscape-fcose.js:1119`). It does **not** space the settled layout. The old hint claimed otherwise and wasted time. |
+| `packComponents` | Gated on `cy.layoutUtilities`, a separate plugin that is **not vendored**. Always a no-op here. |
+| `useSmartIdealEdgeLengthCalculation` | Adds `sizeOfSourceInLca + sizeOfTargetInLca - 2*40` to every edge crossing a compound boundary (`layout-base.js:3433`). Those sizes are the **bags'** estimated sizes. |
+| `fixedNodeConstraint` | Honoured, but **fatal on a compound** — see §3. |
+
+`layoutBase` / `coseBase` publish themselves on `window` (UMD), so the constants are
+reachable from the page. `setSmartEdgeLength()` uses that to flip
+`DEFAULT_USE_SMART_IDEAL_EDGE_LENGTH_CALCULATION` on both before `cy.layout()` runs.
+Verified in a sandbox: both objects are settable and `coseBase` sees the change.
 
 ---
 
-## 9. Settled decisions (post-review)
+## 5. Everything tried on edge length — and what it did
+
+| Attempt | Result |
+|---|---|
+| `idealEdgeLength` 60 → 22 | **No visible change.** |
+| `smartEdgeLength: false` | **No visible change.** |
+| `bagRingSpread` 1.35 → 1.0 | Slightly tighter ring. |
+| `gravityCompound` / `gravityRangeCompound` sliders | No effect — see §4, they need a disconnected graph. |
+| `nodeSeparation` slider | No effect on the settled layout — see §4. |
+| `packComponents` | No effect — plugin not vendored. |
+
+**Six levers, none of them moved the long edges.** That is the important finding: the
+long edges are almost certainly **not** a force-layout parameter at all.
+
+---
+
+## 6. THE OPEN PROBLEM — edges still far too long
+
+**Symptom.** The graph renders and the bags are invisible and correctly ringed, but the
+edges are enormously long, so the whole picture is spread out and unreadable. Reducing
+`idealEdgeLength` by ~60% and disabling smart edge length changed nothing perceptible.
+
+**Leading hypothesis — the ring translation is the cause, not fcose.**
+
+`placeBagsOnRing()` runs *after* the solver. It moves each bag's children so the bag's
+centroid lands on a circle of radius `max(widest * 1.6, 260) * spread`. With seven bags
+each a few hundred px across, that radius is plausibly **500–800px**.
+
+Merged nodes are **not moved**. So if the solver left a bridge near its bag and the ring
+then moves that bag to the far side of the circle, the edge from the bridge to the bag
+becomes roughly `2 × radius` — **1000–1600px**. No fcose parameter can shorten that,
+because the length was created after the layout finished. This is consistent with all
+six failed attempts in §5.
+
+**Things to check first, in order:**
+
+1. **Measure it.** In the browser console:
+   ```js
+   const cy = document.querySelector('#cy')._cyreg.cy;   // or the canvas ref
+   cy.edges().map(e => e.data('type') + ' ' + Math.round(e.length())).sort()
+   ```
+   If the longest edges are `WITH` edges whose target is a bagged node and whose source
+   is a merged node, the hypothesis is confirmed.
+2. **Test with the ring off.** Set `layout.bagRing: false` and rebuild. If the long
+   edges disappear, the ring is definitively the cause. This is the single most
+   informative experiment and it has not been run.
+3. **If confirmed**, the fix is to stop translating bags and instead **place the
+   bridges relative to the ring** — e.g. after the ring is applied, move each merged
+   node to the centroid of the bags it connects to (weighted by edge count), then let a
+   short relaxation settle it. That keeps the ring and removes the long edges.
+
+**Alternative hypothesis, if (2) shows the edges are long with the ring off:** the
+solver is genuinely placing bridges far from their bags, and the cause is that a merged
+node has no compound parent so nothing holds it near anything. In that case the answer
+is a *soft* anchor — but note the leash was retracted, so any anchor must pull
+**equally** toward all of a node's platforms, not toward a dominant one.
+
+**Do not** re-try `idealEdgeLength`, `smartEdgeLength`, `gravityCompound`,
+`nodeSeparation` or `packComponents` as the fix. All five are ruled out in §5.
+
+---
+
+## 7. Settled decisions
 
 | Decision | Ruling |
 |---|---|
 | Bag membership test | **Not `:Merged`.** The label, not the `platforms` array. |
 | Single-platform Correspondents | **In the bag.** Same rule as Threads; no special case. |
-| Where Correspondents go | §3 rule 3 + §4 now agree; the earlier contradiction is resolved |
-| `platform` | **Unchanged** — first by date. Never redefined as dominant |
-| `primaryPlatform` / `dominance` | New, **query-time**, in `_NODE_QUERIES["Correspondent"]`; never `_reconcile()` |
-| Bags / anchors / leashes | **Client-side only**, marked `synthetic`, excluded from every count and the reveal |
-| Bags are invisible bodies | `background-opacity: 0` + `events: "no"` + `z-compound-depth: "bottom"`; **never** `display: none` |
-| Bag construction | In the child-filtering pass, never a separate step — fcose throws on a parentless child |
-| Naming | `type: "Bag"` in code and selectors; prose says "bag" |
+| `platform` | **Unchanged** — first by date. Never redefined as dominant. |
+| `primaryPlatform` / `dominance` | On the API, **not a layout input**. The leash was retracted. |
+| Bags / ring | **Client-side only**, marked `synthetic`, excluded from every count and the reveal. |
+| Bags are invisible bodies | `background-opacity: 0` + `events: "no"` + `z-compound-depth: "bottom"`; **never** `display: none`. |
+| Bag construction | In the child-filtering pass, never a separate step — fcose throws on a parentless child. |
+| Naming | `type: "Bag"` in code and selectors; prose says "bag". |
+| Ring mechanism | **Post-layout translation**, never `fixedNodeConstraint`. |
 
-Open: whether the leash anchors are one per platform (shared) or one per node. One per
-platform is fewer objects; one per node allows the leash length to vary freely per node.
-That is the only structural question left, and it is worth answering after step 1 of §7
-has been seen on screen.
+---
+
+## 8. Files
+
+| File | What it holds |
+|---|---|
+| `app/ui/src/config/theme.js` | `physics.*`, `layout.bagRing`, `layout.bagRingSpread`, `filter.bags` |
+| `app/ui/src/components/GraphCanvas.jsx` | `placeBagsOnRing()`, `setSmartEdgeLength()`, bag construction, bag stylesheet rule (last) |
+| `app/ui/src/components/modals/CanvasModal.jsx` | Styling sliders, including the ring and smart-edge-length toggles |
+| `relate_comms/tools.py` | `merged` flag, `POSSIBLY` in `DRAWABLE_EDGE_TYPES` |

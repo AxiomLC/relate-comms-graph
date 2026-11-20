@@ -329,7 +329,7 @@ export default function IngestModal({ onClose, onIngested }) {
     <Modal
       title="Ingest"
       onClose={onClose}
-      wide
+      side
       footer={
         <>
           {/* The one gate before the button. Ingest writes to the store, so it is
@@ -345,7 +345,11 @@ export default function IngestModal({ onClose, onIngested }) {
           <button className="ghost" onClick={onClose}>
             Close
           </button>
-          <button onClick={run} disabled={busy || !writeEnabled || !hasInput}>
+          <button
+            className="primary"
+            onClick={run}
+            disabled={busy || !writeEnabled || !hasInput}
+          >
             {busy ? <Loader2 size={13} className="spin" /> : <Upload size={13} />}
             Ingest
           </button>

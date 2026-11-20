@@ -79,6 +79,7 @@ export default function UtilitiesModal({ onClose, onChanged }) {
     <Modal
       title="Utilities — platforms"
       onClose={onClose}
+      side
       footer={
         <>
           <span className="pager-info">

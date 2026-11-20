@@ -1,10 +1,20 @@
 /**
  * Node types the canvas can draw, and how each one looks.
  *
- * The canvas draws Thread and Correspondent only (UI-Cytoscape.md §3). Message and
- * Attachment are listed because `types_present()` reports them and the Canvas
- * modal shows the real counts — but they are not drawable at this node count, and
- * the canvas refuses them rather than trying.
+ * **This is the single place a kind is declared.** The canvas reads `drawable`,
+ * `shape`, `sizeLadder`, `countKey`, `labelMax`, `edgeWeight`, `glow` and
+ * `iconKind` from here rather than testing `node.type === "Thread"` strings, so
+ * adding a kind is one entry and no component change (edit 3).
+ *
+ * `drawable` means "the canvas knows how to draw it", not "the server returns it by
+ * default". `tools.DRAWABLE_NODE_TYPES` is the server-side default and is still
+ * `Thread` + `Correspondent`; the four entity kinds are drawable here but hold zero
+ * rows until body-entity extraction lands, so they are off in `filter.nodeTypes`
+ * until someone ticks them.
+ *
+ * Message and Attachment are listed because `types_present()` reports them and the
+ * Canvas modal shows the real counts — but they are not drawable at this node count,
+ * and the canvas refuses them rather than trying.
  */
 
 export const NODE_TYPES = {
@@ -13,12 +23,79 @@ export const NODE_TYPES = {
     shape: "ellipse",
     label: "Thread",
     hint: "one conversation; size = message count",
+    // Which letters of the A..F ladder this kind may use, biggest first. Threads
+    // skip B so a thread always outranks the correspondent of the same band.
+    sizeLadder: ["A", "C", "E"],
+    countKey: "message_count",
+    labelMax: 34,
+    // The field that weights an edge leaving this node. `WITH` stores no count, so
+    // the thread's own size is the only signal the canvas has.
+    edgeWeight: "message_count",
+    // Only threads can be "silent" — a correspondent has no is_self of its own.
+    hideWhenSilent: true,
+    iconKind: "platform",
   },
   Correspondent: {
     drawable: true,
-    shape: "round-rectangle",
+    shape: "ellipse",
     label: "Correspondent",
     hint: "a person on one platform (not a Person)",
+    sizeLadder: ["B", "D", "F"],
+    countKey: "thread_count",
+    labelMax: 28,
+    // Correspondents glow permanently, so they read as a different class of thing
+    // against the threads. Selection therefore cannot also be a glow.
+    glow: true,
+    iconKind: "person",
+  },
+  // The four extracted kinds draw as the DEFAULT FILLED CIRCLE — no glyph, by
+  // decision. `iconKind: null` is what makes that true: `nodeIcon()` returns null,
+  // the `icon` class is never added, and the base `node` rule (a filled circle in
+  // the platform colour) is what you see. Do not give them a glyph until there is
+  // one file per platform colour, the way `PERSON_ICONS` has.
+  Person: {
+    drawable: true,
+    shape: "ellipse",
+    label: "Person",
+    hint: "a name mentioned in a body — extraction, not ingest",
+    sizeLadder: ["D", "E", "F"],
+    countKey: "mention_count",
+    labelMax: 28,
+    glow: true,
+    iconKind: null,
+  },
+  Place: {
+    drawable: true,
+    shape: "ellipse",
+    label: "Place",
+    hint: "a location mentioned in a body",
+    sizeLadder: ["D", "E", "F"],
+    countKey: "mention_count",
+    labelMax: 28,
+    glow: true,
+    iconKind: null,
+  },
+  Organization: {
+    drawable: true,
+    shape: "ellipse",
+    label: "Organization",
+    hint: "a company or body mentioned in a body",
+    sizeLadder: ["D", "E", "F"],
+    countKey: "mention_count",
+    labelMax: 28,
+    glow: true,
+    iconKind: null,
+  },
+  Product: {
+    drawable: true,
+    shape: "ellipse",
+    label: "Product",
+    hint: "a product or thing mentioned in a body",
+    sizeLadder: ["D", "E", "F"],
+    countKey: "mention_count",
+    labelMax: 28,
+    glow: true,
+    iconKind: null,
   },
   Message: {
     drawable: false,
@@ -31,6 +108,11 @@ export const NODE_TYPES = {
     hint: "refs only, never bytes",
   },
 };
+
+/** The node types the canvas will actually draw, in declaration order. */
+export const DRAWABLE_TYPES = Object.entries(NODE_TYPES)
+  .filter(([, meta]) => meta.drawable)
+  .map(([type]) => type);
 
 /**
  * Platform colours. Fixed, not hashed, so the picture is identical on every load —
@@ -56,7 +138,8 @@ export const PLATFORM_COLORS = {
  *
  * These are solid silhouettes recoloured to the platform's own colour, normalised
  * to a 24x24 viewBox so they all draw at the same weight. Used for **Threads**.
- * Correspondents use `PERSON_ICONS` below, so the two kinds never look alike.
+ * Correspondents and Persons use `PERSON_ICONS` below, so the two kinds never look
+ * alike.
  *
  * Icons are the only node look — there is no circle mode.
  */
@@ -77,7 +160,7 @@ export function platformIcon(platform) {
 }
 
 /**
- * Person glyphs, one per platform colour, for Correspondent nodes.
+ * Person glyphs, one per platform colour, for Correspondent and Person nodes.
  *
  * Same silhouette as the source's own icon set — a solid fill baked into the file,
  * because Cytoscape cannot tint a `background-image`. Platforms that share a colour
@@ -97,6 +180,35 @@ export const PERSON_ICONS = {
 
 export function personIcon(platform) {
   return PERSON_ICONS[String(platform || "").toLowerCase()] || null;
+}
+
+/**
+ * The glyph for one node, chosen by its KIND and then its platform.
+ *
+ * Only two kinds have glyphs today: a Thread draws its platform's glyph, a
+ * Correspondent draws the person glyph. **`Person` / `Place` / `Organization` /
+ * `Product` deliberately have none** — `iconKind: null` — so they draw as the base
+ * filled circle. A glyph cannot be tinted at runtime, so each one would need a file
+ * per platform colour the way `PERSON_ICONS` does; until then, a circle is the
+ * honest look.
+ */
+export function nodeIcon(type, platform) {
+  const kind = NODE_TYPES[type]?.iconKind;
+  if (kind === "platform") return platformIcon(platform);
+  if (kind === "person") return personIcon(platform);
+  return null;
+}
+
+/**
+ * The kind class for a node, or null.
+ *
+ * A thread is not a kind — its glyph already says which platform it is — so it gets
+ * no class. A kind with a glyph carries `person`; the four extracted kinds carry
+ * nothing, because they have no glyph and the class exists only to pick one.
+ */
+export function kindClass(type) {
+  const kind = NODE_TYPES[type]?.iconKind;
+  return kind && kind !== "platform" ? kind : null;
 }
 
 const FALLBACK_COLOR = "#6b7a90";

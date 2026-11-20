@@ -40,7 +40,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import identity, manifest, paths, scrub, writer
+from . import identity, link, manifest, paths, scrub, writer
 from .adapters import (email_imap, linkedin, messenger, outlook_pst, sms, telegram,
                        whatsapp, whatsapp_html)
 from .schema import IngestResult
@@ -214,6 +214,9 @@ class Report:
     # The profile this run wrote to. Needed by the prune policy, which reads the
     # manifest — and the manifest follows a redirected store.
     profile_dir: str = ""
+    # What `link.py` did: nodes folded, `POSSIBLY` edges drawn. Empty when the run
+    # wrote nothing, or when the fold failed (then it holds `error`).
+    link: dict[str, Any] = field(default_factory=dict)
 
     @property
     def written(self) -> int:
@@ -253,6 +256,7 @@ class Report:
             "unrecognised": self.unrecognised,
             "tz_offsets": self.tz_offsets,
             "tz_note": self.tz_note,
+            "link": self.link,
         }
 
 
@@ -801,6 +805,15 @@ def ingest(
                     outcome.warnings.append(f"verified but not pruned: {exc}")
 
             report.batches.append(outcome)
+
+        # Cross-connect, once, after every batch has landed. Per batch it would only
+        # ever see one platform, and the whole point is folding a phone-only contact
+        # on one platform onto a named one on another. A failure here must not lose
+        # the ingest: the rows are written and verified, so it is reported, not raised.
+        try:
+            report.link = link.link(conn)
+        except Exception as exc:  # noqa: BLE001 - the store is already written
+            report.link = {"error": f"{type(exc).__name__}: {exc}"}
     finally:
         conn.close()
 

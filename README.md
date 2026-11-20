@@ -157,15 +157,15 @@ the same way: `ingest` cannot tell them from a real download. See
 | **WhatsApp** | B | Per-chat `.txt`/`.zip`. No all-chats export; media placeholders only |
 | **LinkedIn** | **A data / F automation** | *Basic* archive → `messages.csv`. Export only |
 | **Facebook Messenger** | B/C | *Download your information* → HTML archive. Slow, no API |
-| **SMS** | — | Adapter built and verified; reads *SMS Backup & Restore* XML. Not yet in the live store (see `HANDOVER.md`) |
+| **SMS** | **A** | *SMS Backup & Restore* XML or `.xml.zip`. Verified |
 | **Slack** | C | Export needs workspace admin. Not viable |
 | **Instagram** | — | Out of scope. Export names no sender |
 
 ## Status
 
-**Ingested:** 12,164 messages, 620 threads, 591 correspondents across five platforms
-(Facebook Messenger 10,605 · Telegram 877 · LinkedIn 292 · Email 221 · WhatsApp 169).
-Outlook and SMS adapters are built but not yet in the live store.
+**Ingested:** 2,003 messages, 93 correspondents across all seven platforms — Telegram 851 ·
+Messenger 655 · Email 151 · SMS 139 · WhatsApp 108 · LinkedIn 93 · Outlook 6. **34
+correspondents merged across platforms**, 7 `POSSIBLY` edges.
 
 **Built:** seven file adapters + live IMAP, parallel parse → resolve → scrub → serialised
 write → verify → prune, 12-tool layer, FastAPI, and the UI.
@@ -188,6 +188,7 @@ were finished.
 |---|---|
 | [`TECHREADME.md`](TECHREADME.md) | Module map, key functions, commands, Relate/Neo4j references — written for an AI |
 | [`HANDOVER.md`](HANDOVER.md) | Short, dated, newest at the bottom — what is next |
+| [`CytoGravityRecommend.md`](CytoGravityRecommend.md) | Canvas layout: platform bags, the ring, what fcose actually honours, and the open long-edge problem |
 | [`archive_docs/UI-Cytoscape.md`](archive_docs/UI-Cytoscape.md) | The UI as built, and every Cytoscape decision behind it |
 | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) | How to get each platform's export |
 | [`archive_docs/HowToRunOllama.md`](archive_docs/HowToRunOllama.md) | Local model setup on this machine |

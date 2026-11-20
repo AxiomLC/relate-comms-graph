@@ -15,7 +15,7 @@ export default function LogModal({ onClose }) {
   const types = useFetch(() => api.types(), []);
 
   return (
-    <Modal title="Evidence" onClose={onClose} wide>
+    <Modal title="Evidence" onClose={onClose} side>
       <h2 className="section">Store</h2>
       {health.loading && <div className="empty">Reading…</div>}
       {health.error && <div className="error">{health.error}</div>}
@@ -86,7 +86,7 @@ export default function LogModal({ onClose }) {
       <h2 className="section">Types in the store</h2>
       {types.error && <div className="error">{types.error}</div>}
       {types.data && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <div className="kv-pair">
           <div>
             <h2 className="section" style={{ marginTop: 0 }}>Nodes</h2>
             <dl className="kv">

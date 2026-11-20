@@ -8,11 +8,12 @@ import {
 } from "react";
 
 import {
+  NODE_TYPES,
   PERSON_ICONS,
   PLATFORM_ICONS,
-  personIcon,
+  kindClass,
+  nodeIcon,
   platformColor,
-  platformIcon,
   platformLabel,
   truncateLabel,
 } from "../config/nodeTypes.js";
@@ -54,6 +55,30 @@ const LEGEND_PLATFORMS = [
 // has an adapter.
 const PLANNED_PLATFORMS = new Set([]);
 
+/**
+ * What a node type the config does not know still gets: drawable, smallest ladder,
+ * no glyph. A server that grows a kind before the UI does must not blank the canvas.
+ */
+const FALLBACK_META = {
+  drawable: true,
+  shape: "ellipse",
+  sizeLadder: ["D", "E", "F"],
+  countKey: "mention_count",
+  labelMax: 28,
+  iconKind: null,
+};
+
+const metaOf = (node) => NODE_TYPES[node.type] || FALLBACK_META;
+
+/**
+ * The id of one platform's bag.
+ *
+ * Prefixed so it can never collide with a real node id — a Thread key is
+ * `platform:chat_id` and a Correspondent key is `person:<canonical>`, so `bag:` is
+ * outside both namespaces by construction.
+ */
+const bagId = (platform) => `bag:${platform}`;
+
 const GraphCanvas = forwardRef(function GraphCanvas(
   { data, theme, onNodeClick, onBackgroundClick, onLayoutDone },
   ref,
@@ -82,6 +107,9 @@ const GraphCanvas = forwardRef(function GraphCanvas(
   // current without being a dependency.
   const sizeKey = JSON.stringify(theme.tiers.sizes);
   const platformKey = (theme.filter.platforms || []).join(",");
+  // Bags change the element set, so the toggle has to rebuild it — the same reason
+  // `hideSilent` is a dependency below.
+  const bagsOn = !!theme.filter.bags;
   // `hideSilent` is read inside the elements memo, so it MUST be a dependency —
   // without it the toggle changed the theme and nothing on screen, because the memo
   // never re-ran. Same class of bug as the stale `tiers.edge` theme.
@@ -120,34 +148,45 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       // A thread the owner never spoke in. `message_count` is the only signal the
       // canvas has, so a thread with no messages is not hidden by this — it is
       // already invisible for other reasons.
-      if (hideSilent && node.type === "Thread" && node.is_silent) return false;
+      if (hideSilent && metaOf(node).hideWhenSilent && node.is_silent) return false;
       return true;
     });
-    const threadLetters = assignBands(
-      allNodes.filter((node) => node.type === "Thread"),
-      "message_count",
-      ["A", "C", "E"],
-      theme.tiers.bands,
-    );
-    const correspondentLetters = assignBands(
-      allNodes.filter((node) => node.type === "Correspondent"),
-      "thread_count",
-      ["B", "D", "F"],
-      theme.tiers.bands,
-    );
 
-    // Message count per thread, for the edge tiers (a `WITH` edge carries no weight).
-    const threadCounts = new Map(
-      allNodes
-        .filter((node) => node.type === "Thread")
-        .map((node) => [node.id, node.message_count || 0]),
+    // One ladder per KIND, from the config. Threads are A/C/E and correspondents
+    // B/D/F so the two interleave; the entity kinds share D/E/F. Adding a kind is a
+    // `NODE_TYPES` entry, not a branch here.
+    const lettersByType = new Map();
+    for (const [type, meta] of Object.entries(NODE_TYPES)) {
+      if (!meta.drawable || !meta.sizeLadder) continue;
+      const group = allNodes.filter((node) => node.type === type);
+      if (!group.length) continue;
+      lettersByType.set(
+        type,
+        assignBands(group, meta.countKey, meta.sizeLadder, theme.tiers.bands),
+      );
+    }
+
+    // The weight an edge leaving a node is tiered on. `WITH` stores no count, so the
+    // source thread's own size is the only signal the canvas has.
+    const edgeWeights = new Map(
+      allNodes.map((node) => {
+        const meta = metaOf(node);
+        return [node.id, node[meta.edgeWeight || meta.countKey] || 0];
+      }),
     );
 
     const nodes = allNodes.map((node) => {
-      const isThread = node.type === "Thread";
-      const letter = isThread
-        ? threadLetters.get(node.id)
-        : correspondentLetters.get(node.id);
+      const meta = metaOf(node);
+      // A bag is a body for fcose, not a node the user can see. It carries no size,
+      // no label and no colour, and the stylesheet makes it invisible and inert.
+      if (node.type === "Bag") {
+        return {
+          group: "nodes",
+          classes: "synthetic bag",
+          data: { id: node.id, type: "Bag", platform: node.platform || "" },
+        };
+      }
+      const letter = lettersByType.get(node.type)?.get(node.id);
       const tier = theme.tiers.sizes[letter] || theme.tiers.sizes.F;
 
       const base = platformColor(node.platform);
@@ -165,23 +204,24 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       // it. A node with no glyph simply never matches an icon rule, so it stays a
       // visible circle. That is the whole reason the icon styling is an override
       // layer rather than the base.
-      const glyph = isThread
-        ? platformIcon(node.platform)
-        : personIcon(node.platform);
+      const glyph = nodeIcon(node.type, node.platform);
+      // `icon` is added only when there IS a glyph, because that class is what removes
+      // the base fill. The four extracted kinds have no glyph by decision, so they
+      // keep the base filled circle. Glow is keyed on `type`, not on this class.
+      const kind = kindClass(node.type);
+      const classes = [kind, glyph ? "icon" : null].filter(Boolean).join(" ");
 
       return {
         group: "nodes",
         // A CLASS, not a data field. Cytoscape's `[key]` selector tests whether the
         // field EXISTS, so `image: null` matched every node and stripped the fill
         // from the whole graph. A class is unambiguous.
-        classes: glyph ? (isThread ? "icon" : "icon person") : "",
+        classes,
         data: {
           id: node.id,
           // One line, same as every other node. The source is already carried by
           // the node's icon — a SOURCE line above the title was redundant.
-          label: isThread
-            ? truncateLabel(node.label || node.id, 34)
-            : truncateLabel(node.label || node.id, 28),
+          label: truncateLabel(node.label || node.id, meta.labelMax),
           rawLabel: node.label || node.id,
           type: node.type,
           platform: node.platform || "",
@@ -190,6 +230,9 @@ const GraphCanvas = forwardRef(function GraphCanvas(
           firstTs: node.first_ts || null,
           lastTs: node.last_ts || null,
           isGroup: !!node.is_group,
+          // `:Merged` is the bag-membership test, inverted: a merged node stays
+          // outside every bag and is pulled by its real edges instead.
+          merged: !!node.merged,
           // A shade of the platform colour, deterministic from the id, so a cluster
           // reads as a family and the picture is identical on every load.
           color: shade(base, node.id, theme.visual.shadeJitter),
@@ -204,12 +247,51 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       };
     });
 
+    // ------------------------------------------------------------------ bags
+    //
+    // One invisible parent per platform, so fcose has a body to solve around and
+    // threads cluster by source. Built HERE, in the same pass that filters children,
+    // and never as a separate step: fcose throws on a child whose parent is missing,
+    // so a bag that survives its children (or the reverse) is a hard failure, not a
+    // cosmetic one.
+    //
+    // Membership is `:Merged`, inverted. A node with one platform goes in that
+    // platform's bag; a merged node stays outside and is pulled by its real edges.
+    // The test reads the LABEL, not `platforms.length`: a Place mentioned on two
+    // platforms is `:Merged` and must stay outside, and a `platforms.length === 1`
+    // test would have quietly bagged the world's geography.
+    //
+    // Bags are synthetic. They are excluded from the reveal and from every count —
+    // `cy.nodes().length` includes them, so nothing may use that raw.
+    const bagNodes = [];
+    if (theme.filter.bags) {
+      const platformsInUse = new Set();
+      for (const node of nodes) {
+        const platforms = platformsOf(node.data);
+        if (node.data.merged || platforms.length !== 1) continue;
+        const platform = platforms[0];
+        if (!platform) continue;
+        node.data.parent = bagId(platform);
+        platformsInUse.add(platform);
+      }
+      // A bag is only created for a platform that still has a child. An empty bag is
+      // not merely untidy: fcose treats a childless compound as a node with no
+      // members and the layout degrades around it.
+      for (const platform of platformsInUse) {
+        bagNodes.push({
+          group: "nodes",
+          classes: "synthetic bag",
+          data: { id: bagId(platform), type: "Bag", platform },
+        });
+      }
+    }
+
     const ids = new Set(nodes.map((n) => n.data.id));
     const edges = (data.edges || [])
       .filter((edge) => ids.has(edge.source) && ids.has(edge.target))
       .map((edge) => {
-        // Edge weight comes from the source thread's size — `WITH` stores no count.
-        const tier = rungFor(theme.tiers.edge, "min", threadCounts.get(edge.source) ?? 0);
+        // Edge weight comes from the source node's own count — `WITH` stores none.
+        const tier = rungFor(theme.tiers.edge, "min", edgeWeights.get(edge.source) ?? 0);
         const platform = nodes.find((n) => n.data.id === edge.source)?.data.platform || "";
         return {
           group: "edges",
@@ -227,12 +309,14 @@ const GraphCanvas = forwardRef(function GraphCanvas(
         };
       });
 
-    return [...nodes, ...edges];
-    // `platformKey` and `hideSilent` are dependencies because hiding a cluster or a
-    // silent thread must rebuild the elements; the rest of the theme stays out of it
-    // so a slider move does not throw away the layout.
+    // Bags first, so a parent exists before the child that names it is added.
+    return [...bagNodes, ...nodes, ...edges];
+    // `platformKey`, `hideSilent` and `bagsOn` are dependencies because hiding a
+    // cluster, hiding a silent thread or turning bags on must rebuild the elements;
+    // the rest of the theme stays out of it so a slider move does not throw away the
+    // layout.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, sizeKey, platformKey, hideSilent]);
+  }, [data, sizeKey, platformKey, hideSilent, bagsOn]);
 
   /* ------------------------------------------------------------------- create */
 
@@ -326,7 +410,13 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     cy.add(elements);
 
     runLayout(cy, themeRef.current, () => {
-      onLayoutDone?.({ nodes: cy.nodes().length, edges: cy.edges().length });
+      // Synthetic nodes (bags) are not data. Counting them would make the readout
+      // claim nodes the store does not hold — the same class of lie `Merged` would
+      // tell in `types_present()` if it were not filtered there.
+      onLayoutDone?.({
+        nodes: cy.nodes().not(".synthetic").length,
+        edges: cy.edges().not(".synthetic").length,
+      });
       startReveal(cy, themeRef.current, revealTimer);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -516,7 +606,9 @@ function buildStylesheet(theme) {
     // empty string, and it would also defeat the renderer's image cache.
     //
     // `node.icon` (threads) and `node.icon.person` (correspondents) are separate
-    // selectors, so a platform's two glyphs never collide.
+    // selectors, so a platform's two glyphs never collide. `Person` / `Place` /
+    // `Organization` / `Product` have no glyph by decision, so they match no rule
+    // here and keep the base filled circle.
     // `iconScaleByPlatform` is the optical correction: the SVGs share a 24x24 box,
     // but a wide envelope and a compact speech bubble do not read as the same size at
     // the same scale. A platform with no entry keeps the base scale.
@@ -536,36 +628,42 @@ function buildStylesheet(theme) {
         "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`,
       },
     })),
-    {
-      // Selector grammar needs spaces around the operator: `[type = "x"]`.
-      // A correspondent keeps a permanent glow in its OWN source colour — that glow
-      // is what makes it read as a different class of thing from a thread, now that
-      // both are glyphs. The fill and border are left to the base rule and the icon
-      // override; only the glow is added here.
-      selector: 'node[type = "Correspondent"]',
-      style: {
-        shape: "ellipse",
-        color: labels.correspondentColor,
-        "border-color": "data(color)",
-        "border-opacity": 1,
-        "shadow-blur": visual.correspondentGlow,
-        "shadow-color": "data(color)",
-        "shadow-opacity": visual.correspondentGlowOpacity,
-        "shadow-offset-x": 0,
-        "shadow-offset-y": 0,
-      },
-    },
-    {
-      // The glyph replaces the fill, but the glow and border stay: a correspondent
-      // must still read as a different class of thing from a thread.
-      selector: 'node[type = "Correspondent"].icon',
-      style: {
-        "background-opacity": 0,
-        "border-width": 0,
-        "background-image-opacity": 1,
-        "background-clip": "none",
-      },
-    },
+    // Shape and glow are generated from `NODE_TYPES`, so a new kind is a config
+    // entry rather than a rule. Both are static literals — never `data()` — because
+    // a mapper that fails to parse takes the whole stylesheet down with it.
+    //
+    // `Bag` is excluded: it is synthetic, it has its own rule above, and giving it a
+    // shape or a glow would draw it.
+    //
+    // Selector grammar needs spaces around the operator: `[type = "x"]`.
+    ...Object.entries(NODE_TYPES)
+      .filter(([, meta]) => meta.drawable && meta.shape)
+      .map(([type, meta]) => ({
+        selector: `node[type = "${type}"]`,
+        style: { shape: meta.shape },
+      })),
+    ...Object.entries(NODE_TYPES)
+      .filter(([, meta]) => meta.drawable && meta.glow)
+      .map(([type]) => ({
+        // A non-thread kind keeps a permanent glow in its OWN source colour — that
+        // glow is what makes it read as a different class of thing from a thread,
+        // now that both are glyphs. The fill and border are left to the base rule
+        // and the icon override; only the glow is added here.
+        //
+        // This is keyed on `type`, not on the kind class, so a kind with no glyph
+        // file yet still glows instead of looking like a plain circle.
+        selector: `node[type = "${type}"]`,
+        style: {
+          color: labels.correspondentColor,
+          "border-color": "data(color)",
+          "border-opacity": 1,
+          "shadow-blur": visual.correspondentGlow,
+          "shadow-color": "data(color)",
+          "shadow-opacity": visual.correspondentGlowOpacity,
+          "shadow-offset-x": 0,
+          "shadow-offset-y": 0,
+        },
+      })),
     {
       // Selection cannot also be a glow now that correspondents glow by default, so
       // it is a bright border plus a much larger blur. Threads keep the glow-only
@@ -598,8 +696,64 @@ function buildStylesheet(theme) {
       },
     },
     {
+      // A fuzzy identity guess, never a fact. Dashed and thin so it reads as a
+      // question beside a solid `WITH` line — the same distinction the store makes
+      // between a fold and an edge (direction.md §5).
+      selector: 'edge[type = "POSSIBLY"]',
+      style: {
+        "line-style": "dashed",
+        "line-dash-pattern": [6, 6],
+        width: 1,
+        opacity: 0.55,
+      },
+    },
+    {
       selector: ".reveal-hidden",
       style: { opacity: 0 },
+    },
+    {
+      // A bag: an invisible, inert body for fcose. One per platform, never seen.
+      //
+      // **This rule is LAST on purpose.** Cytoscape applies stylesheet blocks in
+      // order, so a bag rule placed before the base `node` rule loses to it: the base
+      // sets `background-opacity: 0.92` and `background-color: data(color)`, and a bag
+      // carries no `color`, so `data(color)` falls back to Cytoscape's default grey.
+      // That is exactly how the first version rendered — grey boxes around every
+      // platform. Do not move this block up.
+      //
+      // Four traps, each of which silently breaks the feature:
+      //  1. NEVER `display: "none"` — hiding a parent hides its children and breaks
+      //     the compound relationship. Invisibility is `background-opacity: 0`.
+      //  2. `events: "no"` is what makes it non-clickable; `selectable: false` alone
+      //     still lets the bag swallow taps on its padding.
+      //  3. `z-compound-depth: "bottom"` is what puts it behind its children;
+      //     `z-index` alone does not.
+      //  4. `padding` + `compound-sizing-wrt-labels: "exclude"` keep the body tied to
+      //     the children's real geometry rather than an empty label box.
+      selector: 'node[type = "Bag"]',
+      style: {
+        // Every property the base rule sets that could paint anything, overridden
+        // explicitly. `background-color` is set to the page colour rather than left
+        // to `data(color)`, so there is no fallback grey to leak through.
+        "background-color": palette.bg,
+        "background-opacity": 0,
+        "background-image": "none",
+        "background-image-opacity": 0,
+        "border-width": 0,
+        "border-opacity": 0,
+        "shadow-opacity": 0,
+        "overlay-opacity": 0,
+        label: "",
+        "text-opacity": 0,
+        events: "no",
+        selectable: false,
+        grabbable: false,
+        "z-compound-depth": "bottom",
+        "z-index-compare": "manual",
+        "z-index": 0,
+        padding: 24,
+        "compound-sizing-wrt-labels": "exclude",
+      },
     },
   ];
 }
@@ -763,8 +917,104 @@ function rgbToHex(r, g, b) {
   return `#${part(r)}${part(g)}${part(b)}`;
 }
 
+/**
+ * Move each platform bag onto a circle, after the layout has settled.
+ *
+ * **Why not `fixedNodeConstraint`.** That is the obvious fcose mechanism, and it is
+ * fatal here: `spectralLayout` builds its `nodeIndexes` map with
+ * `if (!nodes[i].isParent())` (`cytoscape-fcose.js:1313`), so a compound node is
+ * never in it. The constraint handler then reads `xCoords[nodeIndexes.get(bagId)]`,
+ * gets `undefined`, and the Procrustes transform turns every coordinate into `NaN` —
+ * a blank canvas and a stalled refresh. Do not put a bag in a constraint.
+ *
+ * So the ring is applied as a **translation** instead. Each bag's children are moved
+ * as a block so the bag's centroid lands on the circle; the merged nodes outside the
+ * bags are not moved at all, which is exactly the intent — the bags go to the
+ * outside, the bridges stay where their edges put them, and the middle is what is
+ * left.
+ *
+ * Order is the legend order, so a platform is always in the same place. A graph that
+ * reshuffles itself between visits reads as noise.
+ */
+function placeBagsOnRing(cy, spread = 1) {
+  const bags = cy.nodes('[type = "Bag"]');
+  if (bags.length < 2) return;
+
+  // Radius from the bags' own footprint, so seven of them sit shoulder to shoulder
+  // without touching and a small store does not get a vast empty circle.
+  const widest = Math.max(
+    ...bags.map((bag) => Math.max(bag.outerWidth(), bag.outerHeight())),
+  );
+  // A compound whose bounds have not settled reports `NaN`, and a `NaN` radius would
+  // put every child at `NaN` — the same blank canvas the constraint produced. Fall
+  // back to a fixed radius rather than trusting the measurement.
+  const base = Number.isFinite(widest) && widest > 0 ? widest * 1.6 : 260;
+  const radius = Math.max(base, 260) * (spread || 1);
+
+  const ordered = bags.toArray().sort((a, b) => {
+    const ai = LEGEND_PLATFORMS.indexOf(a.data("platform"));
+    const bi = LEGEND_PLATFORMS.indexOf(b.data("platform"));
+    // A platform not in the legend still gets a stable slot, after the known ones.
+    return (ai < 0 ? LEGEND_PLATFORMS.length : ai) - (bi < 0 ? LEGEND_PLATFORMS.length : bi);
+  });
+
+  cy.batch(() => {
+    ordered.forEach((bag, index) => {
+      const children = bag.children();
+      if (!children.length) return;
+
+      const angle = (2 * Math.PI * index) / ordered.length - Math.PI / 2;
+      const target = { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+
+      // The bag's own box is the union of its children, so moving the children moves
+      // the bag. Its centre is read from the children, not from `bag.position()`,
+      // which for a compound is derived and can lag a frame behind.
+      //
+      // `position()` is ABSOLUTE even for a child (Cytoscape's `relativePosition()`
+      // is the one that subtracts the parent), so an absolute delta is right here.
+      const box = children.boundingBox();
+      const dx = target.x - (box.x1 + box.w / 2);
+      const dy = target.y - (box.y1 + box.h / 2);
+      if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+
+      children.forEach((child) => {
+        const position = child.position();
+        child.position({ x: position.x + dx, y: position.y + dy });
+      });
+    });
+  });
+}
+
+/**
+ * Turn fcose's "smart" ideal-edge-length calculation on or off.
+ *
+ * `calcIdealEdgeLengths` (`layout-base.js`) adds `sizeOfSourceInLca +
+ * sizeOfTargetInLca - 2 * SIMPLE_NODE_SIZE` to every edge that crosses a compound
+ * boundary. Those sizes are the BAGS' estimated sizes, so a 31-node Telegram bag adds
+ * ~250px to every merged-node edge. That is the long-line problem, and it is not a
+ * slider — it is a global constant read when the layout object is constructed.
+ *
+ * The constant is reachable from the page because `layout-base.js` and `cose-base.js`
+ * are vendored as UMD scripts that publish `layoutBase` / `coseBase` on `window`.
+ * Setting it here, before `cy.layout(options)` runs, is the only way to change it.
+ */
+function setSmartEdgeLength(enabled) {
+  const targets = [
+    window.layoutBase?.FDLayoutConstants,
+    window.coseBase?.CoSEConstants,
+  ].filter(Boolean);
+  for (const constants of targets) {
+    constants.DEFAULT_USE_SMART_IDEAL_EDGE_LENGTH_CALCULATION = !!enabled;
+  }
+  return targets.length > 0;
+}
+
 function runLayout(cy, theme, done) {
   const { physics, layout } = theme;
+
+  // Must happen before the layout object is constructed: the constant is read in the
+  // `FDLayout` constructor, not per iteration.
+  setSmartEdgeLength(physics.smartEdgeLength);
   const options = {
     name: layout.name,
     quality: "default",
@@ -775,17 +1025,39 @@ function runLayout(cy, theme, done) {
     nodeRepulsion: physics.nodeRepulsion,
     idealEdgeLength: physics.idealEdgeLength,
     gravity: physics.gravity,
+    // Compound gravity is what squeezes each bag toward its own centre. Global
+    // `gravity` pulls everything toward the middle of the screen and would crush the
+    // seven bags into one ball, so the two are not interchangeable.
+    //
+    // Both only act on a graph fcose considers DISCONNECTED (`cose-base.js`
+    // `calculateNodesToApplyGravitationTo`), so on a fully wired store they are
+    // mostly inert. They are not the lever for clustering — the ring is.
+    gravityCompound: physics.gravityCompound,
+    gravityRangeCompound: physics.gravityRangeCompound,
     nodeSeparation: physics.nodeSeparation,
     numIter: physics.numIter,
-    // fcose samples every node pair; at 1.5k nodes the default is fine, but
-    // `packComponents` keeps disconnected clusters from overlapping.
+    // Labels are part of a node's box. Without this the solver places an 18px node
+    // and then draws a 120px label over its neighbours.
+    nodeDimensionsIncludeLabels: !!physics.nodeDimensionsIncludeLabels,
+    // `packComponents` is a NO-OP here: fcose gates it on `cy.layoutUtilities`, a
+    // separate plugin that is not vendored. Left on because it is harmless and would
+    // start working the day the plugin is added.
     packComponents: true,
     uniformNodeDimensions: false,
   };
 
   const finish = () => {
+    // The ring is applied AFTER the solver, as a translation. See `placeBagsOnRing`
+    // for why it cannot be a `fixedNodeConstraint`.
+    if (layout.bagRing) placeBagsOnRing(cy, layout.bagRingSpread);
+
     // `fit: true` shrinks until everything is visible, which at this node count
     // puts neighbours closer than a node's own diameter. zoomDistance lifts it.
+    //
+    // Re-fit after the ring moved things, and fit to the real nodes only: a bag is
+    // synthetic and its box is just its children's, so including it changes nothing
+    // except the chance of a stale bound.
+    if (layout.fit) cy.fit(cy.elements().not(".synthetic"), layout.padding);
     const distance = physics.zoomDistance || 1;
     if (distance !== 1) cy.zoom(cy.zoom() * distance);
     done?.();
@@ -806,11 +1078,13 @@ function runLayout(cy, theme, done) {
 
 function startReveal(cy, theme, timerRef) {
   if (!theme.reveal.enabled) {
-    cy.elements().removeClass("reveal-hidden");
+    cy.elements().not(".synthetic").removeClass("reveal-hidden");
     return;
   }
 
-  const nodes = cy.nodes().toArray();
+  // Bags are synthetic: they are not data, so they must not appear in the reveal.
+  // `cy.nodes()` includes them, which is why nothing may use its `.length` raw.
+  const nodes = cy.nodes().not(".synthetic").toArray();
   if (!nodes.length) return;
 
   // Order by first message, so the graph grows the way the relationship did.
@@ -829,13 +1103,14 @@ function startReveal(cy, theme, timerRef) {
 
   const total = ordered.length;
   const edgeOrder = new Map();
-  cy.edges().forEach((edge) => {
+  cy.edges().not(".synthetic").forEach((edge) => {
     const a = order.get(edge.data("source")) ?? total;
     const b = order.get(edge.data("target")) ?? total;
     edgeOrder.set(edge.id(), Math.max(a, b));
   });
 
-  cy.elements().addClass("reveal-hidden");
+  // Bags are never hidden: hiding a parent would hide its children with it.
+  cy.elements().not(".synthetic").addClass("reveal-hidden");
 
   const steps = Math.max(1, theme.reveal.steps);
   const interval = Math.max(16, theme.reveal.durationMs / steps);
@@ -848,7 +1123,7 @@ function startReveal(cy, theme, timerRef) {
       ordered.forEach((node, index) => {
         if (index < threshold) node.removeClass("reveal-hidden");
       });
-      cy.edges().forEach((edge) => {
+      cy.edges().not(".synthetic").forEach((edge) => {
         if ((edgeOrder.get(edge.id()) ?? total) < threshold) {
           edge.removeClass("reveal-hidden");
         }
@@ -858,7 +1133,7 @@ function startReveal(cy, theme, timerRef) {
     if (step < steps) {
       timerRef.current = setTimeout(tick, interval);
     } else {
-      cy.elements().removeClass("reveal-hidden");
+      cy.elements().not(".synthetic").removeClass("reveal-hidden");
       timerRef.current = null;
     }
   };

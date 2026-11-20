@@ -9,7 +9,12 @@ import {
   monthKey,
   monthLabel,
 } from "../lib/format.js";
-import { isPlaceholder, platformColor, platformLabel } from "../config/nodeTypes.js";
+import {
+  NODE_TYPES,
+  isPlaceholder,
+  platformColor,
+  platformLabel,
+} from "../config/nodeTypes.js";
 
 /**
  * The Viewer: two content states and a Back button (UI-Cytoscape.md §9).
@@ -74,9 +79,21 @@ export default function Viewer({
       {entry?.kind === "node" && entry.nodeType === "Message" && (
         <MessageView entry={entry} onOpen={onOpen} />
       )}
+      {entry?.kind === "node" && ENTITY_TYPES.has(entry.nodeType) && (
+        <EntityView entry={entry} onOpen={onOpen} />
+      )}
     </>
   );
 }
+
+// The four extracted kinds. One view serves all four because the store gives them
+// one shape (`key`, `display_name`, `platforms`, `mention_count`) — only the label
+// differs. Derived from the config so a kind added there is routed here for free.
+const ENTITY_TYPES = new Set(
+  Object.entries(NODE_TYPES)
+    .filter(([, meta]) => meta.countKey === "mention_count")
+    .map(([type]) => type),
+);
 
 /* ------------------------------------------------------------------ empty */
 
@@ -632,6 +649,94 @@ function CorrespondentView({ entry, onOpen }) {
         {error && <div className="error">{error}</div>}
         {!rows && !error && <div className="empty">Loading…</div>}
         {rows?.length === 0 && <div className="empty">No threads for this correspondent.</div>}
+        {(rows || []).map((row) => (
+          <button
+            key={row.key}
+            className="result-row"
+            onClick={() =>
+              onOpen?.({
+                kind: "node",
+                nodeType: "Thread",
+                id: row.key,
+                label: row.label,
+                platform: row.platform,
+              })
+            }
+          >
+            <div className="result-snippet">{row.label || row.key}</div>
+            <div className="result-meta">
+              {formatCount(row.n)} messages
+              {row.last_ts ? ` · last ${formatDate(row.last_ts)}` : ""}
+            </div>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------ entity */
+
+/**
+ * Person / Place / Organization / Product — a name found in a message body.
+ *
+ * These hold zero rows until body-entity extraction lands, so the thread list is
+ * usually empty. The query is written anyway: it is the same `MENTIONS` edge the
+ * canvas draws, and it starts working the moment the writer exists.
+ */
+function EntityView({ entry, onOpen }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+  const meta = NODE_TYPES[entry.nodeType] || {};
+
+  useEffect(() => {
+    let cancelled = false;
+    setRows(null);
+    setError(null);
+    api
+      .search({
+        mode: "cypher",
+        query:
+          "MATCH (t:Thread)-[:MENTIONS]->(e {key: $k}) " +
+          "OPTIONAL MATCH (t)<-[:IN]-(m:Message) " +
+          "RETURN t.key AS key, t.title AS label, t.platform AS platform, " +
+          "       count(m) AS n, max(m.ts_utc) AS last_ts " +
+          "ORDER BY last_ts DESC",
+        params: { k: entry.id },
+        limit: 200,
+      })
+      .then((result) => {
+        if (!cancelled) setRows(result.rows || []);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.id]);
+
+  return (
+    <>
+      <div className="viewer-head">
+        <h1 className="viewer-title">{entry.label}</h1>
+        <div className="viewer-sub">
+          <span className="pill kind">{meta.label || entry.nodeType}</span>
+          <span className="pill platform" style={{ color: platformColor(entry.platform) }}>
+            {platformLabel(entry.platform)}
+          </span>
+        </div>
+      </div>
+
+      <div className="pane-body tight">
+        {error && <div className="error">{error}</div>}
+        {!rows && !error && <div className="empty">Loading…</div>}
+        {rows?.length === 0 && (
+          <div className="empty">
+            No threads mention this {String(meta.label || "entity").toLowerCase()} yet.
+            Body-entity extraction has not run.
+          </div>
+        )}
         {(rows || []).map((row) => (
           <button
             key={row.key}

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   Braces,
+  Orbit,
   Palette,
   Search,
   SlidersHorizontal,
@@ -97,6 +98,15 @@ export default function CommandBar({
         title="What is drawn: sort, node count, node types, platform clusters"
       >
         <Palette size={13} /> Canvas
+      </button>
+      {/* Its own button, not a sub-page of Canvas: this panel is tuned while watching
+          the graph, so it docks to the right instead of covering the canvas. */}
+      <button
+        className="ghost"
+        onClick={() => onOpenModal("gravity")}
+        title="Gravity — force simulation and label threshold, live"
+      >
+        <Orbit size={13} /> Gravity
       </button>
       {/* Icon only, by request: the title bar is already dense, and this control
           is used far less often than the ones beside it. */}

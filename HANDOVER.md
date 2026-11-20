@@ -9,18 +9,23 @@ Durable facts: [`TECHREADME.md`](TECHREADME.md). Human overview: [`README.md`](R
 
 ## Where it stands
 
-`pytest tests -q` → **380 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
+`pytest tests -q` → **400 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
 
-**Live store:** rebuilt from the sample variants — **1,981 messages**, and email **is** present
-(128 messages / 20 threads / 20 correspondents). Per platform: telegram 851 · messenger 657 ·
-sms 138 · email 128 · whatsapp 108 · linkedin 93 · outlook 6.
+**Live store: rebuilt 2026-11-19.** **2,003 messages · 93 correspondents · 34 merged · 7
+`POSSIBLY` edges.** Per platform: telegram 851 · messenger 655 · email 151 · sms 139 ·
+whatsapp 108 · linkedin 93 · outlook 6. The audit query works:
+`MATCH (c:Correspondent:Merged) RETURN c.merged_by, count(*)` → `exact_name 27`,
+`nickname 7`.
 
-> **The live store predates edits 1–2.** Its Correspondent keys are still
-> `<platform>:<name>`. Rebuilding it is what applies the new `person:<canonical>` keys and
-> produces the merged nodes — measured on the sample variants: **93 correspondents, 34
-> merged**. Nothing is broken; the store is just old. Truncate and re-ingest when convenient.
+**Cross-platform merging is automatic on every ingest.** `link.link()` runs once at the
+end of `ingest()`, over the whole store, so a new export can supply the phone that links
+two nodes written months apart. It is idempotent.
 
-> **Currently testing ingest.** Drag-and-drop and folder-pick do **not** show what they staged
+> **The canvas bags by platform.** One invisible parent per platform, built client-side in
+> the element memo; a node goes in a bag iff it is **not** `:Merged`. On this store that is
+> 214 bagged nodes and 34 bridges outside. `theme.filter.bags` turns it off.
+
+> **Ingest UI.** Drag-and-drop and folder-pick do **not** show what they staged
 > (see *Ingest UI — known broken*). **Pasting a path works**, which is how email was ingested:
 paste `sample_writer\out\email\email_eml`, the whole folder, not `Inbox/` or `Sent/`.
 >
@@ -32,8 +37,9 @@ paste `sample_writer\out\email\email_eml`, the whole folder, not `Inbox/` or `Se
 Email (IMAP **and** saved `.eml`), Outlook (`.pst`), SMS. All seven are in the live store.
 
 **One variant per platform.** `out/` holds several packagings of the same conversations;
-ingesting more than one per platform stores every message twice. The mapping is in the plan
-doc.
+ingesting more than one per platform stores every message twice. Ingest one of:
+`linkedin/linkedin_zip`, `messenger/messenger_zip`, `outlook/outlook_copy`, `sms/sms_xml`,
+`telegram/telegram_bulk`, `whatsapp/whatsapp_html`, `email/email_eml`.
 
 **One queue.** `spool/sample/`, `store/spool/` and `paths.sample_dir()` are gone. A sample
 is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
@@ -42,35 +48,22 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 
 ## Next
 
-**The detailed build plan is [`temp-finalBeta-fixes.md`](temp-finalBeta-fixes.md).** It is the
-source of truth: the four ordered edits (node structure → `tools.py` → UI node types →
-cross-connect), what is verified versus planned, the locked thread-title schema, the knobs,
-and the naming decisions. Read that before starting anything.
+**The four-edit build round is finished** (2026-11-19): node structure → `tools.py` API →
+UI node types → cross-connect. The plan document that drove it is gone; what survived is
+in `TECHREADME.md` §4 (schema, `link.py`, the knobs) and `git log`.
 
-**Edits 1 and 2 are done** (2026-11-19).
+**Canvas layout is the one open area.** [`CytoGravityRecommend.md`](CytoGravityRecommend.md)
+holds it: bags, the ring, what the vendored fcose actually honours, and the unresolved
+long-edge problem. **It may or may not be finished** — the owner may hand it to a vision
+model and tune the Gravity panel's parameters by eye instead. Read §6 there before
+changing any layout code.
 
-*Edit 1* — `Correspondent.key` is `person:<canonical>`; placeholders keep their platform
-prefix; `platforms` / `platform_label` / `first_seen_utc` / `merged_by` accumulate via
-`writer._reconcile()`; `:Merged` is set and filtered out of `types_present()`. Verified on
-the sample variants: **93 correspondents, 34 merged across platforms**.
+What is left:
 
-*Edit 2* — `_platform_clause()` reads `platforms`; `_NODE_ALIAS` replaces the `if` chain;
-`Person` / `Place` / `Organization` / `Product` have node, count, sort and
-`MENTIONS_<KIND>` edge queries (all returning 0 until extraction lands); `POSSIBLY` has an
-edge query; `graph_slice` returns `primaryPlatform` and `dominance` per Correspondent.
-
-In one line each, what is left after it:
-
-1. **Cross-connect merge (edit 4)** — **next up.** The one that folds nodes whose **keys
-   differ** (a WhatsApp phone-only contact vs a Telegram named one). Edit 1 folds only
-   identical canonical names. The samples are built for it: fuzzed spellings across and
-   within platforms, 8–12% of the cast on more than one platform. `POSSIBLY` already has an
-   edge query, so the edge draws the moment `link.py` writes one.
-1b. **UI node types (edit 3)** — `GraphCanvas` still tests `node.type === "Thread"`
-   strings. Independent of edit 4; either order works. The platform filter is already fixed.
-1c. **Canvas gravity / compound bags** — `CytoGravityRecommend.md`. Needs `parent` on
-   elements before any fcose parameter does anything; `dominance` is already on the API for
-   the leash.
+1. **Long edges on the canvas** — see `CytoGravityRecommend.md` §6. Six force-layout
+   levers are ruled out; the leading hypothesis is that `placeBagsOnRing()` moves bags
+   *after* the solver, so a bridge ends up ~2× the ring radius from its bag. The decisive
+   experiment (ring off) has not been run. **This is the only known visual defect.**
 2. **Messenger group titles** — 117 of 134 real threads are groups; the adapter names each
    after a participant instead of the `<h1>`. The samples happen to be right for one group
    and wrong for the rest, so **the samples will not catch this**.
@@ -83,7 +76,7 @@ In one line each, what is left after it:
 6. **MCP wiring** — `app/mcp/__init__.py` is a docstring. When built it must **not** gain a
    `.env` read; that is the guarantee the IMAP credentials rely on.
 7. **Placeholder nodes are not styled on the canvas** — `isPlaceholder()` exists but only
-   `Viewer.jsx` uses it.
+   `Viewer.jsx` uses it. The canvas has no placeholder class.
 8. **The size warning has no visible threshold** — `LARGE_FILE_BYTES = 500 MB` renders as
    "· large file" with no explanation.
 
@@ -95,7 +88,8 @@ In one line each, what is left after it:
   overriding the earlier "UI state never narrows an agent's query" rule. The alternative is
   a per-call `platforms` argument instead of module state in `tools.py`.
 - **Per-node gravity is not a fcose feature.** Big threads can only be approximated as
-  anchors via lower `nodeRepulsion`.
+  anchors via lower `nodeRepulsion`. The dominance leash was designed and then withdrawn
+  in favour of equal pull — see `CytoGravityRecommend.md` §2.
 - **The Outlook fingerprint can merge two genuinely distinct messages** — same thread, same
   second, byte-identical body, different senders. Accepted: the alternative is every sent
   message appearing twice, which the real file exhibits.
@@ -208,6 +202,55 @@ Everything before **2026-11-18** is in `git log`; only the current round is list
   of silently taking the `person` branch (which would strip credentials and resolve
   nicknames on a product name). `tools.ENTITY_KINDS` is derived from `canon.KINDS`, so the
   store label `Product` and the kind `product` cannot drift. `Company` appears nowhere.
+- **2026-11-19** — **Bag ring + overlap fixes.** `theme.layout.bagRing` moves each bag's
+  children onto a circle **after** the solver, in legend order so the picture is stable.
+  `bagRingSpread` opens the middle. **`fixedNodeConstraint` was tried first and broke the
+  app** — fcose never indexes a compound in `spectralLayout`'s `nodeIndexes`, so the
+  constraint read `undefined` and every coordinate became `NaN` (blank canvas, stalled
+  refresh). The ring is a translation of the bag's children instead; see
+  `CytoGravityRecommend.md` §3. `nodeDimensionsIncludeLabels: true` — labels are now part
+  of the layout box, which is the main "nodes on top of nodes" fix. `gravityCompound` /
+  `gravityRangeCompound` and the ring are exposed in the Styling modal; the
+  `nodeSeparation` hint was corrected (it scales the initial spectral pass only, it does
+  not space the settled layout).
+- **2026-11-19** — **Edge length: six levers tried, none worked.** `idealEdgeLength`
+  60→22, `smartEdgeLength: false` (disables `useSmartIdealEdgeLengthCalculation`, which
+  adds each bag's size to every cross-bag edge), `bagRingSpread` 1.35→1.0, plus
+  `gravityCompound`, `nodeSeparation` and `packComponents` — all ruled out, see
+  `CytoGravityRecommend.md` §5. **Edges are still far too long and this is the one open
+  problem.** Leading hypothesis: `placeBagsOnRing()` moves bags *after* the solver, so a
+  bridge left near its bag ends up ~2× the ring radius away from it — a length no fcose
+  parameter can undo. The decisive experiment (ring off) has not been run; see §6.
+- **2026-11-19** — **Canvas bags landed (`CytoGravityRecommend.md` step 1).** One invisible
+  compound parent per platform, built in the same pass that filters children (fcose throws
+  on a parentless child). Membership is `:Merged` inverted — the label, not
+  `platforms.length`, so a Place mentioned on two platforms stays outside. Bags are
+  `synthetic`: excluded from the reveal, `onLayoutDone` and every count. `gravityCompound` /
+  `gravityRangeCompound` are theme knobs; `theme.filter.bags` turns the whole thing off.
+  `graph_slice` now returns `merged` per Correspondent.
+- **2026-11-19** — **`run_cypher` no longer refuses `:Merged`.** The write guard was a
+  substring scan, so `MERGED` matched `MERGE` and the plan's own audit query was rejected as
+  a write. Now word-bounded; `SET`/`MERGE`/`DELETE` are still refused. 9 tests in
+  `tests/test_cypher_guard.py`.
+- **2026-11-19** — **Live store rebuilt** from one variant per platform: 2,003 messages, 93
+  correspondents, 34 merged, 7 `POSSIBLY`.
+- **2026-11-19** — **Edit 4 landed: `relate_comms/link.py`.** Runs once at the end of
+  `ingest()`. Folds nodes whose keys differ — a phone-only contact onto a named one — by
+  union-find over phone / email / name, re-pointing every `WITH` and `POSSIBLY` edge before
+  the loser is deleted, then `_reconcile` rebuilds `platforms` / `platform_label` /
+  `:Merged`. Fuzzy pairs get a dashed `POSSIBLY` edge instead, now in
+  `DRAWABLE_EDGE_TYPES`. **The prerequisite the plan missed:** the store held no phone or
+  email for a *named* contact, so `writer._contact_ids()` now records `sender_id` when it
+  is actually a phone or an address. Knobs `canon.NICKNAME_ENABLED` / `FOLD_ON_NAME` are
+  live. 10 new tests in `tests/test_link.py`.
+- **2026-11-19** — **Edit 3 landed: the canvas is `NODE_TYPES`-driven.** `config/nodeTypes.js`
+  declares `drawable` / `shape` / `sizeLadder` / `countKey` / `labelMax` / `edgeWeight` /
+  `hideWhenSilent` / `glow` / `iconKind` per kind, and `GraphCanvas` reads it — no
+  `node.type === "Thread"` test remains. `Person` / `Place` / `Organization` / `Product`
+  are entries (D/E/F ladder, `mention_count`), off in `filter.nodeTypes` until extraction
+  lands. Shape and glow rules are generated from the config. `Viewer` gained a generic
+  `EntityView` routed by `countKey === "mention_count"`. All four have `iconKind: null`,
+  so they draw as the base filled circle — no glyphs, by decision.
 - **2026-11-19** — **Edit 2 landed: the tool layer knows the new kinds.** `_NODE_ALIAS`
   replaces the `if` chain; `Person` / `Place` / `Organization` / `Product` each get a node
   query, a count query, three sort entries and a `MENTIONS_<KIND>` edge query — all

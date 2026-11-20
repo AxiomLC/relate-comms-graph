@@ -9,6 +9,7 @@ import CommandBar from "./components/CommandBar.jsx";
 import GraphCanvas from "./components/GraphCanvas.jsx";
 import Viewer from "./components/Viewer.jsx";
 import CanvasModal from "./components/modals/CanvasModal.jsx";
+import GravityModal from "./components/modals/GravityModal.jsx";
 import IngestModal from "./components/modals/IngestModal.jsx";
 import LogModal from "./components/modals/LogModal.jsx";
 
@@ -366,6 +367,14 @@ export default function App() {
           onReload={(overrides) =>
             loadGraph(theme.filter.nodeTypes, overrides)
           }
+        />
+      )}
+      {modal === "gravity" && (
+        <GravityModal
+          theme={theme}
+          onChange={updateTheme}
+          onClose={() => setModal(null)}
+          onRerunLayout={() => canvasRef.current?.rerunLayout()}
         />
       )}
       {modal === "utilities" && (

@@ -381,9 +381,10 @@ def _snippet(body: str, needle: str, width: int = 160) -> str:
 # drawable, 12,499 messages is not. Asking for `Message` is explicit, never default.
 #
 # The four extracted kinds are **queryable but not drawn by default**: they have zero
-# rows until body-entity extraction lands, and the UI's `NODE_TYPES` config does not
-# know them yet (edit 3). They are in `_NODE_QUERIES` so a caller can ask for them
-# explicitly and so the queries exist before the writer that fills them.
+# rows until body-entity extraction lands. The UI's `NODE_TYPES` config does know them
+# (edit 3) and can draw them once ticked, but they stay off in `filter.nodeTypes` for
+# the same reason. They are in `_NODE_QUERIES` so a caller can ask for them explicitly
+# and so the queries exist before the writer that fills them.
 DRAWABLE_NODE_TYPES: tuple[str, ...] = ("Thread", "Correspondent")
 
 # The four kinds a body-entity extractor will produce. One shape, one query, one
@@ -441,6 +442,12 @@ _NODE_QUERIES: dict[str, str] = {
         # the label. `platform` stays the single first-by-date string the filter used
         # to read, so an older client still draws something sensible.
         #
+        # `merged` is the `:Merged` label as a boolean. The canvas uses it as the
+        # bag-membership test, inverted: a merged node stays outside every platform
+        # bag and is pulled by its real edges instead. It is returned as a flag rather
+        # than left to `platforms.length > 1` because the label is the merge
+        # *decision* and the array is only a report of what that decision saw.
+        #
         # `per_platform` is the raw material for `primaryPlatform` / `dominance`,
         # which are derived in Python (`_with_dominance`). It has to be a two-stage
         # aggregation: messages are counted per thread, then summed per platform.
@@ -460,6 +467,7 @@ _NODE_QUERIES: dict[str, str] = {
         "RETURN c.key AS id, c.display_name AS label, c.platform AS platform, "
         "       coalesce(c.platforms, [c.platform]) AS platforms, "
         "       c.platform_label AS platform_label, per AS per_platform, "
+        "       c:Merged AS merged, "
         "       reduce(s = 0, x IN per | s + x.threads) AS thread_count "
         "ORDER BY {order} "
         "LIMIT $n"
@@ -593,7 +601,11 @@ _EDGE_PLATFORM_ALIAS: dict[str, str] = {
 # Edges whose endpoints are both in the default node set. `IN`, `REPLY_TO` and
 # `HAS_ATTACHMENT` all start at a Message, so with the default nodes they can only
 # ever be dropped — 12,611 of them. They are available on request, never by default.
-DRAWABLE_EDGE_TYPES: tuple[str, ...] = ("WITH",)
+#
+# `POSSIBLY` is drawn by default because both its endpoints are Correspondents, and
+# the line IS the product: a fuzzy guess a human can see and ignore. It is written by
+# `link.py` at the end of an ingest, so it is empty until one has run.
+DRAWABLE_EDGE_TYPES: tuple[str, ...] = ("WITH", "POSSIBLY")
 
 
 def _node_where(node_type: str, params: dict[str, Any]) -> str:
@@ -1128,6 +1140,15 @@ _WRITE_KEYWORDS = (
 )
 _STRING_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
 
+# The keyword scan is word-bounded, not a substring test. `:Merged` contains `MERGE`,
+# so a substring scan refused the audit query the build plan specifies
+# (`MATCH (c:Correspondent:Merged) RETURN c.merged_by, count(*)`) — a read-only
+# statement rejected as a write. `_WRITE_PATTERN` matches the keyword only as a whole
+# word, so `:Merged`, `merged_by` and `SETTING` all pass while `SET` does not.
+_WRITE_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(word) for word in _WRITE_KEYWORDS) + r")\b"
+)
+
 
 def run_cypher(
     query: str,
@@ -1150,14 +1171,14 @@ def run_cypher(
     limit = _clamp(limit, 1, 5000)
 
     # Scan with string literals removed, so `WHERE m.body CONTAINS 'create'`
-    # is not mistaken for a write.
+    # is not mistaken for a write. Word-bounded, so `:Merged` is not read as `MERGE`.
     scrubbed = _STRING_LITERAL.sub("''", text).upper()
-    for keyword in _WRITE_KEYWORDS:
-        if keyword in scrubbed:
-            raise ToolError(
-                f"read-only tool: {keyword} is not allowed here; "
-                "use ingest or prune_spool for writes"
-            )
+    found = _WRITE_PATTERN.search(scrubbed)
+    if found:
+        raise ToolError(
+            f"read-only tool: {found.group(0)} is not allowed here; "
+            "use ingest or prune_spool for writes"
+        )
 
     with _session() as conn:
         try:

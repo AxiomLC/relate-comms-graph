@@ -34,10 +34,25 @@ export const THEME = {
    */
   physics: {
     nodeRepulsion: 20000, // 8000 = tight clumps, 40000 = airy
-    idealEdgeLength: 60, // 40 = dense, 120 = sparse
+    idealEdgeLength: 22, // 12 = very dense, 60 = airy
+    // fcose adds each compound's estimated size to every edge that crosses a bag
+    // boundary (`layout-base.js` `calcIdealEdgeLengths`). With a 31-node Telegram bag
+    // that is ~250px of ideal length on every merged-node edge — the long lines.
+    // Off, an inter-bag edge is just `idealEdgeLength` like any other.
+    smartEdgeLength: false, // true = the old, very long cross-bag edges
     gravity: 0.2, // 0 = drifts apart, 0.5 = pulled into a ball
     nodeSeparation: 75, // BETWEEN disconnected components only
     numIter: 2500, // 1000 = fast and messy, 5000 = slow and settled
+    // Compound gravity. Each platform is a bag (an invisible parent node), and this
+    // is what squeezes a bag's children toward its own centre — NOT `gravity`, which
+    // pulls everything toward the middle of the screen and would crush all seven bags
+    // into one ball. 1.0 is fcose's default; raise it if a big bag sprawls.
+    gravityCompound: 1.0, // 0.5 = loose bag, 2.0 = tight ball
+    gravityRangeCompound: 1.5, // how far the compound pull reaches, in bag radii
+    // Labels are part of a node's layout box. Without this a 120px label sits on a
+    // 18px node and the solver has no idea it is there — which is most of the
+    // "nodes on top of nodes" overlap.
+    nodeDimensionsIncludeLabels: true,
     randomize: true, // MANDATORY: elements are re-added on filter change and
     // fresh nodes all start at (0,0) — without this the layout has no spread
     // and clicks land on the wrong node.
@@ -71,10 +86,11 @@ export const THEME = {
    * global threshold flattens every source but the biggest into the same dust
    * cloud. Cutting bands inside each source keeps every cluster legible.
    *
-   * Which letters each kind may use:
+   * Which letters each kind may use — declared per kind in `nodeTypes.js`
+   * (`sizeLadder`), not here:
    *   Thread        A / C / E   — A is the standout, so threads skip B
    *   Correspondent B / D / F   — B is the biggest correspondent, below A
-   *   Person, Place, Organization, Thing (future)  D / E / F
+   *   Person, Place, Organization, Product  D / E / F
    *
    * The two ladders interleave, so a thread always outranks the correspondent of
    * the same band: A thread, B correspondent, C thread, D correspondent, E thread,
@@ -171,6 +187,24 @@ export const THEME = {
     name: "fcose",
     fit: true,
     padding: 40,
+    // Pin the platform bags to a ring, so the picture is "platforms around the
+    // outside, bridges in the middle" rather than seven blobs wherever the solver
+    // happened to leave them.
+    //
+    // Applied AFTER the solver, as a translation of each bag's children — not as a
+    // `fixedNodeConstraint`. That constraint is fatal on a compound node: fcose's
+    // `spectralLayout` never indexes parents, so the constraint reads `undefined` and
+    // turns every coordinate into `NaN`. See `placeBagsOnRing`.
+    //
+    // It is what makes the middle meaningful: a merged node is pulled by its real
+    // edges toward every bag it touches, and the bags are arranged so those pulls
+    // point inward from all sides.
+    //
+    // Off = free-floating, exactly as before bags existed.
+    bagRing: true,
+    // Multiplier on the ring radius. 1.0 packs the bags shoulder to shoulder;
+    // raise it to open the middle up for the bridges.
+    bagRingSpread: 1.0,
   },
 
   /* ------------------------------------------------------------------ filter
@@ -186,7 +220,14 @@ export const THEME = {
    * keeps the ones that went silent — the question this app exists to answer.
    */
   filter: {
+    // The default set. The four entity kinds are drawable but hold zero rows until
+    // body-entity extraction lands, so they are off until someone ticks them.
     nodeTypes: ["Thread", "Correspondent"],
+    // One invisible bag per platform, so fcose clusters threads by source instead of
+    // letting them float free. Client-side only — a bag is a body for the layout, not
+    // data, and it never reaches the server or any count. Off is a real option: with
+    // it off the canvas is exactly what it was before bags existed.
+    bags: true,
     // Every platform on by default, and the toggle is a plain on/off per platform —
     // the same shape as the node-type list above it. An empty list means "not
     // chosen yet", which the canvas reads as "all on", so a platform added later
@@ -221,7 +262,7 @@ const STORAGE_KEY = "relate.graphStyle";
  * A version mismatch discards the saved theme. That is the right trade: the theme
  * is a look, not data, and a stale look that hides a fix is worse than a reset.
  */
-const THEME_VERSION = 6;
+const THEME_VERSION = 9;
 
 /** Merge a saved partial config over the defaults (new keys keep their default). */
 export function loadTheme() {
