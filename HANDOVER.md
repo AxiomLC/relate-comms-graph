@@ -48,27 +48,21 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 
 ## Next
 
-**The four-edit build round is finished** (2026-11-19): node structure → `tools.py` API →
-UI node types → cross-connect. The plan document that drove it is gone; what survived is
-in `TECHREADME.md` §4 (schema, `link.py`, the knobs) and `git log`.
+**1. THE MERGED-BAG CANVAS EDIT — the active work item.** Owner-approved design, not yet
+built: [`CytoGravityRecommend.md`](CytoGravityRecommend.md) **§9** is the plan (steps A–D,
+piecemeal), **§0** records the traps that must not be repeated (post-layout position
+mutation blanks the live canvas; headless probe passes where browsers die), **§7** the
+amended settled decisions, **§10** two data-hygiene flags. `tools/ai_visual_graph_tool/`
+is the measurement rig; **the user reports visuals, the probe reports geometry — one
+change, one build, one reload, confirm before proceeding.** A new agent starting here:
+read §9, then §0, then `tools/ai_visual_graph_tool/README.md`.
 
-**Canvas layout is the one open area.** [`CytoGravityRecommend.md`](CytoGravityRecommend.md)
-holds it: bags, the ring, what the vendored fcose actually honours, and the unresolved
-long-edge problem. **It may or may not be finished** — the owner may hand it to a vision
-model and tune the Gravity panel's parameters by eye instead. Read §6 there before
-changing any layout code.
-
-What is left:
-
-1. **Long edges on the canvas** — see `CytoGravityRecommend.md` §6. Six force-layout
-   levers are ruled out; the leading hypothesis is that `placeBagsOnRing()` moves bags
-   *after* the solver, so a bridge ends up ~2× the ring radius from its bag. The decisive
-   experiment (ring off) has not been run. **This is the only known visual defect.**
 2. **Messenger group titles** — 117 of 134 real threads are groups; the adapter names each
    after a participant instead of the `<h1>`. The samples happen to be right for one group
    and wrong for the rest, so **the samples will not catch this**.
 3. **Body-entity extraction** — `Person`, `Place`, `Organization`, `Product`. Blocked on a
-   candidate generator. The schema and canon pipe are already wired for all four.
+   candidate generator. The schema and canon pipe are already wired for all four. When they
+   arrive, the merged-bag tier pattern (§9) is their template: entity bags, centered slots.
 4. **UI chat / LLM** — wired, never exercised end to end. Needs a real conversation and a
    check that `MAX_TOOL_CHARS` truncation is reported rather than silent.
 5. **Search relevance** — `search_messages` is a substring scan only, no ranking. A design
@@ -79,6 +73,10 @@ What is left:
    `Viewer.jsx` uses it. The canvas has no placeholder class.
 8. **The size warning has no visible threshold** — `LARGE_FILE_BYTES = 500 MB` renders as
    "· large file" with no explanation.
+9. **Two unfocolded spelling-variant pairs stretch long edges across the ring** —
+   `dimitri/dimitir whitfield`, `sahfi/shafi hassan`; see
+   [`CytoGravityRecommend.md`](CytoGravityRecommend.md) §10. Fix lives in `link.py`, not
+   layout.
 
 ---
 
@@ -90,6 +88,11 @@ What is left:
 - **Per-node gravity is not a fcose feature.** Big threads can only be approximated as
   anchors via lower `nodeRepulsion`. The dominance leash was designed and then withdrawn
   in favour of equal pull — see `CytoGravityRecommend.md` §2.
+- **Browser/renderer portability** — owner is evaluating whether the canvas should move off
+  cytoscape/fcose (vasturiano 2D force graph, d3-force) because the multi-bag + separate-
+  gravity model fights fcose's design. `graph_slice()`'s payload is already a universal
+  node/edge structure, so the Python layer is portable as-is; the cost is client-side
+  rewrite. Revisit after the merged-bag edit (§9) ships — it may dissolve the pressure.
 - **The Outlook fingerprint can merge two genuinely distinct messages** — same thread, same
   second, byte-identical body, different senders. Accepted: the alternative is every sent
   message appearing twice, which the real file exhibits.
@@ -174,143 +177,24 @@ surfacing `result.ok` / the error text is what proves it.
 
 ---
 
-## Done — 2026-11-19 — app files I edited (not just `sample_writer`)
+## Done — one line each
 
-Three app-side bugs, all on the **email drop-in path**. `sample_writer` changes are listed
-under its own heading below.
-
-- **`relate_comms/adapters/email_imap.py::detect()`** — used a non-recursive
-  `path.iterdir()`, while `parse_eml()` reads with `rglob()`. A folder holding
-  `<thread>/NNN.eml` was reported **not email**, so `discover()` filed the whole export as
-  unrecognised and the modal sat at "ingesting…" forever. Now recursive, matching the parser.
-- **`relate_comms/ingest.py::stage()`** — walked **into** a dropped folder and copied every
-  file individually. Each `.eml` then hit `detect_platform()` alone and landed in
-  `unrecognised/`, so a pasted `email_eml/` staged ~190 files and wrote nothing. Now a
-  directory that `detect_platform()` claims **as a whole** is copied intact with
-  `copytree` — the same rule `discover()` already had. Verified: `email_eml` → 1 batch /
-  151 messages; `messenger_dir` → 655; `linkedin_dir` → 93.
-- **New tests** (`tests/test_sample_writer.py`): `test_email_layout_splits_inbox_and_sent`,
-  `test_email_export_is_discovered_by_ingest`, and two staging tests, one per folder export.
-
-**Not yet fixed:** the upload route and `api.js` (see *Ingest UI* above). Paste-path works;
-no other route does.
-
-Everything before **2026-11-18** is in `git log`; only the current round is listed.
-
-- **2026-11-19** — **Naming settled: `canon.KINDS` is the single source.** `kind="thing"`
-  renamed to `kind="product"`; `canon.canonical()` now raises on an unknown kind instead
-  of silently taking the `person` branch (which would strip credentials and resolve
-  nicknames on a product name). `tools.ENTITY_KINDS` is derived from `canon.KINDS`, so the
-  store label `Product` and the kind `product` cannot drift. `Company` appears nowhere.
-- **2026-11-19** — **Bag ring + overlap fixes.** `theme.layout.bagRing` moves each bag's
-  children onto a circle **after** the solver, in legend order so the picture is stable.
-  `bagRingSpread` opens the middle. **`fixedNodeConstraint` was tried first and broke the
-  app** — fcose never indexes a compound in `spectralLayout`'s `nodeIndexes`, so the
-  constraint read `undefined` and every coordinate became `NaN` (blank canvas, stalled
-  refresh). The ring is a translation of the bag's children instead; see
-  `CytoGravityRecommend.md` §3. `nodeDimensionsIncludeLabels: true` — labels are now part
-  of the layout box, which is the main "nodes on top of nodes" fix. `gravityCompound` /
-  `gravityRangeCompound` and the ring are exposed in the Styling modal; the
-  `nodeSeparation` hint was corrected (it scales the initial spectral pass only, it does
-  not space the settled layout).
-- **2026-11-19** — **Edge length: six levers tried, none worked.** `idealEdgeLength`
-  60→22, `smartEdgeLength: false` (disables `useSmartIdealEdgeLengthCalculation`, which
-  adds each bag's size to every cross-bag edge), `bagRingSpread` 1.35→1.0, plus
-  `gravityCompound`, `nodeSeparation` and `packComponents` — all ruled out, see
-  `CytoGravityRecommend.md` §5. **Edges are still far too long and this is the one open
-  problem.** Leading hypothesis: `placeBagsOnRing()` moves bags *after* the solver, so a
-  bridge left near its bag ends up ~2× the ring radius away from it — a length no fcose
-  parameter can undo. The decisive experiment (ring off) has not been run; see §6.
-- **2026-11-19** — **Canvas bags landed (`CytoGravityRecommend.md` step 1).** One invisible
-  compound parent per platform, built in the same pass that filters children (fcose throws
-  on a parentless child). Membership is `:Merged` inverted — the label, not
-  `platforms.length`, so a Place mentioned on two platforms stays outside. Bags are
-  `synthetic`: excluded from the reveal, `onLayoutDone` and every count. `gravityCompound` /
-  `gravityRangeCompound` are theme knobs; `theme.filter.bags` turns the whole thing off.
-  `graph_slice` now returns `merged` per Correspondent.
-- **2026-11-19** — **`run_cypher` no longer refuses `:Merged`.** The write guard was a
-  substring scan, so `MERGED` matched `MERGE` and the plan's own audit query was rejected as
-  a write. Now word-bounded; `SET`/`MERGE`/`DELETE` are still refused. 9 tests in
-  `tests/test_cypher_guard.py`.
-- **2026-11-19** — **Live store rebuilt** from one variant per platform: 2,003 messages, 93
-  correspondents, 34 merged, 7 `POSSIBLY`.
-- **2026-11-19** — **Edit 4 landed: `relate_comms/link.py`.** Runs once at the end of
-  `ingest()`. Folds nodes whose keys differ — a phone-only contact onto a named one — by
-  union-find over phone / email / name, re-pointing every `WITH` and `POSSIBLY` edge before
-  the loser is deleted, then `_reconcile` rebuilds `platforms` / `platform_label` /
-  `:Merged`. Fuzzy pairs get a dashed `POSSIBLY` edge instead, now in
-  `DRAWABLE_EDGE_TYPES`. **The prerequisite the plan missed:** the store held no phone or
-  email for a *named* contact, so `writer._contact_ids()` now records `sender_id` when it
-  is actually a phone or an address. Knobs `canon.NICKNAME_ENABLED` / `FOLD_ON_NAME` are
-  live. 10 new tests in `tests/test_link.py`.
-- **2026-11-19** — **Edit 3 landed: the canvas is `NODE_TYPES`-driven.** `config/nodeTypes.js`
-  declares `drawable` / `shape` / `sizeLadder` / `countKey` / `labelMax` / `edgeWeight` /
-  `hideWhenSilent` / `glow` / `iconKind` per kind, and `GraphCanvas` reads it — no
-  `node.type === "Thread"` test remains. `Person` / `Place` / `Organization` / `Product`
-  are entries (D/E/F ladder, `mention_count`), off in `filter.nodeTypes` until extraction
-  lands. Shape and glow rules are generated from the config. `Viewer` gained a generic
-  `EntityView` routed by `countKey === "mention_count"`. All four have `iconKind: null`,
-  so they draw as the base filled circle — no glyphs, by decision.
-- **2026-11-19** — **Edit 2 landed: the tool layer knows the new kinds.** `_NODE_ALIAS`
-  replaces the `if` chain; `Person` / `Place` / `Organization` / `Product` each get a node
-  query, a count query, three sort entries and a `MENTIONS_<KIND>` edge query — all
-  returning 0 until extraction lands, and none in `DRAWABLE_NODE_TYPES`. `POSSIBLY` gets
-  an edge query so it draws the moment `link.py` writes one. `graph_slice` now returns
-  `primaryPlatform` and `dominance` per Correspondent, derived from a two-stage
-  per-platform message count. `primaryPlatform` is **most messages**; `platform` stays
-  **first by date** — 17 of 34 merged nodes on the sample store disagree, so they are
-  genuinely two fields.
-- **2026-11-19** — **Edit 1 landed: `Correspondent.key` is `person:<canonical>`.** One
-  canonical name on two platforms is one node. Placeholders stay platform-scoped. New
-  properties `platforms`, `platform_label`, `first_seen_utc`, `merged_by`, plus flat
-  `handle_<p>` / `seen_<p>` (Relate rejects map properties). `:Merged` marks a node on
-  more than one platform and is filtered out of `types_present()`. The platform filter
-  and the canvas filter now read `platforms`, not `platform`. Measured on the sample
-  variants: 93 correspondents, 34 merged.
-- **2026-11-19** — `sample_writer` fuzz: sender labels and body entities can now carry
-  different spellings per platform (`Chris`/`Christopher`, `Celestica`/`Celstica`,
-  `North Dakota`/`N Dakota`). Derived by rule (`sample_writer/fuzz.py`); one small nickname
-  table, no data files. The **Owner is never fuzzed**. Knobs `FUZZ_*` in
-  `sample_writer/config.py`; `plan.assert_contract` fails if a knob produces less than it
-  asked for.
-- **2026-11-19** — `sample_writer` timing: threads are no longer evenly spread. Messages
-  arrive in bursts with long silences (`TIMING_BURSTS`, `TIMING_SPAN_DAYS`), so a thread can
-  put three messages in one year and two in the next. Spans 0-729 days, clamped to the
-  export window.
-- **2026-11-19** — `sample_writer` bodies: mixed sentence counts
-  (`BODY_SENTENCES_WEIGHTS`, 55/30/15) plus a sign-off pool.
-- **2026-11-19** — `sample_writer` email: writes `Inbox/<thread>/` and `Sent/<thread>/` so
-  `folder_is_sent()` fires and ownership is decided **structurally**, not only by address
-  match.
-- **2026-11-19** — **Email is now ingestible from the UI by pasting a path** — the first time
-  the email leg has worked outside a test. See the app fixes above.
-
-- **2026-11-18** — Docs consolidated: one spool queue, no stale claims.
-- **2026-11-18** — `sample_writer` finished: `add` writes alongside `out/` with Windows-style
-  `name (1)` dedupe (`uniquify.Filer`), `--platform` takes space-separated names, `--keep`
-  replaced by the `build`/`add` split.
-- **2026-11-18** — `canon.py`: the shared flattening pipe. Four kinds, English nickname table,
-  `rapidfuzz` for fuzzy, report-only candidates. 69 tests.
-- **2026-11-18** — Canon wired into the Correspondent write. **The Owner is no longer a
-  Correspondent on any platform** — it was in 236 threads. `ingest._owner_forms()` collects
-  every form the Owner is known by, including the display name from other platforms.
-- **2026-11-18** — Thread titles: `Platform; Name; MM-DD-YYYY->`. The `->` changes at most
-  once, ever, so the label does not drift on re-ingest.
-- **2026-11-18** — `Person`/`Identity` scaffolding deleted. `resolution.py` gone,
-  `write_people()` gone, `person_key="owner"` gone. `Person` is a future extraction node
-  type, never the Owner.
-- **2026-11-18** — Viewer: the text block above the histogram deleted; the title carries it.
-- **2026-11-18** — `.eml` mailboxes are discoverable. Email was unreachable from the spool;
-  it could only be reached from a test. Owner inferred by breadth, since a saved mailbox
-  states no account.
-- **2026-11-18** — WhatsApp thread dedupe: `WhatsApp Chat with X.txt` and `X.zip` hashed to
-  two `wa_` ids. 48 threads → 24.
-- **2026-11-18** — WhatsApp HTML 1:1 correspondents: the title-derived sender was never
-  added to `participants`, orphaning 16 of 20 threads. Correspondents 5 → 23.
-- **2026-11-18** — Viewer: the "not a Person, merging is a later step" note removed, with
-  its dead `.arc` CSS.
-- **2026-11-18** — Store wiped and rebuilt from the six sample variants: 1,853 messages /
-  133 threads / 131 correspondents.
+- **2026-11-21** — Gravity panel slider ranges widened per probe evidence (ring spread min
+  0.5, idealEdgeLength 2, gravity 3 with inverted display, gravityCompound 6 with 0.05
+  stall floor, gravityRangeCompound 0.1–1.1, nodeSeparation 400); headless geometry rig
+  `tools/ai_visual_graph_tool/` built; post-layout bridge-pull approach **tried and
+  reverted** (blanked live canvas — see `CytoGravityRecommend.md` §0); merged-bag design
+  recorded as §9. Full round: `CytoGravityRecommend.md` §0/§9; commit `afc8666`.
+- **2026-11-19** — Canvas bags landed; bag ring + overlap fixes; naming settled
+  (`canon.KINDS`); edit 4 `link.py` cross-connect; edit 3 `NODE_TYPES`-driven canvas; edit
+  2 tool layer knows the entity kinds; edit 1 `Correspondent.key = person:<canonical>`;
+  `run_cypher` word-bounded write guard; live store rebuilt (2,003 messages / 93
+  correspondents / 34 merged / 7 `POSSIBLY`); three email drop-in path bugs fixed;
+  `sample_writer` fuzz + timing + bodies + email folders.
+- **2026-11-18** — Docs consolidated; `sample_writer` finished; `canon.py` shared flattening
+  pipe wired into the Correspondent write (Owner is no longer a Correspondent); thread
+  titles `Platform; Name; MM-DD-YYYY->`; store wiped and rebuilt; Viewer cleanup; WhatsApp
+  dedupe + HTML correspondents; `.eml` mailboxes discoverable. Detail in `git log`.
 
 ---
 
