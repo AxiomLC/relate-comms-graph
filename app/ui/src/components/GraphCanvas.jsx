@@ -79,6 +79,16 @@ const metaOf = (node) => NODE_TYPES[node.type] || FALLBACK_META;
  */
 const bagId = (platform) => `bag:${platform}`;
 
+/**
+ * The id of the merged bag — the second tier of the composition.
+ *
+ * Platform bags sit on the ring; this one sits at the centre. It holds every node
+ * that is not in a platform bag: merged Correspondents, multi-platform entities and
+ * anything with no platform at all. `merged` is not a platform name, so this can
+ * never collide with `bagId(platform)`.
+ */
+const MERGED_BAG_ID = "bag:merged";
+
 const GraphCanvas = forwardRef(function GraphCanvas(
   { data, theme, onNodeClick, onBackgroundClick, onLayoutDone },
   ref,
@@ -204,12 +214,17 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       // it. A node with no glyph simply never matches an icon rule, so it stays a
       // visible circle. That is the whole reason the icon styling is an override
       // layer rather than the base.
-      const glyph = nodeIcon(node.type, node.platform);
+      const glyph = nodeIcon(node.type, node.platform, !!node.merged);
       // `icon` is added only when there IS a glyph, because that class is what removes
       // the base fill. The four extracted kinds have no glyph by decision, so they
       // keep the base filled circle. Glow is keyed on `type`, not on this class.
       const kind = kindClass(node.type);
-      const classes = [kind, glyph ? "icon" : null].filter(Boolean).join(" ");
+      // `merged` is a CLASS as well as a data field: the stylesheet keys the ghosted
+      // look off it, and a class is the only selector that cannot be confused with
+      // a missing data value (see the `image: null` trap above).
+      const classes = [kind, glyph ? "icon" : null, node.merged ? "merged" : null]
+        .filter(Boolean)
+        .join(" ");
 
       return {
         group: "nodes",
@@ -230,8 +245,8 @@ const GraphCanvas = forwardRef(function GraphCanvas(
           firstTs: node.first_ts || null,
           lastTs: node.last_ts || null,
           isGroup: !!node.is_group,
-          // `:Merged` is the bag-membership test, inverted: a merged node stays
-          // outside every bag and is pulled by its real edges instead.
+          // `:Merged` is the bag-membership test, inverted: a merged node goes in
+          // the central merged bag rather than a platform bag.
           merged: !!node.merged,
           // A shade of the platform colour, deterministic from the id, so a cluster
           // reads as a family and the picture is identical on every load.
@@ -255,24 +270,31 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     // so a bag that survives its children (or the reverse) is a hard failure, not a
     // cosmetic one.
     //
-    // Membership is `:Merged`, inverted. A node with one platform goes in that
-    // platform's bag; a merged node stays outside and is pulled by its real edges.
-    // The test reads the LABEL, not `platforms.length`: a Place mentioned on two
-    // platforms is `:Merged` and must stay outside, and a `platforms.length === 1`
-    // test would have quietly bagged the world's geography.
+    // Membership is `:Merged`, inverted: a node with exactly one platform goes in
+    // that platform's bag. Everything else — a merged Correspondent, a Place
+    // mentioned on two platforms, a node with no platform at all — goes in the
+    // MERGED bag, the second tier of the composition, which is placed at the centre
+    // rather than on the ring. The test reads the LABEL, not `platforms.length`: a
+    // `platforms.length === 1` test would have quietly bagged the world's geography.
     //
     // Bags are synthetic. They are excluded from the reveal and from every count —
     // `cy.nodes().length` includes them, so nothing may use that raw.
     const bagNodes = [];
     if (theme.filter.bags) {
       const platformsInUse = new Set();
+      let mergedBagInUse = false;
       for (const node of nodes) {
+        // A payload-supplied Bag is already a parent; never re-parent it.
+        if (node.data.type === "Bag") continue;
         const platforms = platformsOf(node.data);
-        if (node.data.merged || platforms.length !== 1) continue;
-        const platform = platforms[0];
-        if (!platform) continue;
-        node.data.parent = bagId(platform);
-        platformsInUse.add(platform);
+        const platform = platforms.length === 1 ? platforms[0] : "";
+        if (!node.data.merged && platform) {
+          node.data.parent = bagId(platform);
+          platformsInUse.add(platform);
+        } else {
+          node.data.parent = MERGED_BAG_ID;
+          mergedBagInUse = true;
+        }
       }
       // A bag is only created for a platform that still has a child. An empty bag is
       // not merely untidy: fcose treats a childless compound as a node with no
@@ -284,6 +306,13 @@ const GraphCanvas = forwardRef(function GraphCanvas(
           data: { id: bagId(platform), type: "Bag", platform },
         });
       }
+      if (mergedBagInUse) {
+        bagNodes.push({
+          group: "nodes",
+          classes: "synthetic bag",
+          data: { id: MERGED_BAG_ID, type: "Bag", platform: "" },
+        });
+      }
     }
 
     const ids = new Set(nodes.map((n) => n.data.id));
@@ -293,8 +322,12 @@ const GraphCanvas = forwardRef(function GraphCanvas(
         // Edge weight comes from the source node's own count — `WITH` stores none.
         const tier = rungFor(theme.tiers.edge, "min", edgeWeights.get(edge.source) ?? 0);
         const platform = nodes.find((n) => n.data.id === edge.source)?.data.platform || "";
+        // The thickest tier is the first rung in the table. A CLASS, not a data field —
+        // the stylesheet keys the glow off it.
+        const thick = tier.min === theme.tiers.edge[0].min;
         return {
           group: "edges",
+          classes: thick ? "thick" : "",
           data: {
             id: `${edge.type}:${edge.source}->${edge.target}`,
             source: edge.source,
@@ -620,14 +653,32 @@ function buildStylesheet(theme) {
         "background-height": `${Math.round(iconScaleFor(visual, platform) * 100)}%`,
       },
     })),
-    ...Object.entries(PERSON_ICONS).map(([platform, url]) => ({
-      selector: `node.icon.person[platform = "${platform}"]`,
+    ...Object.entries(PERSON_ICONS)
+      .filter(([platform]) => platform !== "merged")
+      .map(([platform, url]) => ({
+        selector: `node.icon.person[platform = "${platform}"]`,
+        style: {
+          "background-image": `url("${url}")`,
+          "background-width": `${Math.round(visual.correspondentIconScale * 100)}%`,
+          "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`,
+        },
+      })),
+    // A merged Correspondent spans several platforms, so it draws the neutral grey
+    // glyph instead of its first platform's.
+    //
+    // **This block MUST come AFTER the per-platform ones.** Both are
+    // `node.icon.person` rules of equal specificity, so the later block wins — and a
+    // merged node still carries a real `platform` value, so it matches its own
+    // platform's rule too. Placed before, the platform rule wins and the glyph stays
+    // its platform colour (which is exactly what happened the first time).
+    {
+      selector: "node.icon.person.merged",
       style: {
-        "background-image": `url("${url}")`,
+        "background-image": `url("${PERSON_ICONS.merged}")`,
         "background-width": `${Math.round(visual.correspondentIconScale * 100)}%`,
         "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`,
       },
-    })),
+    },
     // Shape and glow are generated from `NODE_TYPES`, so a new kind is a config
     // entry rather than a rule. Both are static literals — never `data()` — because
     // a mapper that fails to parse takes the whole stylesheet down with it.
@@ -665,6 +716,50 @@ function buildStylesheet(theme) {
         },
       })),
     {
+      // A merged node: one person, several platforms. It keeps its own colour but is
+      // ghosted and ringed in neutral grey, so it reads as a bridge between clusters
+      // rather than a member of any one of them.
+      //
+      // **Placed BEFORE `.reveal-hidden` on purpose.** Both are single-class rules,
+      // so the later one wins; the reveal must still be able to hide a merged node,
+      // and `opacity` here would otherwise pin it visible through the whole bloom.
+      // The bag rule stays last (§3).
+      //
+      // The glyph is a baked image, so `background-color` cannot tint it — the colour
+      // arrives as the halo, and the fade is `opacity`. No border: the glyph is the
+      // mark, and a ring around it read as a second outline (the same reason the
+      // `node.icon` rule zeroes the base border).
+      //
+      // **`underlay-*`, never `shadow-*`.** Cytoscape 3.35.0 has no shadow support;
+      // the bundle contains no `shadow-blur` string, so the earlier glow was a no-op
+      // that failed silently. The underlay is a shape behind the body, so it needs
+      // `bounds-expansion` to stop the halo being clipped at the node's own box.
+      //
+      // A RADIAL gradient is what makes it read as a glow rather than a disc: opaque
+      // at the centre, fading to nothing at the outer stop. The stops are the only
+      // way to shape the falloff — an underlay has no blur.
+      //
+      // **No `opacity` here.** Cytoscape draws a background image at
+      // `background-image-opacity * node.effectiveOpacity()`, so fading the node
+      // fades the glyph with it — a near-black silhouette then reads as washed grey
+      // instead of sharp contrast. The softness belongs to the halo alone, which is
+      // what `underlay-opacity` and the gradient stops control.
+      //
+      selector: "node.merged",
+      style: {
+        "border-width": 0,
+        "underlay-fill": "radial-gradient",
+        "underlay-color": visual.mergedGlowColor,
+        "underlay-gradient-stop-colors": visual.mergedGlowStops,
+        "underlay-gradient-stop-positions": visual.mergedGlowStopPositions,
+        "underlay-opacity": visual.mergedGlowOpacity,
+        "underlay-padding": visual.mergedGlowPadding,
+        "underlay-shape": "ellipse",
+        "bounds-expansion": visual.mergedGlowPadding,
+      },
+    },
+
+    {
       // Selection cannot also be a glow now that correspondents glow by default, so
       // it is a bright border plus a much larger blur. Threads keep the glow-only
       // treatment because they have none of their own.
@@ -681,6 +776,7 @@ function buildStylesheet(theme) {
         "z-index": 9999,
       },
     },
+
     {
       selector: "edge",
       style: {
@@ -928,16 +1024,17 @@ function rgbToHex(r, g, b) {
  * a blank canvas and a stalled refresh. Do not put a bag in a constraint.
  *
  * So the ring is applied as a **translation** instead. Each bag's children are moved
- * as a block so the bag's centroid lands on the circle; the merged nodes outside the
- * bags are not moved at all, which is exactly the intent — the bags go to the
- * outside, the bridges stay where their edges put them, and the middle is what is
- * left.
+ * as a block so the bag's centroid lands on the circle. The merged bag is excluded:
+ * it is the second tier and belongs at the centre, so including it here would put
+ * the merged cluster on the outside — the opposite of the design.
  *
  * Order is the legend order, so a platform is always in the same place. A graph that
  * reshuffles itself between visits reads as noise.
  */
 function placeBagsOnRing(cy, spread = 1) {
-  const bags = cy.nodes('[type = "Bag"]');
+  // Platform bags only. The merged bag is placed by its own rule (centre), and
+  // leaving it in would also inflate the radius from its own footprint.
+  const bags = cy.nodes('[type = "Bag"]').filter((bag) => bag.id() !== MERGED_BAG_ID);
   if (bags.length < 2) return;
 
   // Radius from the bags' own footprint, so seven of them sit shoulder to shoulder

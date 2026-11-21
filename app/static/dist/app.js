@@ -14729,9 +14729,9 @@
       // boundary (`layout-base.js` `calcIdealEdgeLengths`). With a 31-node Telegram bag
       // that is ~250px of ideal length on every merged-node edge — the long lines.
       // Off, an inter-bag edge is just `idealEdgeLength` like any other.
-      smartEdgeLength: false,
+      smartEdgeLength: true,
       // true = the old, very long cross-bag edges
-      gravity: 0.2,
+      gravity: 0.1,
       // 0 = drifts apart, 0.5 = pulled into a ball
       nodeSeparation: 75,
       // BETWEEN disconnected components only
@@ -14741,9 +14741,9 @@
       // is what squeezes a bag's children toward its own centre — NOT `gravity`, which
       // pulls everything toward the middle of the screen and would crush all seven bags
       // into one ball. 1.0 is fcose's default; raise it if a big bag sprawls.
-      gravityCompound: 1,
+      gravityCompound: 0.3,
       // 0.5 = loose bag, 2.0 = tight ball
-      gravityRangeCompound: 1.5,
+      gravityRangeCompound: 0.15,
       // how far the compound pull reaches, in bag radii
       // Labels are part of a node's layout box. Without this a 120px label sits on a
       // 18px node and the solver has no idea it is there — which is most of the
@@ -14757,7 +14757,7 @@
       // multiplies the post-layout fit zoom. `fit: true` shrinks
       // until everything is visible, which at this node count puts neighbours
       // closer than a node's own diameter.
-      wheelSensitivity: 3.8
+      wheelSensitivity: 1.8
       // default 1.0 is genuinely slow (1.047x per notch)
     },
     /* ------------------------------------------------------------------- labels
@@ -14769,9 +14769,9 @@
      * at mid zoom".
      */
     labels: {
-      minZoomedFontSize: 13,
+      minZoomedFontSize: 28,
       // raise to 16 if mid-zoom still looks crowded
-      maxWidth: 120,
+      maxWidth: 80,
       // px, with text-wrap: wrap
       color: "#c8d2e0",
       correspondentColor: "#8fa3bd"
@@ -14819,15 +14819,16 @@
       bands: { top: 0.2, mid: 0.3 },
       // Edges get three tiers, keyed on the source thread's message count. `WITH`
       // carries no weight property, so the thread's own size is the only signal.
-      // Edges are the weakest thing on this canvas: a 0.8px line at 0.4 opacity on a
-      // near-black background is invisible until you are almost on top of it. The
-      // floor is therefore high — every edge is at least 1.2px and 0.75 — and the
-      // tiers separate by width more than by opacity, because opacity is what makes
-      // them disappear.
+      //
+      // Widths thinned 30% on 2026-11-21 (2.1/1.4/0.85 -> 1.47/0.98/0.6), then the
+      // tiers were spread apart because they read as one weight: the top rung doubled to
+      // 12px and the two lower rungs halved to 0.49 / 0.3. The top tier is also faint
+      // (opacity 0.3), so it is a soft band rather than a hard line — see `visual` for
+      // why a real glow is not possible.
       edge: [
-        { min: 80, width: 2.1, opacity: 1 },
-        { min: 12, width: 1.4, opacity: 1 },
-        { min: 0, width: 0.85, opacity: 1 }
+        { min: 80, width: 8, opacity: 0.3 },
+        { min: 12, width: 0.8, opacity: 1 },
+        { min: 0, width: 0.5, opacity: 1 }
       ]
     },
     /* ------------------------------------------------------------------- visual */
@@ -14840,6 +14841,15 @@
       // (a 0.7 mix of #3b6fd4 is #c3d1f0, which reads as grey). 0.35 keeps the hue
       // recognisable while still lifting it off the near-black background.
       edgeLighten: 0.35,
+      // **An edge cannot glow. Settled 2026-11-21 — do not retry.**
+      //  1. `underlay-*` on an edge is only drawn on the texture-cache path, which the
+      //     canvas renderer does not take for edges. It paints nothing.
+      //  2. `line-outline-*` is drawn, but it is a second stroke of constant width, so it
+      //     reads as an outline around the line, not a glow.
+      //
+      // There is no falloff available: Cytoscape has no blur, and an edge gradient runs
+      // source->target, not across the stroke. The only soft-edge lever is width +
+      // transparency, which is what `tiers.edge`'s top rung uses.
       glowBlur: 18,
       // shadow-blur on the selected node
       hazeOpacity: 0.2,
@@ -14849,6 +14859,68 @@
       // bright border plus a much larger blur (see `node:selected` below).
       correspondentGlow: 50,
       correspondentGlowOpacity: 1.2,
+      // A MERGED node — the same person seen on more than one platform. It draws a
+      // neutral grey glyph and an orange halo, so it reads as a bridge between clusters
+      // rather than a member of any one of them.
+      //
+      // NOT applied to the node any more — Cytoscape multiplies a background image by
+      // the node's effective opacity, so fading the node faded the glyph too and a
+      // near-black silhouette came out washed grey. Kept as the documented knob for
+      // the halo's overall strength, which is `mergedGlowOpacity` below.
+      mergedOpacity: 0.55,
+      // unused by the stylesheet; see the note above
+      // Orange, not grey: the palette's own `orangeText` reads warm against the
+      // black/green page and cannot be mistaken for a platform hue.
+      //
+      // **This is an UNDERLAY, not a shadow.** Cytoscape 3.35.0 removed every
+      // `shadow-*` property when the renderer moved to WebGL — the bundle contains no
+      // `shadow-blur` at all, so the old glow silently did nothing. `underlay-*` is the
+      // supported replacement: a shape drawn behind the node body.
+      //
+      // An underlay has no blur, so the falloff comes from a RADIAL GRADIENT: opaque
+      // at the centre, transparent at the outer stop. `mergedGlowPadding` is how far
+      // the halo reaches beyond the node body.
+      mergedGlowPadding: 10,
+      // px the halo extends beyond the node body
+      mergedGlowOpacity: 0.6,
+      // overall multiplier on the gradient
+      mergedGlowColor: "#d97a2b",
+      // palette.orangeText
+      // Stops are fractions of the underlay's radius, and the radius is
+      // `max(paddedWidth, paddedHeight)` — i.e. the node PLUS its padding, so 100% is
+      // the outer edge of the halo.
+      //
+      // The taper MUST reach zero at 100%, or the halo ends on a hard rim — that was the
+      // first version's bug (full opacity held to 35%, then a cliff).
+      //
+      // The middle stops carry the glow's body. Too low and the halo reads as a thin
+      // ring with a dead zone around it; the values below hold most of the strength
+      // through the first half of the radius and then fall away.
+      //
+      // **TRIED AND REVERTED TWICE (2026-11-21). Do not retry without reading this.**
+      //
+      // 1. Opaque outer stop alone: covered the first `mergedGlowPadding` px of every
+      //    CONNECTED edge (they stop at `outerWidth()`, inside the halo) and did nothing
+      //    for edges passing behind.
+      // 2. Opaque outer stop + `z-index-compare: manual` lifting `edge.to-merged` above
+      //    the node layers: fixed the occlusion, but **broke node dragging** — an edge
+      //    above a node swallows the grab.
+      //
+      // Conclusion: the halo cannot occlude. Cytoscape paints every edge before every
+      // node layer, and the only escape (`manual` z-index) costs interaction.
+      //
+      // **The transparent stop MUST be `rgba(...)`, never 8-digit hex.** Cytoscape's
+      // colour parser (`hex2tuple`) accepts only 3 and 6 digits, so `#d97a2b00` parses
+      // to `null`; the multi-value branch then reads `.value` off that null and throws
+      // inside `parseImpl`, which takes the WHOLE stylesheet down and blanks the app.
+      mergedGlowStops: [
+        "rgba(217,122,43,0.85)",
+        "rgba(217,122,43,0.62)",
+        "rgba(217,122,43,0.3)",
+        "rgba(217,122,43,0.1)",
+        "rgba(217,122,43,0)"
+      ],
+      mergedGlowStopPositions: ["0%", "40%", "70%", "88%", "100%"],
       // Per-node lightness jitter, so a platform cluster reads as a family of shades
       // rather than one flat colour. Deterministic from the node id.
       shadeJitter: 0.16,
@@ -14911,7 +14983,7 @@
       bagRing: true,
       // Multiplier on the ring radius. 1.0 packs the bags shoulder to shoulder;
       // raise it to open the middle up for the bridges.
-      bagRingSpread: 1
+      bagRingSpread: 0.6
     },
     /* ------------------------------------------------------------------ filter
      * VIEW ONLY. A hidden toggle must never narrow what an agent can query
@@ -14955,34 +15027,46 @@
   function cloneTheme(theme = THEME) {
     return JSON.parse(JSON.stringify(theme));
   }
-  var STORAGE_KEY = "relate.graphStyle";
-  var THEME_VERSION = 9;
+  var OVERRIDES_KEY = "relate.graphStyle.overrides";
   function loadTheme() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(OVERRIDES_KEY);
       if (!raw) return cloneTheme();
-      const saved = JSON.parse(raw);
-      if (saved?.version !== THEME_VERSION) return cloneTheme();
-      return mergeDeep(cloneTheme(), saved);
+      return mergeDeep(cloneTheme(), JSON.parse(raw));
     } catch {
       return cloneTheme();
     }
   }
   function saveTheme(theme) {
     try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ ...theme, version: THEME_VERSION })
-      );
+      const overrides = diffTheme(THEME, theme);
+      if (Object.keys(overrides).length === 0) {
+        localStorage.removeItem(OVERRIDES_KEY);
+      } else {
+        localStorage.setItem(OVERRIDES_KEY, JSON.stringify(overrides));
+      }
     } catch {
     }
   }
   function resetTheme() {
     try {
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(OVERRIDES_KEY);
     } catch {
     }
     return cloneTheme();
+  }
+  function diffTheme(defaults, theme) {
+    const out = {};
+    for (const [key, value] of Object.entries(theme || {})) {
+      const base = defaults?.[key];
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const sub = diffTheme(base && typeof base === "object" ? base : {}, value);
+        if (Object.keys(sub).length) out[key] = sub;
+      } else if (JSON.stringify(value) !== JSON.stringify(base)) {
+        out[key] = value;
+      }
+    }
+    return out;
   }
   function mergeDeep(target, source) {
     for (const [key, value] of Object.entries(source || {})) {
@@ -14998,11 +15082,11 @@
   // app/ui/src/lib/useViewerStack.js
   var import_react = __toESM(require_react(), 1);
   var CAP = 50;
-  var STORAGE_KEY2 = "relate.viewer.stack";
+  var STORAGE_KEY = "relate.viewer.stack";
   var EMPTY_VIEWER = { stack: [], idx: -1 };
   function loadState() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY2);
+      const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return EMPTY_VIEWER;
       const saved = JSON.parse(raw);
       const stack = (saved.stack || []).filter((entry) => entry?.kind === "node");
@@ -15019,10 +15103,10 @@
       try {
         const stack = state.stack.filter((entry) => entry?.kind === "node");
         if (!stack.length) {
-          localStorage.removeItem(STORAGE_KEY2);
+          localStorage.removeItem(STORAGE_KEY);
           return;
         }
-        localStorage.setItem(STORAGE_KEY2, JSON.stringify({ stack }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ stack }));
       } catch {
       }
     }, [state]);
@@ -15050,7 +15134,7 @@
     const reset = (0, import_react.useCallback)(() => {
       setState(EMPTY_VIEWER);
       try {
-        localStorage.removeItem(STORAGE_KEY2);
+        localStorage.removeItem(STORAGE_KEY);
       } catch {
       }
     }, []);
@@ -15989,6 +16073,9 @@
     return PLATFORM_ICONS[String(platform || "").toLowerCase()] || null;
   }
   var PERSON_ICONS = {
+    // Not a platform. A merged Correspondent spans several platforms, so it draws
+    // this neutral glyph instead of any one platform's colour — see `nodeIcon`.
+    merged: "/static/icons/person-merged.svg",
     messenger: "/static/icons/person-messenger.svg",
     telegram: "/static/icons/person-telegram.svg",
     whatsapp: "/static/icons/person-whatsapp.svg",
@@ -16002,10 +16089,10 @@
   function personIcon(platform) {
     return PERSON_ICONS[String(platform || "").toLowerCase()] || null;
   }
-  function nodeIcon(type, platform) {
+  function nodeIcon(type, platform, merged = false) {
     const kind = NODE_TYPES[type]?.iconKind;
     if (kind === "platform") return platformIcon(platform);
-    if (kind === "person") return personIcon(platform);
+    if (kind === "person") return personIcon(merged ? "merged" : platform);
     return null;
   }
   function kindClass(type) {
@@ -16070,6 +16157,7 @@
   };
   var metaOf = (node) => NODE_TYPES[node.type] || FALLBACK_META;
   var bagId = (platform) => `bag:${platform}`;
+  var MERGED_BAG_ID = "bag:merged";
   var GraphCanvas = (0, import_react7.forwardRef)(function GraphCanvas2({ data, theme, onNodeClick, onBackgroundClick, onLayoutDone }, ref) {
     const hostRef = (0, import_react7.useRef)(null);
     const cyRef = (0, import_react7.useRef)(null);
@@ -16121,9 +16209,9 @@
         const letter = lettersByType.get(node.type)?.get(node.id);
         const tier = theme2.tiers.sizes[letter] || theme2.tiers.sizes.F;
         const base = platformColor(node.platform);
-        const glyph = nodeIcon(node.type, node.platform);
+        const glyph = nodeIcon(node.type, node.platform, !!node.merged);
         const kind = kindClass(node.type);
-        const classes = [kind, glyph ? "icon" : null].filter(Boolean).join(" ");
+        const classes = [kind, glyph ? "icon" : null, node.merged ? "merged" : null].filter(Boolean).join(" ");
         return {
           group: "nodes",
           // A CLASS, not a data field. Cytoscape's `[key]` selector tests whether the
@@ -16143,8 +16231,8 @@
             firstTs: node.first_ts || null,
             lastTs: node.last_ts || null,
             isGroup: !!node.is_group,
-            // `:Merged` is the bag-membership test, inverted: a merged node stays
-            // outside every bag and is pulled by its real edges instead.
+            // `:Merged` is the bag-membership test, inverted: a merged node goes in
+            // the central merged bag rather than a platform bag.
             merged: !!node.merged,
             // A shade of the platform colour, deterministic from the id, so a cluster
             // reads as a family and the picture is identical on every load.
@@ -16162,13 +16250,18 @@
       const bagNodes = [];
       if (theme2.filter.bags) {
         const platformsInUse = /* @__PURE__ */ new Set();
+        let mergedBagInUse = false;
         for (const node of nodes) {
+          if (node.data.type === "Bag") continue;
           const platforms = platformsOf(node.data);
-          if (node.data.merged || platforms.length !== 1) continue;
-          const platform = platforms[0];
-          if (!platform) continue;
-          node.data.parent = bagId(platform);
-          platformsInUse.add(platform);
+          const platform = platforms.length === 1 ? platforms[0] : "";
+          if (!node.data.merged && platform) {
+            node.data.parent = bagId(platform);
+            platformsInUse.add(platform);
+          } else {
+            node.data.parent = MERGED_BAG_ID;
+            mergedBagInUse = true;
+          }
         }
         for (const platform of platformsInUse) {
           bagNodes.push({
@@ -16177,13 +16270,22 @@
             data: { id: bagId(platform), type: "Bag", platform }
           });
         }
+        if (mergedBagInUse) {
+          bagNodes.push({
+            group: "nodes",
+            classes: "synthetic bag",
+            data: { id: MERGED_BAG_ID, type: "Bag", platform: "" }
+          });
+        }
       }
       const ids = new Set(nodes.map((n) => n.data.id));
       const edges = (data.edges || []).filter((edge) => ids.has(edge.source) && ids.has(edge.target)).map((edge) => {
         const tier = rungFor(theme2.tiers.edge, "min", edgeWeights.get(edge.source) ?? 0);
         const platform = nodes.find((n) => n.data.id === edge.source)?.data.platform || "";
+        const thick = tier.min === theme2.tiers.edge[0].min;
         return {
           group: "edges",
+          classes: thick ? "thick" : "",
           data: {
             id: `${edge.type}:${edge.source}->${edge.target}`,
             source: edge.source,
@@ -16440,7 +16542,7 @@
           "background-height": `${Math.round(iconScaleFor(visual, platform) * 100)}%`
         }
       })),
-      ...Object.entries(PERSON_ICONS).map(([platform, url]) => ({
+      ...Object.entries(PERSON_ICONS).filter(([platform]) => platform !== "merged").map(([platform, url]) => ({
         selector: `node.icon.person[platform = "${platform}"]`,
         style: {
           "background-image": `url("${url}")`,
@@ -16448,6 +16550,22 @@
           "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`
         }
       })),
+      // A merged Correspondent spans several platforms, so it draws the neutral grey
+      // glyph instead of its first platform's.
+      //
+      // **This block MUST come AFTER the per-platform ones.** Both are
+      // `node.icon.person` rules of equal specificity, so the later block wins — and a
+      // merged node still carries a real `platform` value, so it matches its own
+      // platform's rule too. Placed before, the platform rule wins and the glyph stays
+      // its platform colour (which is exactly what happened the first time).
+      {
+        selector: "node.icon.person.merged",
+        style: {
+          "background-image": `url("${PERSON_ICONS.merged}")`,
+          "background-width": `${Math.round(visual.correspondentIconScale * 100)}%`,
+          "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`
+        }
+      },
       // Shape and glow are generated from `NODE_TYPES`, so a new kind is a config
       // entry rather than a rule. Both are static literals — never `data()` — because
       // a mapper that fails to parse takes the whole stylesheet down with it.
@@ -16480,6 +16598,49 @@
           "shadow-offset-y": 0
         }
       })),
+      {
+        // A merged node: one person, several platforms. It keeps its own colour but is
+        // ghosted and ringed in neutral grey, so it reads as a bridge between clusters
+        // rather than a member of any one of them.
+        //
+        // **Placed BEFORE `.reveal-hidden` on purpose.** Both are single-class rules,
+        // so the later one wins; the reveal must still be able to hide a merged node,
+        // and `opacity` here would otherwise pin it visible through the whole bloom.
+        // The bag rule stays last (§3).
+        //
+        // The glyph is a baked image, so `background-color` cannot tint it — the colour
+        // arrives as the halo, and the fade is `opacity`. No border: the glyph is the
+        // mark, and a ring around it read as a second outline (the same reason the
+        // `node.icon` rule zeroes the base border).
+        //
+        // **`underlay-*`, never `shadow-*`.** Cytoscape 3.35.0 has no shadow support;
+        // the bundle contains no `shadow-blur` string, so the earlier glow was a no-op
+        // that failed silently. The underlay is a shape behind the body, so it needs
+        // `bounds-expansion` to stop the halo being clipped at the node's own box.
+        //
+        // A RADIAL gradient is what makes it read as a glow rather than a disc: opaque
+        // at the centre, fading to nothing at the outer stop. The stops are the only
+        // way to shape the falloff — an underlay has no blur.
+        //
+        // **No `opacity` here.** Cytoscape draws a background image at
+        // `background-image-opacity * node.effectiveOpacity()`, so fading the node
+        // fades the glyph with it — a near-black silhouette then reads as washed grey
+        // instead of sharp contrast. The softness belongs to the halo alone, which is
+        // what `underlay-opacity` and the gradient stops control.
+        //
+        selector: "node.merged",
+        style: {
+          "border-width": 0,
+          "underlay-fill": "radial-gradient",
+          "underlay-color": visual.mergedGlowColor,
+          "underlay-gradient-stop-colors": visual.mergedGlowStops,
+          "underlay-gradient-stop-positions": visual.mergedGlowStopPositions,
+          "underlay-opacity": visual.mergedGlowOpacity,
+          "underlay-padding": visual.mergedGlowPadding,
+          "underlay-shape": "ellipse",
+          "bounds-expansion": visual.mergedGlowPadding
+        }
+      },
       {
         // Selection cannot also be a glow now that correspondents glow by default, so
         // it is a bright border plus a much larger blur. Threads keep the glow-only
@@ -16664,7 +16825,7 @@
     return `#${part(r)}${part(g)}${part(b)}`;
   }
   function placeBagsOnRing(cy, spread = 1) {
-    const bags = cy.nodes('[type = "Bag"]');
+    const bags = cy.nodes('[type = "Bag"]').filter((bag) => bag.id() !== MERGED_BAG_ID);
     if (bags.length < 2) return;
     const widest = Math.max(
       ...bags.map((bag) => Math.max(bag.outerWidth(), bag.outerHeight()))

@@ -39,16 +39,16 @@ export const THEME = {
     // boundary (`layout-base.js` `calcIdealEdgeLengths`). With a 31-node Telegram bag
     // that is ~250px of ideal length on every merged-node edge — the long lines.
     // Off, an inter-bag edge is just `idealEdgeLength` like any other.
-    smartEdgeLength: false, // true = the old, very long cross-bag edges
-    gravity: 0.2, // 0 = drifts apart, 0.5 = pulled into a ball
+    smartEdgeLength: true, // true = the old, very long cross-bag edges
+    gravity: 0.1, // 0 = drifts apart, 0.5 = pulled into a ball
     nodeSeparation: 75, // BETWEEN disconnected components only
     numIter: 2500, // 1000 = fast and messy, 5000 = slow and settled
     // Compound gravity. Each platform is a bag (an invisible parent node), and this
     // is what squeezes a bag's children toward its own centre — NOT `gravity`, which
     // pulls everything toward the middle of the screen and would crush all seven bags
     // into one ball. 1.0 is fcose's default; raise it if a big bag sprawls.
-    gravityCompound: 1.0, // 0.5 = loose bag, 2.0 = tight ball
-    gravityRangeCompound: 1.5, // how far the compound pull reaches, in bag radii
+    gravityCompound: 0.3, // 0.5 = loose bag, 2.0 = tight ball
+    gravityRangeCompound: 0.15, // how far the compound pull reaches, in bag radii
     // Labels are part of a node's layout box. Without this a 120px label sits on a
     // 18px node and the solver has no idea it is there — which is most of the
     // "nodes on top of nodes" overlap.
@@ -59,7 +59,7 @@ export const THEME = {
     zoomDistance: 1.8, // multiplies the post-layout fit zoom. `fit: true` shrinks
     // until everything is visible, which at this node count puts neighbours
     // closer than a node's own diameter.
-    wheelSensitivity: 3.8, // default 1.0 is genuinely slow (1.047x per notch)
+    wheelSensitivity: 1.8, // default 1.0 is genuinely slow (1.047x per notch)
   },
 
   /* ------------------------------------------------------------------- labels
@@ -71,8 +71,8 @@ export const THEME = {
    * at mid zoom".
    */
   labels: {
-    minZoomedFontSize: 13, // raise to 16 if mid-zoom still looks crowded
-    maxWidth: 120, // px, with text-wrap: wrap
+    minZoomedFontSize: 28, // raise to 16 if mid-zoom still looks crowded
+    maxWidth: 80, // px, with text-wrap: wrap
     color: "#c8d2e0",
     correspondentColor: "#8fa3bd",
   },
@@ -120,15 +120,16 @@ export const THEME = {
     bands: { top: 0.2, mid: 0.3 },
     // Edges get three tiers, keyed on the source thread's message count. `WITH`
     // carries no weight property, so the thread's own size is the only signal.
-    // Edges are the weakest thing on this canvas: a 0.8px line at 0.4 opacity on a
-    // near-black background is invisible until you are almost on top of it. The
-    // floor is therefore high — every edge is at least 1.2px and 0.75 — and the
-    // tiers separate by width more than by opacity, because opacity is what makes
-    // them disappear.
+    //
+    // Widths thinned 30% on 2026-11-21 (2.1/1.4/0.85 -> 1.47/0.98/0.6), then the
+    // tiers were spread apart because they read as one weight: the top rung doubled to
+    // 12px and the two lower rungs halved to 0.49 / 0.3. The top tier is also faint
+    // (opacity 0.3), so it is a soft band rather than a hard line — see `visual` for
+    // why a real glow is not possible.
     edge: [
-      { min: 80, width: 2.1, opacity: 1 },
-      { min: 12, width: 1.4, opacity: 1 },
-      { min: 0, width: 0.85, opacity: 1 },
+      { min: 80, width: 8, opacity: 0.3 },
+      { min: 12, width: 0.8, opacity: 1 },
+      { min: 0, width: 0.5, opacity: 1 },
     ],
   },
 
@@ -141,6 +142,15 @@ export const THEME = {
     // (a 0.7 mix of #3b6fd4 is #c3d1f0, which reads as grey). 0.35 keeps the hue
     // recognisable while still lifting it off the near-black background.
     edgeLighten: 0.35,
+    // **An edge cannot glow. Settled 2026-11-21 — do not retry.**
+    //  1. `underlay-*` on an edge is only drawn on the texture-cache path, which the
+    //     canvas renderer does not take for edges. It paints nothing.
+    //  2. `line-outline-*` is drawn, but it is a second stroke of constant width, so it
+    //     reads as an outline around the line, not a glow.
+    //
+    // There is no falloff available: Cytoscape has no blur, and an edge gradient runs
+    // source->target, not across the stroke. The only soft-edge lever is width +
+    // transparency, which is what `tiers.edge`'s top rung uses.
     glowBlur: 18, // shadow-blur on the selected node
     hazeOpacity: 0.2, // static radial gradient behind the canvas
     // Correspondents glow permanently, so they read as a different class of thing
@@ -148,6 +158,65 @@ export const THEME = {
     // bright border plus a much larger blur (see `node:selected` below).
     correspondentGlow: 50,
     correspondentGlowOpacity: 1.2,
+    // A MERGED node — the same person seen on more than one platform. It draws a
+    // neutral grey glyph and an orange halo, so it reads as a bridge between clusters
+    // rather than a member of any one of them.
+    //
+    // NOT applied to the node any more — Cytoscape multiplies a background image by
+    // the node's effective opacity, so fading the node faded the glyph too and a
+    // near-black silhouette came out washed grey. Kept as the documented knob for
+    // the halo's overall strength, which is `mergedGlowOpacity` below.
+    mergedOpacity: 0.55, // unused by the stylesheet; see the note above
+    // Orange, not grey: the palette's own `orangeText` reads warm against the
+    // black/green page and cannot be mistaken for a platform hue.
+    //
+    // **This is an UNDERLAY, not a shadow.** Cytoscape 3.35.0 removed every
+    // `shadow-*` property when the renderer moved to WebGL — the bundle contains no
+    // `shadow-blur` at all, so the old glow silently did nothing. `underlay-*` is the
+    // supported replacement: a shape drawn behind the node body.
+    //
+    // An underlay has no blur, so the falloff comes from a RADIAL GRADIENT: opaque
+    // at the centre, transparent at the outer stop. `mergedGlowPadding` is how far
+    // the halo reaches beyond the node body.
+    mergedGlowPadding: 10, // px the halo extends beyond the node body
+    mergedGlowOpacity: 0.6, // overall multiplier on the gradient
+    mergedGlowColor: "#d97a2b", // palette.orangeText
+    // Stops are fractions of the underlay's radius, and the radius is
+    // `max(paddedWidth, paddedHeight)` — i.e. the node PLUS its padding, so 100% is
+    // the outer edge of the halo.
+    //
+    // The taper MUST reach zero at 100%, or the halo ends on a hard rim — that was the
+    // first version's bug (full opacity held to 35%, then a cliff).
+    //
+    // The middle stops carry the glow's body. Too low and the halo reads as a thin
+    // ring with a dead zone around it; the values below hold most of the strength
+    // through the first half of the radius and then fall away.
+    //
+    // **TRIED AND REVERTED TWICE (2026-11-21). Do not retry without reading this.**
+    //
+    // 1. Opaque outer stop alone: covered the first `mergedGlowPadding` px of every
+    //    CONNECTED edge (they stop at `outerWidth()`, inside the halo) and did nothing
+    //    for edges passing behind.
+    // 2. Opaque outer stop + `z-index-compare: manual` lifting `edge.to-merged` above
+    //    the node layers: fixed the occlusion, but **broke node dragging** — an edge
+    //    above a node swallows the grab.
+    //
+    // Conclusion: the halo cannot occlude. Cytoscape paints every edge before every
+    // node layer, and the only escape (`manual` z-index) costs interaction.
+    //
+    // **The transparent stop MUST be `rgba(...)`, never 8-digit hex.** Cytoscape's
+    // colour parser (`hex2tuple`) accepts only 3 and 6 digits, so `#d97a2b00` parses
+    // to `null`; the multi-value branch then reads `.value` off that null and throws
+    // inside `parseImpl`, which takes the WHOLE stylesheet down and blanks the app.
+    mergedGlowStops: [
+      "rgba(217,122,43,0.85)",
+      "rgba(217,122,43,0.62)",
+      "rgba(217,122,43,0.3)",
+      "rgba(217,122,43,0.1)",
+      "rgba(217,122,43,0)",
+    ],
+    mergedGlowStopPositions: ["0%", "40%", "70%", "88%", "100%"],
+
     // Per-node lightness jitter, so a platform cluster reads as a family of shades
     // rather than one flat colour. Deterministic from the node id.
     shadeJitter: 0.16, // 0 = every node identical, 0.3 = noisy
@@ -204,7 +273,7 @@ export const THEME = {
     bagRing: true,
     // Multiplier on the ring radius. 1.0 packs the bags shoulder to shoulder;
     // raise it to open the middle up for the bridges.
-    bagRingSpread: 1.0,
+    bagRingSpread: 0.6,
   },
 
   /* ------------------------------------------------------------------ filter
@@ -249,40 +318,49 @@ export function cloneTheme(theme = THEME) {
   return JSON.parse(JSON.stringify(theme));
 }
 
-const STORAGE_KEY = "relate.graphStyle";
-
 /**
- * Bump this whenever a DEFAULT changes in a way that must win over a saved theme.
+ * Only the user's OVERRIDES are persisted — never the whole theme.
  *
- * Without it, `loadTheme()` merges the saved object over the defaults, so a value
- * the user once dragged a slider to shadows every later change to that default —
- * which is exactly how the edge brightening appeared to do nothing: the saved
- * `tiers.edge` from an earlier session was still winning.
+ * **Why this matters.** The old design saved the entire theme object and merged it
+ * back over the defaults on load, so a saved value shadowed every later edit to
+ * `theme.js`. Changing a default then required bumping a version constant to force a
+ * reset, and forgetting the bump made the edit silently do nothing. That cost hours.
  *
- * A version mismatch discards the saved theme. That is the right trade: the theme
- * is a look, not data, and a stale look that hides a fix is worse than a reset.
+ * Storing a DIFF fixes it at the root: a key the user never touched is not in
+ * storage, so it always follows `theme.js`. Edit a default, rebuild, hard-refresh —
+ * the new value appears, with no version and no manual clearing.
+ *
+ * The key is new so an old full-theme object under the previous key is ignored
+ * rather than being misread as a diff (which would override everything).
  */
-const THEME_VERSION = 9;
+const OVERRIDES_KEY = "relate.graphStyle.overrides";
 
-/** Merge a saved partial config over the defaults (new keys keep their default). */
+/** Merge the user's saved overrides over the CURRENT defaults. */
 export function loadTheme() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(OVERRIDES_KEY);
     if (!raw) return cloneTheme();
-    const saved = JSON.parse(raw);
-    if (saved?.version !== THEME_VERSION) return cloneTheme();
-    return mergeDeep(cloneTheme(), saved);
+    return mergeDeep(cloneTheme(), JSON.parse(raw));
   } catch {
     return cloneTheme();
   }
 }
 
+/**
+ * Persist only what differs from the defaults.
+ *
+ * Setting a value back to its default removes it from storage, so the key starts
+ * following `theme.js` again — which is the behaviour that makes editing the file
+ * reliable.
+ */
 export function saveTheme(theme) {
   try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ ...theme, version: THEME_VERSION }),
-    );
+    const overrides = diffTheme(THEME, theme);
+    if (Object.keys(overrides).length === 0) {
+      localStorage.removeItem(OVERRIDES_KEY);
+    } else {
+      localStorage.setItem(OVERRIDES_KEY, JSON.stringify(overrides));
+    }
   } catch {
     /* private mode, quota — the look just does not persist */
   }
@@ -290,11 +368,31 @@ export function saveTheme(theme) {
 
 export function resetTheme() {
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(OVERRIDES_KEY);
   } catch {
     /* ignore */
   }
   return cloneTheme();
+}
+
+/**
+ * The keys of `theme` that differ from `defaults`, recursively.
+ *
+ * Arrays are compared whole: `tiers.edge` and `filter.platforms` are edited as units,
+ * so a partial array diff would be meaningless and would also break `rungFor`.
+ */
+function diffTheme(defaults, theme) {
+  const out = {};
+  for (const [key, value] of Object.entries(theme || {})) {
+    const base = defaults?.[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const sub = diffTheme(base && typeof base === "object" ? base : {}, value);
+      if (Object.keys(sub).length) out[key] = sub;
+    } else if (JSON.stringify(value) !== JSON.stringify(base)) {
+      out[key] = value;
+    }
+  }
+  return out;
 }
 
 function mergeDeep(target, source) {

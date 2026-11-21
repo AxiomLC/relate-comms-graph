@@ -1,9 +1,12 @@
 # CytoGravityRecommend.md
 
-**Status: OPEN — the merged cluster should be a CENTERED BAG, not loose nodes.**
-The long-edge root cause is proven (§6 probe sweep); the chosen fix is the
-owner's 2026-11-21 "merged bag" design (§9) — not yet built. §0–§8 below record
-how we got here; §9 is the forward plan.
+**Status: BUILT — the merged bag shipped 2026-11-21.** §9 was the plan and is now
+implemented: merged nodes are their own compound, placed at the centre, styled with a
+grey glyph and an orange radial halo. §0–§8 remain as the record of how it was found.
+
+**Settled facts have moved to [`UIVISUALS.md`](UIVISUALS.md).** This file is a working
+log; when something here stops moving, it belongs there. The remaining open item is
+renderer portability — see `HANDOVER.md` §1.
 
 ---
 

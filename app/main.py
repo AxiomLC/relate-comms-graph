@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from relate_comms import tools
@@ -70,5 +70,14 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 @app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
+def index() -> HTMLResponse:
+    """Serve the shell.
+
+    `no-store` because the page is the entry point for a rebuilt bundle: a cached
+    shell would keep pointing at a stale `app.js` after `npm run build`, which reads
+    as "my change did nothing".
+    """
+    return HTMLResponse(
+        content=(STATIC / "index.html").read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store"},
+    )

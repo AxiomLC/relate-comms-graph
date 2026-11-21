@@ -167,6 +167,9 @@ export function platformIcon(platform) {
  * (email / gmail / imap) share a file; Outlook has its own, in its own colour.
  */
 export const PERSON_ICONS = {
+  // Not a platform. A merged Correspondent spans several platforms, so it draws
+  // this neutral glyph instead of any one platform's colour — see `nodeIcon`.
+  merged: "/static/icons/person-merged.svg",
   messenger: "/static/icons/person-messenger.svg",
   telegram: "/static/icons/person-telegram.svg",
   whatsapp: "/static/icons/person-whatsapp.svg",
@@ -192,10 +195,13 @@ export function personIcon(platform) {
  * per platform colour the way `PERSON_ICONS` does; until then, a circle is the
  * honest look.
  */
-export function nodeIcon(type, platform) {
+export function nodeIcon(type, platform, merged = false) {
   const kind = NODE_TYPES[type]?.iconKind;
   if (kind === "platform") return platformIcon(platform);
-  if (kind === "person") return personIcon(platform);
+  // A merged Correspondent gets the neutral grey glyph, not its first platform's.
+  // The third argument is explicit rather than folded into `platform` because a
+  // platform named "merged" must never be able to hijack the lookup.
+  if (kind === "person") return personIcon(merged ? "merged" : platform);
   return null;
 }
 

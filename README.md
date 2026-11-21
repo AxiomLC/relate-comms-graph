@@ -170,17 +170,10 @@ correspondents merged across platforms**, 7 `POSSIBLY` edges.
 **Built:** seven file adapters + live IMAP, parallel parse → resolve → scrub → serialised
 write → verify → prune, 12-tool layer, FastAPI, and the UI.
 
-**Not built:** cross-platform identity (a `Correspondent` is a per-platform fact; merging
-one human across platforms is unsolved), body-entity extraction (`Person`, `Place`,
-`Organization`, `Product`), semantic search (Relate supports vector indexes; none exists
-in this store yet).
+**Not built:** body-entity extraction (`Person`, `Place`, `Organization`, `Product`),
+semantic search (Relate supports vector indexes; none exists in this store yet).
 
-**Outlook and SMS are built and proven** — `adapters/outlook_pst.py` (19 tests, run
-against a real `.pst`) and `adapters/sms.py` (33 tests, verified against the real 825 MB
-export). Neither is in the store above because that store was ingested before those legs
-were finished.
-
-`pytest tests -q` → **279 passed, 2 skipped**.
+`pytest tests -q` → **400 passed, 2 skipped**.
 
 ## Docs
 
@@ -188,8 +181,8 @@ were finished.
 |---|---|
 | [`TECHREADME.md`](TECHREADME.md) | Module map, key functions, commands, Relate/Neo4j references — written for an AI |
 | [`HANDOVER.md`](HANDOVER.md) | Short, dated, newest at the bottom — what is next |
-| [`CytoGravityRecommend.md`](CytoGravityRecommend.md) | Canvas layout: platform bags, the ring, what fcose actually honours, and the open long-edge problem |
-| [`archive_docs/UI-Cytoscape.md`](archive_docs/UI-Cytoscape.md) | The UI as built, and every Cytoscape decision behind it |
+| [`UIVISUALS.md`](UIVISUALS.md) | Settled UI and visual facts: glows, colour parsing, stylesheet order, the merged-node template |
+| [`CytoGravityRecommend.md`](CytoGravityRecommend.md) | Working log for the canvas layout investigation — what fcose actually honours, and the traps. Superseded by `UIVISUALS.md` as facts settle |
 | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) | How to get each platform's export |
 | [`archive_docs/HowToRunOllama.md`](archive_docs/HowToRunOllama.md) | Local model setup on this machine |
 
@@ -201,3 +194,4 @@ were finished.
 - **Refusals are append-only and user-visible.**
 - **Single writer per graph file;** every other access is read-only.
 - **Alias maps are re-identification keys** — memory-only by default.
+- **Visually: A node is: halo (behind) → circle body → SVG → border → label.** Five things, in that order. The halo is behind the circle, not between circle and SVG. Selection is the border layer, not a halo.

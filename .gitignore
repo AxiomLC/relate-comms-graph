@@ -44,9 +44,14 @@ store/*
 relate_comms/sample_data/generated/
 
 # Research scratch — npm metadata, doc dumps, library probes. VALUABLE, KEEP ON DISK,
-# never committed. Reference material for the graph-library decision (UI-Cytoscape.md §2).
+# never committed. Reference material for the graph-library decision (HANDOVER.md §1).
 .tmp_research/*
 !/.tmp_research/.gitkeep
+
+# ai_visual_graph_tool run artifacts — a payload dump and the last layout's positions.
+# Regenerated on every run, and the payload is a slice of the user's real store.
+tools/ai_visual_graph_tool/last_payload.json
+tools/ai_visual_graph_tool/last_run_positions.json
 
 # Node — dependencies are installed, never committed. `package-lock.json` IS committed,
 # so `npm ci` reproduces the exact tree.

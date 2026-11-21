@@ -105,11 +105,11 @@ React 19 + esbuild. `dist/app.js` is **committed** so a clone runs without npm.
 | File | Role |
 |---|---|
 | `App.jsx` | Shell. Theme, viewer stack, chat toggle, modal, platform filter. Enforces halo/fly-to. |
-| `components/GraphCanvas.jsx` | Cytoscape + fcose. **Icons are the only node look.** |
+| `components/GraphCanvas.jsx` | Cytoscape + fcose. **Icons are the only node look.** Stylesheet traps: [`UIVISUALS.md`](UIVISUALS.md). |
 | `components/Viewer.jsx` | Two states, Back, budgeted loads, per-thread search, paging. |
 | `components/ChatPanel.jsx` · `CommandBar.jsx` | Ollama chat with tool trace · the title bar. |
 | `components/modals/` | `Modal.jsx` (+ `Slider`/`Check`/`TextField`, each with a hover `hint` and a visible `note`), then the five the title bar opens: **Log**, **Ingest**, **Canvas**, **Gravity**, **Utilities**. All are side-docked (`side`) so the graph stays visible. `SetupModal.jsx` exists but is not mounted. |
-| `config/theme.js` · `nodeTypes.js` | **Every tunable**, persisted (`THEME_VERSION` discards a stale saved theme) · `NODE_TYPES` (the single declaration of a kind), platform colours, icons, placeholders. |
+| `config/theme.js` · `nodeTypes.js` | **Every tunable**, with only the user's *overrides* persisted · `NODE_TYPES` (the single declaration of a kind), platform colours, icons, placeholders. See [`UIVISUALS.md`](UIVISUALS.md) §10. |
 | `lib/api.js` · `useViewerStack.js` | The only server call site · the persisted state timeline. |
 
 ## 3. Key functions
@@ -281,7 +281,7 @@ raises rather than falling through to the `person` branch. `Company` appears now
 |---|---|
 | `Message.key = platform:chat_id:message_id` | Makes re-ingest idempotent. Never an array index or timestamp. |
 | Canvas bags are `synthetic` | A bag is a layout body, not data. `cy.nodes().length` includes them, so nothing may use that raw — the reveal, `onLayoutDone` and every count filter `.synthetic`. |
-| Bag membership is `:Merged`, inverted | The label, not `platforms.length`. A Place mentioned on two platforms is `:Merged` and must stay outside; a length test would bag the world's geography. |
+| Bag membership is `:Merged`, inverted | The label, not `platforms.length`. A node with one platform goes in that platform's bag; everything else goes in the central merged bag. A length test would bag the world's geography. |
 | `ts_utc` everywhere | Telegram/WhatsApp/Messenger export wall-clock with no offset. |
 | **A platform is a source, not a provider** | `outlook` is a `.pst`; Outlook-over-IMAP is `email`. Different provenance, different keys. |
 | **A merged node is filtered on `platforms`, never `platform`** | `platform` is one string (first by date). Testing it hides a merged node whenever the user filters by any other platform. |
@@ -295,6 +295,8 @@ raises rather than falling through to the `person` branch. `Company` appears now
 | Truncation is never silent | Any tool hitting `limit` returns `truncated: true`; `graph_slice` also returns `total`. |
 | **Canvas toggles never narrow a query; Utilities does, deliberately** | Canvas hides clusters and silent threads — drawing only, reversible, still searchable. The **Utilities** platform filter is different: it is module state in `tools.py` (`configure_platforms`), so it narrows `graph_slice`, `search_messages` and the AI chat alike. That overrides the older blanket rule on purpose; the alternative is a per-call `platforms` argument. |
 | **Icons are an override layer, never the base** | A platform with no icon file keeps the base fill and stays visible. |
+| **Cytoscape 3.35 has no `shadow-*`** | Removed with the WebGL rewrite; glows are `underlay-*` radial gradients. A removed property fails silently. [`UIVISUALS.md`](UIVISUALS.md) §1. |
+| **A style value that fails to parse kills the whole stylesheet** | 8-digit hex and `data()` on an empty string both do it. The app goes black, not just the node. [`UIVISUALS.md`](UIVISUALS.md) §3. |
 | `write_enabled` and `platforms` are excluded from tool schemas | They are the surface's toggles, not something a model may set. |
 | **A dropped thread leaves no orphan messages** | Any parse-time gate runs before the rows are committed and before the `Chat` is appended. |
 | **Legs are independent — any subset, any order, any number of runs** | Every write is a `MERGE`, so ingesting SMS into a five-platform store adds rows and touches nothing else. |
@@ -364,7 +366,7 @@ python -m relate_comms ingest "C:/Users/me/Downloads/chat.zip" --tz-offset -5
 python -m sample_writer                  # fake downloads -> sample_writer/out/
 python -m sample_writer add --seed 5     # write alongside out/, no clobber
 
-python -m pytest tests -q        # 279 passed, 2 skipped
+python -m pytest tests -q        # 400 passed, 2 skipped
 
 npm install && npm run build     # -> app/static/dist/app.js
 npm run watch                    # rebuild on save, no server
@@ -375,13 +377,40 @@ python tools/bench_scale.py --n 20000
 **No `--reload`.** The editor auto-saves every few seconds, so a watcher restarts the
 server mid-request; it also watches the whole repo, so `pytest` makes it thrash.
 
+### Changing a UI default — edit, rebuild, hard-refresh
+
+**No version bump, no `localStorage` clearing.** Only the user's *overrides* are stored
+(`relate.graphStyle.overrides`), as a diff against the defaults. A key the user never
+touched is not in storage, so it always follows `theme.js`.
+
+**Checklist for a visual change:**
+
+1. Edit `theme.js` (or `GraphCanvas.jsx` for stylesheet rules).
+2. **Rebuild** — `npm run watch` does it on save; otherwise `npm run build`.
+3. Hard-refresh the browser.
+
+Step 2 is unavoidable: `theme.js` is bundled into `app/static/dist/app.js` by esbuild, so
+the browser cannot see the edit until the bundle is rebuilt. `start.bat` also rebuilds on
+every launch.
+
+**Why the old design failed.** It saved the whole theme object and merged it back over the
+defaults, so a saved value shadowed every later edit — which is why a `THEME_VERSION`
+constant existed, and why forgetting to bump it made edits silently do nothing. Storing a
+diff removes the whole class of bug.
+
+If a value still does not appear, the user has overridden that key: reset it in the Canvas
+modal, or `localStorage.removeItem("relate.graphStyle.overrides")`.
+
 ## 8. Debugging
 
 | Symptom | Check |
 |---|---|
 | Canvas empty, API fine | `curl /api/graph?limit=5` — if it returns nodes, the failure is in the UI. |
 | Everything renders as squares | A Cytoscape selector matched too broadly. `[key]` tests field **existence**. |
-| Render dies after first paint | A style value parsed to `null`. `background-image: data(x)` with an empty string does this. |
+| Render dies after first paint, or the app goes black | A style value parsed to `null` — `background-image: data(x)` on an empty string, or 8-digit hex. [`UIVISUALS.md`](UIVISUALS.md) §3. |
+| A glow does nothing | `shadow-*` does not exist in 3.35. Use `underlay-*`. [`UIVISUALS.md`](UIVISUALS.md) §1. |
+| **A theme edit does nothing** | The bundle was not rebuilt — `theme.js` is compiled into `app.js`. Run `npm run build` (or keep `npm run watch` on) and hard-refresh. §7. |
+| **One theme value ignores `theme.js`** | The user has overridden that key; only overrides are persisted. Reset it in the Canvas modal. §7. |
 | Thread shows 0 messages | The tz offset differs from the one the store was written with. |
 | A route 404s after a rename | The Python server is stale — it loads routes once at startup. Restart it. |
 | Blank page, no console clue | A `const` inside a `useMemo` referenced in its dependency array throws `ReferenceError` every render. |
@@ -424,8 +453,8 @@ Ports in use: **8000 is taken** by another app — this project uses **8100**.
 
 | Topic | File |
 |---|---|
-| Canvas layout: bags, the ring, what fcose actually honours, and the **open long-edge problem** | [`CytoGravityRecommend.md`](CytoGravityRecommend.md) |
+| **Settled UI and visual facts** — glows, colour parsing, stylesheet order, the merged-node template | [`UIVISUALS.md`](UIVISUALS.md) |
+| Canvas layout working log — what fcose actually honours, and the traps that cost time | [`CytoGravityRecommend.md`](CytoGravityRecommend.md) |
 | The generator spec — every shape the app has a switch for | [`archive_docs/UNDESIRABLES.md`](archive_docs/UNDESIRABLES.md) |
-| UI as built, every Cytoscape decision | [`archive_docs/UI-Cytoscape.md`](archive_docs/UI-Cytoscape.md) |
 | Per-platform export shapes and traps | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) |
 | Ollama on this machine | [`archive_docs/HowToRunOllama.md`](archive_docs/HowToRunOllama.md) |

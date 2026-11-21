@@ -200,10 +200,11 @@ print("__PAYLOAD__" + json.dumps(payload))
 /* --------------------------------------------------- replicate the browser ---
  * Bag construction, mirroring GraphCanvas.jsx's elements memo:
  *   - membership = `:Merged`, INVERTED: a node with exactly one platform is
- *     bagged under it; a merged node stays outside (§2 of the MD).
+ *     bagged under it; everything else goes in the MERGED bag (CytoGravity §9).
  *   - the test reads platforms, and `merged` is authoritative when present.
  *   - a bag is created only for a platform that still has a child.
  */
+const MERGED_BAG_ID = "bag:merged";
 function buildElements(payload, bagsOn) {
   const nodes = (payload.nodes || []).map((node) => {
     // Size: the stylesheet maps width/height from the node's tier size. The probe
@@ -239,16 +240,21 @@ function buildElements(payload, bagsOn) {
   if (!bagsOn) return [...nodes, ...edges];
 
   const platformsInUse = new Set();
+  let mergedBagInUse = false;
   for (const node of nodes) {
     const data = node.data;
+    if (data.type === "Bag") continue;
     const platforms = Array.isArray(data.platforms) && data.platforms.length
       ? data.platforms
       : (data.platform ? [data.platform] : []);
-    if (data.merged || platforms.length !== 1) continue;
-    const platform = platforms[0];
-    if (!platform) continue;
-    data.parent = `bag:${platform}`;
-    platformsInUse.add(platform);
+    const platform = platforms.length === 1 ? platforms[0] : "";
+    if (!data.merged && platform) {
+      data.parent = `bag:${platform}`;
+      platformsInUse.add(platform);
+    } else {
+      data.parent = MERGED_BAG_ID;
+      mergedBagInUse = true;
+    }
   }
   const bagNodes = [];
   for (const platform of platformsInUse) {
@@ -256,6 +262,13 @@ function buildElements(payload, bagsOn) {
       group: "nodes",
       classes: "synthetic bag",
       data: { id: `bag:${platform}`, type: "Bag", platform, size: 40 },
+    });
+  }
+  if (mergedBagInUse) {
+    bagNodes.push({
+      group: "nodes",
+      classes: "synthetic bag",
+      data: { id: MERGED_BAG_ID, type: "Bag", platform: "", size: 40 },
     });
   }
   return [...bagNodes, ...nodes, ...edges];
@@ -269,7 +282,9 @@ const LEGEND_PLATFORMS = [
 ];
 
 function placeBagsOnRing(cy, spread) {
-  const bags = cy.nodes('[type = "Bag"]');
+  // Platform bags only — the merged bag is the centre tier (§9) and is excluded
+  // exactly as GraphCanvas.jsx excludes it.
+  const bags = cy.nodes('[type = "Bag"]').filter((bag) => bag.id() !== MERGED_BAG_ID);
   if (bags.length < 2) return { radius: null, moved: [] };
 
   const widths = bags.map((bag) => Math.max(bag.outerWidth(), bag.outerHeight()));
@@ -368,6 +383,23 @@ function pullBridgesToRing(cy, damping) {
 }
 
 /* ------------------------------------------------------------------ layout --- */
+/*
+ * ASYNC, and that is the whole point. fcose's `run()` returns BEFORE it has placed
+ * anything: the solver runs on a timer and positions land when `layoutstop` fires.
+ * The first version of this file snapshotted straight after `run()` and therefore
+ * recorded every node at (0,0) — so every measurement it printed described the ring
+ * translating a pile at the origin, not a layout. The browser never had this bug
+ * because `runLayout()` hangs its `finish()` off `layoutstop`.
+ *
+ * So: resolve on `layoutstop`, and let `main` await it.
+ *
+ * AND `layoutstop` IS STILL TOO EARLY. Measured 2026-11-21: the event fires with
+ * every node at (0,0); the coordinates are written back a few hundred ms later
+ * (the solver's final `setPositions` runs on a follow-up timer). The browser gets
+ * away with it because `finish()` is a viewport op that reads positions after the
+ * render loop has already ticked. Headless there is no render loop, so the probe
+ * must POLL until the positions stop being the origin pile — see `settle()`.
+ */
 function runOnce(cy, theme) {
   const { physics, layout } = theme;
 
@@ -401,21 +433,72 @@ function runOnce(cy, theme) {
 
   // Positions BEFORE the solver, so the ring's effect can be isolated.
   const pre = snapshotPositions(cy);
-  cy.layout(options).run();
-  const postSolver = snapshotPositions(cy);
 
-  // The ring mutation and its report are one pass: re-deriving the report after
-  // a second ring run would move the bags again and lie about what happened.
-  let ringInfo = { radius: null, moved: [], applied: false, bridgePull: 0, bridgesPulled: [] };
-  if (layout.bagRing) {
-    ringInfo = placeBagsOnRing(cy, layout.bagRingSpread);
-    ringInfo.applied = true;
-    // Then the bridges follow — mirrors the app's finish() order exactly.
-    ringInfo.bridgePull = layout.bridgePull ?? 0.6;
-    ringInfo.bridgesPulled = pullBridgesToRing(cy, ringInfo.bridgePull);
-    ringInfo.bridgesPulledCount = ringInfo.bridgesPulled.length;
-  }
-  return { pre, postSolver, postRing: snapshotPositions(cy), ringInfo, smartApplied };
+  return new Promise((resolve, reject) => {
+    let instance;
+    try {
+      instance = cy.layout(options);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    instance.one("layoutstop", () => {
+      settle(cy).then(() => {
+      try {
+        const postSolver = snapshotPositions(cy);
+
+        // The ring mutation and its report are one pass: re-deriving the report
+        // after a second ring run would move the bags again and lie about what
+        // happened.
+        let ringInfo = { radius: null, moved: [], applied: false };
+        if (layout.bagRing) {
+          ringInfo = placeBagsOnRing(cy, layout.bagRingSpread);
+          ringInfo.applied = true;
+          // NO bridge pull. The app's `pullBridgesToRing` was tried and REVERTED
+          // (CytoGravity §0 — it blanked the live canvas). The probe kept applying
+          // it, so every run since the revert measured a pipeline the browser does
+          // not run. `pullBridgesToRing` stays below for reference only.
+        }
+        resolve({ pre, postSolver, postRing: snapshotPositions(cy), ringInfo, smartApplied });
+      } catch (error) {
+        reject(error);
+      }
+      });
+    });
+    instance.run();
+  });
+}
+
+/*
+ * Wait until fcose has actually written its coordinates back.
+ *
+ * `layoutstop` fires while every node is still at (0,0) — the write-back is a
+ * follow-up timer. Polling for "more than one distinct position" is the honest
+ * test: a real layout of a connected graph never collapses to a single point, and
+ * a graph that genuinely has one node needs no wait at all.
+ */
+function settle(cy, { timeoutMs = 20000, intervalMs = 25 } = {}) {
+  const distinct = () => {
+    const seen = new Set();
+    cy.nodes().forEach((node) => {
+      const position = node.position();
+      seen.add(`${Math.round(position.x)},${Math.round(position.y)}`);
+    });
+    return seen.size;
+  };
+  if (cy.nodes().length < 2) return Promise.resolve();
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (distinct() > 1 || Date.now() - started > timeoutMs) {
+        // One more tick so the last node's write is not half-applied.
+        setTimeout(resolve, intervalMs);
+        return;
+      }
+      setTimeout(tick, intervalMs);
+    };
+    tick();
+  });
 }
 
 function snapshotPositions(cy) {
@@ -432,25 +515,39 @@ function measure(cy, payload) {
   const bagByPlatform = {};
   bags.forEach((bag) => { bagByPlatform[bag.data("platform")] = bag; });
 
-  const isBagged = {};
+  // Three populations now, not two: a PLATFORM bag (on the ring), the MERGED bag
+  // (the centre tier), and anything with no parent (bags off). "Has a parent" no
+  // longer means "is in a platform bag", so the classification reads the parent id.
+  const parentOf = {};
   cy.nodes().forEach((node) => {
     if (node.isParent() || node.data("type") === "Bag") return;
-    isBagged[node.id()] = !!node.data("parent");
+    parentOf[node.id()] = node.data("parent") || "";
   });
+  const isBagged = {};
+  for (const [id, parent] of Object.entries(parentOf)) {
+    isBagged[id] = !!parent && parent !== MERGED_BAG_ID;
+  }
+  const isMergedBagged = {};
+  for (const [id, parent] of Object.entries(parentOf)) {
+    isMergedBagged[id] = parent === MERGED_BAG_ID;
+  }
 
-  // --- edges: length, type, and whether each side is a bagged node or a bridge
+  // --- edges: length, type, and which populations each side belongs to
   const edgeRows = [];
   cy.edges().forEach((edge) => {
     const source = edge.source();
     const target = edge.target();
     if (source.data("type") === "Bag" || target.data("type") === "Bag") return;
-    const srcBagged = !!source.data("parent");
-    const tgtBagged = !!target.data("parent");
-    const srcMerged = !!source.data("merged");
-    const tgtMerged = !!target.data("merged");
+    const srcBagged = isBagged[source.id()];
+    const tgtBagged = isBagged[target.id()];
+    const srcMergedBag = isMergedBagged[source.id()];
+    const tgtMergedBag = isMergedBagged[target.id()];
     const kind = srcBagged && tgtBagged ? "bag-bag"
-      : srcBagged && !tgtBagged ? "bag-bridge"
-      : !srcBagged && tgtBagged ? "bridge-bag"
+      : srcBagged && tgtMergedBag ? "bag-merged"
+      : srcMergedBag && tgtBagged ? "merged-bag"
+      : srcMergedBag && tgtMergedBag ? "merged-merged"
+      : srcBagged && !tgtBagged && !tgtMergedBag ? "bag-bridge"
+      : !srcBagged && !srcMergedBag && tgtBagged ? "bridge-bag"
       : "bridge-bridge";
     edgeRows.push({
       length: edge.isEdge()
@@ -464,13 +561,21 @@ function measure(cy, payload) {
       source: source.id(),
       target: target.id(),
       crossBag: srcBagged !== tgtBagged,
+      // The §9 metric: how far a merged node sits from the platform bag it talks to.
+      // Under the merged-bag design these are the edges that must get SHORT.
+      mergedSpan: (srcBagged && tgtMergedBag) || (srcMergedBag && tgtBagged),
     });
   });
   edgeRows.sort((a, b) => b.length - a.length);
 
-  // --- bridges: every merged node's distance to each bag it connects to
+  // --- merged-bag members: distance to each PLATFORM bag they connect to
   // Connectivity is read from the PAYLOAD's edges (type + endpoints), not from
   // cytoscape classes, so the same rule applies with and without bags.
+  //
+  // Under §9 the population to watch is the merged bag's members: each one should
+  // sit near the centre, so its distance to every platform bag it talks to is the
+  // number the design is supposed to shrink. With bags off there is no merged bag,
+  // and every merged node is its own row — the old behaviour, kept for comparison.
   const platformsByNode = {};
   for (const node of payload.nodes || []) {
     platformsByNode[node.id] = Array.isArray(node.platforms) && node.platforms.length
@@ -480,10 +585,12 @@ function measure(cy, payload) {
   const bagEdgesByBridge = {};
   for (const edge of payload.edges || []) {
     for (const [from, to] of [[edge.source, edge.target], [edge.target, edge.source]]) {
-      const fromPlatforms = platformsByNode[from] || [];
       if (!isBagged[to]) continue;
       const toBag = bagByPlatform[(platformsByNode[to] || [])[0]];
       if (!toBag) continue;
+      // `from` is the node being measured: a merged-bag member, or (bags off) any
+      // node without a platform bag.
+      if (!isMergedBagged[from] && isBagged[from]) continue;
       (bagEdgesByBridge[from] = bagEdgesByBridge[from] || new Map())
         .set(toBag.id(), (bagEdgesByBridge[from].get(toBag.id()) || 0) + 1);
     }
@@ -520,7 +627,9 @@ function measure(cy, payload) {
     const box = children.boundingBox();
     const centre = { x: box.x1 + box.w / 2, y: box.y1 + box.h / 2 };
     bagRows.push({
-      platform: bag.data("platform"),
+      // The merged bag has no platform; name it so the report is readable.
+      platform: bag.id() === MERGED_BAG_ID ? "merged" : bag.data("platform"),
+      mergedBag: bag.id() === MERGED_BAG_ID,
       children: children.length,
       centreDistance: round(Math.hypot(centre.x, centre.y)),
       width: round(box.w),
@@ -536,7 +645,9 @@ function measure(cy, payload) {
     const index = Math.min(sorted.length - 1, Math.floor(q * sorted.length));
     return sorted[index];
   };
-  const spans = edgeRows.filter((edge) => edge.kind === "bag-bridge" || edge.kind === "bridge-bag");
+  const spans = edgeRows.filter((edge) => edge.mergedSpan);
+  const mergedSpans = edgeRows.filter((edge) => edge.mergedSpan).map((edge) => edge.length);
+  const sortedMergedSpans = [...mergedSpans].sort((a, b) => a - b);
   const sortedLengths = [...lengths].sort((a, b) => a - b);
   const head = {
     nodes: cy.nodes().filter((n) => !n.isParent()).length - bags.length,
@@ -553,6 +664,13 @@ function measure(cy, payload) {
       bagBridgeShare: lengths.length
         ? Math.round((spans.length / lengths.length) * 100)
         : 0,
+      // Merged-node edges only — the number the merged bag is supposed to move.
+      mergedSpan: {
+        count: mergedSpans.length,
+        p50: quantile(sortedMergedSpans, 0.5),
+        p90: quantile(sortedMergedSpans, 0.9),
+        max: sortedMergedSpans[sortedMergedSpans.length - 1] ?? null,
+      },
     },
   };
   return { head, edgeRows, bridgeRows, bagRows, spans };
@@ -581,21 +699,18 @@ function report(result, ringInfo, label) {
     `edge length px: p50 ${head.edgeLength.p50} | p90 ${head.edgeLength.p90} | ` +
     `p99 ${head.edgeLength.p99} | max ${head.edgeLength.max} | ideal ${head.edgeLength.ideal}`,
   );
+  const span = head.edgeLength.mergedSpan;
+  lines.push(
+    `merged-node edges: n ${span.count} | p50 ${span.p50} | p90 ${span.p90} | max ${span.max}` +
+    `  <- the §9 number`,
+  );
   if (ringInfo && ringInfo.applied) {
-    lines.push(`\n-- ring (radius ${ringInfo.radius}px, bridge pull ${ringInfo.bridgePull ?? 0}) --`);
+    lines.push(`\n-- ring (radius ${ringInfo.radius}px) --`);
     for (const move of ringInfo.moved) {
       lines.push(
         `  ${move.platform.padEnd(10)} n=${String(move.children).padStart(4)} ` +
         `centre ${move.centreDistanceBefore} -> ${move.centreDistanceAfter} ` +
         `(shifted ${move.shift}px)`,
-      );
-    }
-    const pulled = ringInfo.bridgesPulled || [];
-    if (pulled.length) {
-      const shifts = pulled.map((p) => p.shift).sort((a, b) => a - b);
-      lines.push(
-        `  bridges pulled: ${pulled.length} | shift p50 ${shifts[Math.floor(shifts.length / 2)]}px ` +
-        `| max ${shifts[shifts.length - 1]}px`,
       );
     }
   } else {
@@ -605,7 +720,7 @@ function report(result, ringInfo, label) {
   lines.push(`\n-- longest 15 edges --`);
   for (const edge of edgeRows.slice(0, 15)) lines.push(fmtRow(edge));
 
-  lines.push(`\n-- longest 10 bag-bridge edges (the §6 signature) --`);
+  lines.push(`\n-- longest 10 merged-node edges (the §9 signature) --`);
   for (const edge of spans.slice(0, 10)) lines.push(fmtRow(edge));
 
   lines.push(`\n-- bags (centre distance, spread) --`);
@@ -616,7 +731,7 @@ function report(result, ringInfo, label) {
     );
   }
 
-  lines.push(`\n-- bridges, worst first (distance to each bag they touch) --`);
+  lines.push(`\n-- merged-bag members, worst first (distance to each platform bag they touch) --`);
   for (const bridge of bridgeRows.slice(0, 15)) {
     const parts = bridge.touch.map((touch) =>
       `${touch.bag}:${touch.distance}px (reach ${touch.reach}, n=${touch.edgeCount})`,
@@ -654,7 +769,7 @@ function parseArgs(argv) {
   return options;
 }
 
-function main() {
+async function main() {
   const options = parseArgs(process.argv.slice(2));
   const theme = loadTheme(options.set, { useBaseline: !options.stock });
   themePhysics = theme.physics;
@@ -691,7 +806,7 @@ function main() {
         { selector: "node", style: { width: "data(size)", height: "data(size)", "background-color": "#888" } },
       ],
     });
-    const run = runOnce(cy, theme);
+    const run = await runOnce(cy, theme);
     const measured = measure(cy, payload);
     runs.push({ run, measured });
     if (index === 0) {
@@ -728,10 +843,8 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error) => {
   console.error(`ai_visual_graph_tool: ${error.message}`);
   if (process.env.PROBE_DEBUG) console.error(error.stack);
   process.exit(1);
-}
+});
