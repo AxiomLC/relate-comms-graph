@@ -1,0 +1,11 @@
+{
+  "name": "ai-visual-graph-tool",
+  "private": true,
+  "type": "commonjs",
+  "description": "Headless cytoscape+fcose measurement rig for the IDE agent. Runs the same layout pipeline as GraphCanvas.jsx against the real graph_slice() payload and prints geometry as numbers.",
+  "main": "probe.js",
+  "dependencies": {
+    "cytoscape": "^3.35.0",
+    "cytoscape-fcose": "^2.2.0"
+  }
+}

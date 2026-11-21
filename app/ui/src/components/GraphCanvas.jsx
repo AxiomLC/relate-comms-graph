@@ -1050,6 +1050,10 @@ function runLayout(cy, theme, done) {
     // The ring is applied AFTER the solver, as a translation. See `placeBagsOnRing`
     // for why it cannot be a `fixedNodeConstraint`.
     if (layout.bagRing) placeBagsOnRing(cy, layout.bagRingSpread);
+    // STEP 2 BLANKED THE CANVAS (2026-11-21) — read-before-write did NOT fix it.
+    // Disabled again. Next suspect is the mutation itself inside `layoutstop`;
+    // step 3 will schedule the pull one tick after finish() via rAF.
+    // if (layout.bagRing) pullBridgesToRing(cy, 0.6);
 
     // `fit: true` shrinks until everything is visible, which at this node count
     // puts neighbours closer than a node's own diameter. zoomDistance lifts it.

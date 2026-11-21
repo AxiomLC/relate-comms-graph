@@ -1,0 +1,32 @@
+{
+  "_provenance": "Transcribed 2026-11-21 from the owner's screenshot of the live Gravity panel — 'near optimum settings currently'. Supersedes all earlier transcriptions. Owner's verdict on this state: platform bags on the outside are OK; some edges still way too long; merged nodes should sit as a loose middle cluster (they may overlap bags, but should be centered).",
+  "_owner_findings": "smartEdgeLength is back ON at idealEdgeLength 2 — with the ring dominating the geometry this combination is worth re-measuring, it was ruled out pre-ring. gravity displayed 0 = gravity 3 (inverted display). gravityCompound 0.1 and gravityRangeCompound 0.2 are both near their new left-side floors.",
+
+  "physics": {
+    "nodeRepulsion": 7000,
+    "idealEdgeLength": 2,
+    "smartEdgeLength": true,
+    "gravity": 3,
+    "gravityCompound": 0.1,
+    "gravityRangeCompound": 0.2,
+    "nodeSeparation": 225,
+    "numIter": 2250,
+    "zoomDistance": 1.2,
+    "wheelSensitivity": 2.2,
+    "randomize": true,
+    "nodeDimensionsIncludeLabels": true
+  },
+
+  "layout": {
+    "bagRing": true,
+    "bagRingSpread": 0.65,
+
+    "bridgePull": 0.6,
+    "_bridgePull_note": "NEW 2026-11-21: damping on the post-ring bridge pull (0 = off, 1.0 = nail to centroid). 0.6 = the probe-measured sweet spot candidate; tune in the UI once the slider exists. Mirrors layout.bagRingSpread as a layout.* tunable."
+  },
+
+  "labels": {
+    "minZoomedFontSize": 13,
+    "maxWidth": 120
+  }
+}

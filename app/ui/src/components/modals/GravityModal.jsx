@@ -70,12 +70,12 @@ export default function GravityModal({ theme, onChange, onClose, onRerunLayout }
       <Slider
         label="idealEdgeLength"
         value={draft.physics.idealEdgeLength}
-        min={10}
+        min={2}
         max={200}
-        step={2}
+        step={1}
         onChange={set("physics", "idealEdgeLength")}
         hint="the length an edge wants to be"
-        note="The main lever on edge length. Lower pulls the whole picture in."
+        note="The main lever on edge length. Lower pulls the whole picture in. Keep above 2 — below that the spring math degenerates."
       />
       <Check
         label="smart edge length"
@@ -85,34 +85,34 @@ export default function GravityModal({ theme, onChange, onClose, onRerunLayout }
         note="On, a cross-platform edge gets hundreds of px of extra length. Off is much tighter."
       />
       <Slider
-        label="gravity"
-        value={draft.physics.gravity}
+        label="gravity — inverted: left is stronger"
+        value={3 - draft.physics.gravity}
         min={0}
-        max={1}
+        max={3}
         step={0.05}
-        onChange={set("physics", "gravity")}
+        onChange={(value) => set("physics", "gravity")(3 - value)}
         hint="pulls everything toward the middle of the screen"
-        note="Only acts on disconnected pieces, so it does little on a fully wired store."
+        note="Display is inverted so strong sits LEFT like the other levers: slider 0 = gravity 3 (strongest), slider 3 = gravity 0 (off). The stored value stays the plain gravity number."
       />
       <Slider
         label="gravityCompound"
         value={draft.physics.gravityCompound}
-        min={0}
-        max={3}
-        step={0.1}
+        min={0.05}
+        max={6}
+        step={0.05}
         onChange={set("physics", "gravityCompound")}
         hint="squeezes each platform bag toward its own centre"
-        note="The knob for a sprawling bag. Same caveat as gravity: disconnected graphs only."
+        note="NEVER 0. At exactly 0 fcose's compound tiling stalls the solver — hang confirmed in the probe. 0.05 floor keeps it alive."
       />
       <Slider
         label="gravityRangeCompound"
         value={draft.physics.gravityRangeCompound}
-        min={0.5}
-        max={4}
-        step={0.1}
+        min={0.1}
+        max={1.1}
+        step={0.05}
         onChange={set("physics", "gravityRangeCompound")}
         hint="how far the bag pull reaches"
-        note="Measured in bag radii. Raise it if a bag's edges still drift outward."
+        note="Measured in bag radii. Range re-centered 2026-11-20: anything past ~1.1 was dead space; useful spread is 0.1-1.1."
       />
       <Slider
         label="nodeSeparation"
@@ -180,12 +180,12 @@ export default function GravityModal({ theme, onChange, onClose, onRerunLayout }
       <Slider
         label="ring spread"
         value={draft.layout.bagRingSpread}
-        min={1}
+        min={0.5}
         max={2.5}
         step={0.05}
         onChange={set("layout", "bagRingSpread")}
         hint="how wide the circle is"
-        note="1.0 packs the bags shoulder to shoulder. Raise it to open the middle for bridges."
+        note="1.0 packs the bags shoulder to shoulder. Below 1.0 pulls them inward, shortening every bag-bridge edge; below ~0.65 the clusters overlap. Measured: edge length tracks the ring radius exactly."
       />
 
       <h2 className="section">Labels — a zoom reward</h2>

@@ -1,10 +1,102 @@
 # CytoGravityRecommend.md
 
-**Status: OPEN — edges are still far too long.** Everything else in this document is
-built and settled. The one unresolved problem is §6, and it is the reason this file
-still exists.
+**Status: OPEN — the merged cluster should be a CENTERED BAG, not loose nodes.**
+The long-edge root cause is proven (§6 probe sweep); the chosen fix is the
+owner's 2026-11-21 "merged bag" design (§9) — not yet built. §0–§8 below record
+how we got here; §9 is the forward plan.
 
-Read §6 first if you are picking this up cold.
+---
+
+## 0. 2026-11-21 — STATE OF PLAY after the slider-range round
+
+**What changed in the UI this round (KEPT — built and verified):**
+
+| Slider | Range change | Why |
+|---|---|---|
+| ring spread | min 1.0 → **0.5** | the only lever that shortens bag-bridge edges (probe-proven, §6). Owner runs 0.65. |
+| idealEdgeLength | min 10 → **2**, step 2 → 1 | owner pinned at 10; floor 2 (spring math degenerates below ~2) |
+| gravity | max 1 → **3** | plus **inverted display**: slider left = strong. Stored value stays the plain fcose number (3 − shown) |
+| gravityCompound | max 3 → **6**, min 0 → **0.05** | **NEVER 0**: exactly 0 stalls fcose's compound tiling — reproduced in the probe (timeout at 0; 0.05 completes fine). Floor 0.05. |
+| gravityRangeCompound | 0.5–4.0 → **0.1–1.1**, step 0.05 | re-centered: anything past ~1.1 was dead space; owner wanted more left travel |
+| nodeRepulsion | left 2000–60000 | **dropped** — probe-proven no-op; owner declined further tuning |
+| nodeSeparation | max 200 → **400** | owner was pinned at 200 (probe says inert, owner's call) |
+
+All verified live in the browser across piecemeal steps; `npm run build` after each
+change; watch mode running so a refresh picks up changes.
+
+**What was tried for the merged-center problem and REVERTED (2026-11-21):**
+
+`pullBridgesToRing()` — post-ring damping pull of each merged node toward the
+weighted centroid of the bags it connects to. The probe measured the *geometry* as
+correct (bag-bridge p50 169 → 109px at damping 0.6, 34 bridges pulled), but in the
+**live browser it blanked the canvas** — Edge black-screen, Chrome lost the canvas
+but kept UI chrome, reproduced on a zero-cache profile. Root cause confirmed by
+piecemeal bisection:
+
+| Step | Content | Result |
+|---|---|---|
+| 0 | revert | renders |
+| 1 | call restored, damping 0 (function returns immediately) | **renders** — wiring fine |
+| 2 | same call, damping 0.6, math runs (read-before-write restructure) | **BLANK** |
+
+So: mutating element positions inside the `layoutstop` handler while the canvas is
+still settling is fatal in a live renderer and invisible headless. **Lesson: the
+headless probe validates geometry, not render-pipeline integration. Anything that
+mutates positions or touches the render path needs a browser refresh check as part
+of the change itself, not after.**
+
+The `pullBridgesToRing` code was fully removed from `GraphCanvas.jsx` (v2
+read-before-write version included above in history; the function no longer exists
+in the file). The probe's mirror remains in `tools/ai_visual_graph_tool/probe.js`
+for reference.
+
+**The NEW DESIGN that supersedes all of this — see §9.**
+
+---
+
+## 0a. 2026-11-20 — the headless measurement module (BUILT)
+
+Built as `tools/ai_visual_graph_tool/` (probe.js + run.py + baseline.json + README).
+**Working instrument.** Runs cytoscape + fcose headless in Node (vendored UMDs loaded
+in one shared vm context, script-tag order, browser-parity), feeds it the real
+`graph_slice()` payload via the library directly, replicates the canvas pipeline
+(bag construction, fcose with theme physics, `placeBagsOnRing`, no fit), and prints:
+
+- edge lengths sorted, typed `WITH`/`POSSIBLY`, classified bag-bag / bag-bridge /
+  bridge-bridge — the §6 confirmation test as numbers;
+- ring radius computed, per bag centre before → after the ring move;
+- bridges: distance to each bag they connect to vs that bag's reach;
+- per-bag spread and overlap.
+
+**Baseline (`baseline.json`)** = owner's live slider positions, transcribed from
+screenshots (browser localStorage is invisible to outside processes — screenshots
+are the transport). Deep-merged over `theme.js` defaults so only keys the owner
+moved appear. `--stock` skips it; `--save-baseline` freezes the effective theme;
+`--set group.key=value` overrides for one run; `--runs N` medians the randomized
+layout. `--no-api` falls back to `last_payload.json` when the store is unreadable.
+
+Vendored-UMD load recipe (cost real time — record): all four bundles must load into
+**one shared vm context** in script order (`layout-base` → `cose-base` →
+`cytoscape-fcose`), with `window`/`global`/`self` pointing at it and **no
+`module`/`exports`/`define`** (those steer the UMD to CommonJS/AMD branches whose
+inner `require` cannot resolve). Per-file contexts break the external-module
+handoff and cose-base crashes on `undefined.prototype`.
+
+**Known limitation (2026-11-21):** the probe validated the bridge-pull geometry
+while the browser blanked — it cannot see render-pipeline breakage. It is the gate
+for *geometry* claims only.
+
+---
+
+## 0b. 2026-11-20 — WHY: screenshots cannot carry tuning state
+
+Recorded as the problem statement for §0a (kept for the record; the module exists
+now). The owner moves sliders in the UI, screenshots the canvas, and the IDE agent
+eyeballs the result — but the agent cannot read the saved slider values, and "looks
+long" is not a measurement. Slider state lives in browser localStorage
+(`relate.graphStyle`), which no outside process can read. A future `GET/POST
+/api/theme` route would let the agent read/write live settings over HTTP; discussed,
+**not built** — parked until needed again.
 
 ---
 
@@ -115,49 +207,67 @@ long edges are almost certainly **not** a force-layout parameter at all.
 
 ---
 
-## 6. THE OPEN PROBLEM — edges still far too long
+## 9. THE FORWARD PLAN — 2026-11-21: the merged bag (owner's design)
 
-**Symptom.** The graph renders and the bags are invisible and correctly ringed, but the
-edges are enormously long, so the whole picture is spread out and unreadable. Reducing
-`idealEdgeLength` by ~60% and disabling smart edge length changed nothing perceptible.
+**Owner's framing, which cuts through the failed post-hoc approaches:** the merged
+nodes should become **their own bag** — a proper compound parent, `bag:merged` —
+and that bag gets **centered**, the way the other bags get ringed. "Merged nodes
+have to become a thing / their own meta product — org, etc, coming also — that
+would have their own BAG, then the bag gets centered, compared to the others.
+Shouldn't be tough."
 
-**Leading hypothesis — the ring translation is the cause, not fcose.**
+Why this supersedes the bridge-pull (§0 revert table): the bridge pull was a
+post-hoc *node mover* fighting the ring translation after the solver — and it was
+the thing that blanked the canvas. The merged bag instead **gives the solver a
+body to place itself**: one more compound in the elements memo, placed by the same
+proven `placeBagsOnRing()` translation (special slot: center, radius ≈ 0) rather
+than any new post-layout step. No new timing code, no re-entrancy suspect — it
+reuses the only post-layout pathway already known to work.
 
-`placeBagsOnRing()` runs *after* the solver. It moves each bag's children so the bag's
-centroid lands on a circle of radius `max(widest * 1.6, 260) * spread`. With seven bags
-each a few hundred px across, that radius is plausibly **500–800px**.
+**Design sketch (piecemeal, each step a separate build + reload, confirmed before
+the next — per the §0 lesson):**
 
-Merged nodes are **not moved**. So if the solver left a bridge near its bag and the ring
-then moves that bag to the far side of the circle, the edge from the bridge to the bag
-becomes roughly `2 × radius` — **1000–1600px**. No fcose parameter can shorten that,
-because the length was created after the layout finished. This is consistent with all
-six failed attempts in §5.
+| Step | Change | Risk |
+|---|---|---|
+| A | Elements memo: nodes that are `merged` (or otherwise outside every platform bag) get `parent: "bag:merged"`; the bag is created in the same pass (never a separate step — §3). No ring placement yet. | low — pure memo change |
+| B | `placeBagsOnRing()`: place `bag:merged` at the CENTER (radius 0, its own angle slot), the seven platform bags on the ring around it. Same batch discipline as the existing ring code. | the load-bearing step |
+| C | Styling: the merged bag gets a soft translucent fill (a visible loose blob), unlike the invisible platform bags (`background-opacity: 0`). Rule stays LAST in the stylesheet (§3). | cosmetic |
+| D | Probe mirror: bag construction + ring slot update; measure 8-bag geometry vs 7. | measurement only |
 
-**Things to check first, in order:**
+**Consequences if built:**
 
-1. **Measure it.** In the browser console:
-   ```js
-   const cy = document.querySelector('#cy')._cyreg.cy;   // or the canvas ref
-   cy.edges().map(e => e.data('type') + ' ' + Math.round(e.length())).sort()
-   ```
-   If the longest edges are `WITH` edges whose target is a bagged node and whose source
-   is a merged node, the hypothesis is confirmed.
-2. **Test with the ring off.** Set `layout.bagRing: false` and rebuild. If the long
-   edges disappear, the ring is definitively the cause. This is the single most
-   informative experiment and it has not been run.
-3. **If confirmed**, the fix is to stop translating bags and instead **place the
-   bridges relative to the ring** — e.g. after the ring is applied, move each merged
-   node to the centroid of the bags it connects to (weighted by edge count), then let a
-   short relaxation settle it. That keeps the ring and removes the long edges.
+- Bag-bridge edges become **short by construction** — the merged bag sits at the
+  center, and its nodes are pulled toward it by the solver itself, not translated
+  after the fact. The long-edge problem (§6) dissolves rather than gets patched.
+- §7 amendment required: "merged nodes stay outside every bag" was written when
+  bags were solver bodies only. Under the new design the merged set IS a bag — its
+  own body, not an orphan population. The `:Merged` flag keeps its meaning
+  (membership test inverted per-bag); what changes is that the merged set now has
+  its own compound.
+- Compound-gravity math changes (8 compounds, not 7 + orphans). The probe
+  quantifies this in one run before the UI gets the change.
+- Future-proofing (owner's point): entity kinds (Person/Organization/Place/Product)
+  arriving from body-extraction will follow the same pattern — their own bags,
+  their own placement slots — so the ring becomes a **two-tier composition**:
+  platform bags outside, entity bags inside, at center. The merged bag is the
+  first instance of that second tier.
 
-**Alternative hypothesis, if (2) shows the edges are long with the ring off:** the
-solver is genuinely placing bridges far from their bags, and the cause is that a merged
-node has no compound parent so nothing holds it near anything. In that case the answer
-is a *soft* anchor — but note the leash was retracted, so any anchor must pull
-**equally** toward all of a node's platforms, not toward a dominant one.
+**Status: NOT BUILT. Next work item. Piecemeal protocol applies.**
 
-**Do not** re-try `idealEdgeLength`, `smartEdgeLength`, `gravityCompound`,
-`nodeSeparation` or `packComponents` as the fix. All five are ruled out in §5.
+---
+
+## 10. Data hygiene note (cached from the probe, 2026-11-21)
+
+Two long-edge outliers are **data, not physics** — `POSSIBLY` fuzzy pairs between
+spelling variants of the same person that aliasing did not fold:
+
+- `person:dimitri whitfield` ↔ `person:dimitir whitfield` (329px probe max)
+- `person:sahfi hassan` ↔ `person:shafi hassan` (264px)
+
+Each variant sits in a different platform bag, so the unfocold pair stretches an
+edge across the ring. Fix lives in `relate_comms/link.py` (fold rules / nickname
+forms), not in layout. The probe will keep flagging these until folded; that is
+the instrument working, not the graph regressing.
 
 ---
 
@@ -165,15 +275,17 @@ is a *soft* anchor — but note the leash was retracted, so any anchor must pull
 
 | Decision | Ruling |
 |---|---|
-| Bag membership test | **Not `:Merged`.** The label, not the `platforms` array. |
+| Bag membership test | **Not `:Merged`.** The label, not the `platforms` array. **(Amended by §9: the merged set becomes its own bag.)** |
 | Single-platform Correspondents | **In the bag.** Same rule as Threads; no special case. |
 | `platform` | **Unchanged** — first by date. Never redefined as dominant. |
 | `primaryPlatform` / `dominance` | On the API, **not a layout input**. The leash was retracted. |
 | Bags / ring | **Client-side only**, marked `synthetic`, excluded from every count and the reveal. |
-| Bags are invisible bodies | `background-opacity: 0` + `events: "no"` + `z-compound-depth: "bottom"`; **never** `display: none`. |
+| Bags are invisible bodies | `background-opacity: 0` + `events: "no"` + `z-compound-depth: "bottom"`; **never** `display: none`. **(§9 adds one exception: the merged bag gets a soft visible fill.)** |
 | Bag construction | In the child-filtering pass, never a separate step — fcose throws on a parentless child. |
 | Naming | `type: "Bag"` in code and selectors; prose says "bag". |
 | Ring mechanism | **Post-layout translation**, never `fixedNodeConstraint`. |
+| Post-layout mutation of node positions | **DANGEROUS — see §0 revert table.** The bridge-pull blanked live canvases while passing headless. Any future post-layout step must reuse the proven `placeBagsOnRing` translation pattern, and anything new gets the piecemeal build+reload protocol. |
+| Slider-range widening | Safe (UI metadata only; no `THEME_VERSION` bump needed unless a default changes). Defensively clamp `gravityCompound` off 0 and `idealEdgeLength` above 2 at consumption time if it ever recurs. |
 
 ---
 
