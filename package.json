@@ -5,7 +5,8 @@
   "description": "Local-only UI for the relate-comms message graph. esbuild compiles; python -m app is the only server.",
   "type": "module",
   "scripts": {
-    "build": "esbuild app/ui/src/main.jsx --bundle --outfile=app/static/dist/app.js --jsx=automatic --loader:.css=css --define:process.env.NODE_ENV='\"production\"' --log-level=warning",
+    "build": "esbuild app/ui/src/main.jsx --bundle --outfile=app/static/dist/app.js --jsx=automatic --loader:.css=css --define:process.env.NODE_ENV='\"production\"' --log-level=warning && npm run build:css",
+    "build:css": "esbuild app/ui/src/styles/globals.css --outfile=app/static/dist/app.css --log-level=warning",
     "watch": "esbuild app/ui/src/main.jsx --bundle --outfile=app/static/dist/app.js --jsx=automatic --loader:.css=css --define:process.env.NODE_ENV='\"development\"' --log-level=warning --watch",
     "dev": "npm run watch",
     "vendor": "node scripts/vendor.mjs"
@@ -15,7 +16,8 @@
     "cytoscape-fcose": "^2.2.0",
     "lucide-react": "^1.73.0",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "uppie": "^4.1.7"
   },
   "devDependencies": {
     "esbuild": "^0.28.2"

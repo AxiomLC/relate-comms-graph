@@ -78,6 +78,13 @@ class IngestRequest(BaseModel):
                     "1 = keep the newest ingest's files, 2 = keep the newest two.",
     )
     write_enabled: bool = False
+    delta: bool = Field(
+        default=True,
+        description="Skip messages the store already holds for that platform, before "
+                    "the write and before extraction. Turn off to re-process every "
+                    "message — required after an extractor change, or to re-derive "
+                    "Places for rows written before extraction existed.",
+    )
 
 
 class PruneRequest(BaseModel):
@@ -118,6 +125,7 @@ def ingest(request: IngestRequest) -> dict:
         prune=request.prune,
         prune_keep=request.prune_keep,
         write_enabled=request.write_enabled,
+        delta=request.delta,
     )
 
 

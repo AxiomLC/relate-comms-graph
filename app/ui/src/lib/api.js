@@ -10,9 +10,16 @@
  */
 
 async function request(path, options = {}) {
+  // A `FormData` body must carry NO content-type: the browser sets it, including the
+  // multipart boundary. Forcing `application/json` here silently sent the form as
+  // JSON, and FastAPI answered `files: Field required` — the failure looked like a
+  // dropped folder producing nothing.
+  const isForm = options.body instanceof FormData;
   const response = await fetch(path, {
-    headers: options.body ? { "content-type": "application/json" } : undefined,
     ...options,
+    headers: options.body && !isForm
+      ? { "content-type": "application/json", ...(options.headers || {}) }
+      : options.headers,
   });
 
   let data = null;
@@ -132,11 +139,22 @@ export const api = {
   upload: (files, { writeEnabled = false } = {}) => {
     const body = new FormData();
     for (const file of files) body.append("files", file, file.name);
-    return request(`/api/ingest/upload?write_enabled=${writeEnabled}`, {
+    return api.uploadForm(body, { writeEnabled });
+  },
+
+  /**
+   * Upload an ALREADY-BUILT `FormData`.
+   *
+   * `uppie` produces this itself: it walks a dropped folder with `webkitGetAsEntry`
+   * and appends every file under its path relative to the dropped folder, which is
+   * how the server gets `ChatExport_2026-11-01/result.json` rather than a bare
+   * `result.json`. The field name must be `files` — `files[]` is 422 from FastAPI.
+   */
+  uploadForm: (body, { writeEnabled = false } = {}) =>
+    request(`/api/ingest/upload?write_enabled=${writeEnabled}`, {
       method: "POST",
       body,
-    });
-  },
+    }),
 
   /** Which `.env` keys exist. Never returns a value — only present/absent. */
   envStatus: () => request("/api/ingest/env"),

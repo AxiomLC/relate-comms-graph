@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FileUp, Loader2, Upload } from "lucide-react";
+import { uppie } from "uppie";
 
 import { api } from "../../lib/api.js";
 import { formatBytes } from "../../lib/format.js";
@@ -94,7 +95,9 @@ export default function IngestModal({ onClose, onIngested }) {
   const [staged, setStaged] = useState([]);
   const dropRef = useRef(null);
   const fileRef = useRef(null);
-  const folderRef = useRef(null);
+  // `uppie` owns the dropzone's listeners, so the callback it calls lives in a ref:
+  // the library binds once, while React re-renders with fresh state on every keystroke.
+  const dropHandlerRef = useRef(null);
 
   // --- IMAP ----------------------------------------------------------------
   const [imapEmail, setImapEmail] = useState("");
@@ -120,7 +123,11 @@ export default function IngestModal({ onClose, onIngested }) {
 
 
   // --- run state -----------------------------------------------------------
+  // `delta` is the normal path: only new messages are extracted. The checkbox below
+  // is its INVERSE (`fullReprocess`), because the safe, fast default must be the one
+  // nobody has to think about, and a control labelled "delta" invites turning it off.
   const [writeEnabled, setWriteEnabled] = useState(false);
+  const [fullReprocess, setFullReprocess] = useState(false);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState(null);
   const [error, setError] = useState(null);
@@ -166,11 +173,61 @@ export default function IngestModal({ onClose, onIngested }) {
     }
   };
 
-  const onDrop = (event) => {
-    event.preventDefault();
-    dropRef.current?.classList.remove("over");
-    stageFiles(Array.from(event.dataTransfer?.files || []));
+  /**
+   * Upload a `FormData` that `uppie` already built from a drop or a folder pick.
+   *
+   * Why not `dataTransfer.files`: a browser reports a dropped DIRECTORY as zero
+   * files, so the old handler silently did nothing for the one case that matters
+   * most (Telegram ships a folder). `uppie` reads `webkitGetAsEntry`, walks the tree
+   * to exhaustion, and appends each file under its path relative to the dropped
+   * folder — so the server sees `ChatExport_2026-11-01/result.json` and files it in
+   * `spool/real/telegram/ChatExport_2026-11-01/`.
+   */
+  const uploadForm = async (formData) => {
+    // An empty FormData means "the dialog was cancelled", not "upload nothing".
+    const hasFiles = [...formData.keys()].length > 0;
+    if (!hasFiles) {
+      note("info", "nothing selected");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    note("info", `reading ${formData.getAll("files").length} file(s)…`);
+    try {
+      const result = await api.uploadForm(formData, { writeEnabled });
+      const staged = result.staged || [];
+      setStaged((prev) => [...prev, ...staged]);
+      note("ok", `staged ${staged.length} file(s)`);
+      for (const item of staged) {
+        note(
+          item.recognised ? "ok" : "warn",
+          `${item.platform}: ${item.name}` +
+            (item.recognised ? "" : " · not recognised, kept"),
+        );
+      }
+      refreshPreview();
+    } catch (err) {
+      setError(err.message);
+      note("warn", `upload failed: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
   };
+  // Keep the ref current so uppie's once-bound callback always sees fresh state.
+  dropHandlerRef.current = uploadForm;
+
+  // `uppie` attaches its own drag/drop handling to the node. It must run once, after
+  // the node exists, and be torn down on unmount — the library has no `destroy()` for
+  // a drop target, so the element identity is what changes.
+  useEffect(() => {
+    const node = dropRef.current;
+    if (!node) return undefined;
+    uppie(node, { name: "files" }, (_event, formData) => {
+      node.classList.remove("over");
+      dropHandlerRef.current?.(formData);
+    });
+    return undefined;
+  }, []);
 
   /**
    * Read-only pass: what is in the spool, and what has already been ingested.
@@ -243,6 +300,7 @@ export default function IngestModal({ onClose, onIngested }) {
         prune: pruneKeep !== "off",
         prune_keep: pruneKeep === "off" ? null : Number(pruneKeep),
         write_enabled: writeEnabled,
+        delta: !fullReprocess,
       });
 
       // A leg that failed is the one thing worth stopping on: the rest landed, and the
@@ -257,6 +315,9 @@ export default function IngestModal({ onClose, onIngested }) {
           note(
             "ok",
             `${batch.platform}: ${batch.messages} msgs · ${batch.attachments} attachments` +
+              (batch.delta_dropped
+                ? ` · ${batch.delta_dropped} already stored of ${batch.read} read`
+                : "") +
               (batch.verified ? " · verified" : " · NOT verified"),
           );
         }
@@ -267,9 +328,17 @@ export default function IngestModal({ onClose, onIngested }) {
       refreshPreview();
 
       if (failed.length) {
+        // Keep the staged list: the user is about to retry without those legs, and an
+        // empty list would misrepresent what is still waiting in the spool.
         setHalted({ failed, skip });
         note("warn", `${failed.length} leg(s) failed — choose to exclude and continue, or cancel`);
       } else {
+        // The run is done, so the drop-in list has served its purpose. Leaving it
+        // populated made the next ingest look like it would re-read files it had
+        // already taken, and hid the fact that the spool — not this list — is what
+        // the next run reads. "Already in the spool" below is the live view.
+        setStaged([]);
+        setPicked([]);
         note("ok", "done");
       }
     } catch (err) {
@@ -280,25 +349,42 @@ export default function IngestModal({ onClose, onIngested }) {
     }
   };
 
-  /** Wipe the graph. Two clicks, and the manifest always goes with it. */
+  /**
+   * Wipe the graph. Two clicks, and the manifest always goes with it.
+   *
+   * **Not gated by `writeEnabled`.** Truncate is independent of ingest: it is not a
+   * step in a run, and the `Ingest Ready` toggle arms the *Ingest* button, not this one.
+   * Its own double confirm IS the arming — two deliberate clicks for one destructive
+   * action, which is the same guarantee the backend's `write_enabled` + `confirm` pair
+   * asks for. Sending `write_enabled: true` here is therefore honest, not a bypass:
+   * the user has just confirmed twice.
+   *
+   * The log records it, because a wipe is the one event that explains a graph that
+   * suddenly holds nothing.
+   */
   const truncate = async () => {
     setBusy(true);
     setError(null);
     setWipeResult(null);
+    note("info", "truncating the store…");
     try {
       const result = await api.truncate({
-        write_enabled: writeEnabled,
+        write_enabled: true,
         confirm: true,
       });
       setWipeResult(result);
       setWipeStep(0);
       setReport(null);
-      note("warn", `store truncated — ${result.removed.length} file(s) removed`);
+      note(
+        "warn",
+        `store truncated — ${result.removed.length} file(s) removed` +
+          (result.kept?.length ? ` · kept ${result.kept.length}` : ""),
+      );
       refreshPreview();
       onIngested?.({});
     } catch (err) {
       setError(err.message);
-      note("warn", err.message);
+      note("warn", `truncate failed: ${err.message}`);
     } finally {
       setBusy(false);
     }
@@ -336,10 +422,16 @@ export default function IngestModal({ onClose, onIngested }) {
               armed explicitly and never remembered — a remembered toggle is a toggle
               nobody remembers turning on. */}
           <Check
+            label="Full re-process"
+            checked={fullReprocess}
+            onChange={setFullReprocess}
+            note="Off: only messages the store does not already hold are written and extracted — an incremental ingest costs what is new, not what is in the export. On: every message is re-parsed and re-extracted. Use it after changing the extractor, or to give old rows Place nodes."
+          />
+          <Check
             label="Ingest Ready"
             checked={writeEnabled}
             onChange={setWriteEnabled}
-            hint="Arms the Ingest button. Ingest writes to the store, so it is a deliberate second step and is never remembered."
+            note="Arms the Ingest button. Ingest writes to the store, so it is a deliberate second step and is never remembered. Truncate does not need it."
           />
           <span className="spacer" />
           <button className="ghost" onClick={onClose}>
@@ -405,7 +497,10 @@ export default function IngestModal({ onClose, onIngested }) {
             <button className="ghost" onClick={() => setWipeStep(0)} disabled={busy}>
               Cancel
             </button>
-            <button onClick={truncate} disabled={busy || !writeEnabled}>
+            {/* No `!writeEnabled` here — see `truncate()`. The double confirm is the
+                arming, and this button must not look dead for a reason the user
+                cannot see from the top of the modal. */}
+            <button onClick={truncate} disabled={busy}>
               {busy ? <Loader2 size={13} className="spin" /> : null}
               Delete everything
             </button>
@@ -429,49 +524,41 @@ export default function IngestModal({ onClose, onIngested }) {
           stageFiles(files);
         }}
       />
-      {/* A folder pick, for Telegram (a directory holding `result.json`) and for a
-          LinkedIn or Messenger archive that arrives unzipped. `webkitdirectory` is
-          non-standard but is the only way a browser can hand over a directory. */}
-      <input
-        ref={folderRef}
-        type="file"
-        multiple
-        webkitdirectory=""
-        directory=""
-        style={{ display: "none" }}
-        onChange={(event) => {
-          const files = Array.from(event.target.files || []);
-          event.target.value = "";
-          stageFiles(files);
-        }}
-      />
+      {/* The drop target. `uppie` (the effect above) owns its drag and drop listeners,
+          including recursive folder traversal — the browser reports a dropped folder as
+          zero files, so a plain `dataTransfer.files` handler silently does nothing for
+          the one export shape that needs it most. The `data-uppie` attribute is a marker
+          for debugging, not behaviour. */}
       <div
         className="dropzone"
         ref={dropRef}
+        data-uppie="drop"
         onClick={() => fileRef.current?.click()}
+        onDragLeave={() => dropRef.current?.classList.remove("over")}
+        // `uppie` preventDefaults the drop, but the dragenter highlight is ours.
+        onDragEnter={(event) => {
+          event.preventDefault();
+          dropRef.current?.classList.add("over");
+        }}
         onDragOver={(event) => {
           event.preventDefault();
           dropRef.current?.classList.add("over");
         }}
-        onDragLeave={() => dropRef.current?.classList.remove("over")}
-        onDrop={onDrop}
         style={{ cursor: "pointer" }}
       >
         <FileUp size={18} style={{ marginBottom: 6 }} />
         <br />
-        <strong>Drop one or many files here, or click to choose.</strong>
+        <strong>Drop files, a folder, or a zip here — or click to choose files.</strong>
         <br />
-        Everything stays on this machine. Nothing is uploaded anywhere.
+        A folder works: Telegram ships <code>ChatExport_…/result.json</code>, and dropping
+        the folder walks it. Everything stays on this machine.
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <button className="ghost" onClick={() => fileRef.current?.click()}>
           Choose files
         </button>
-        <button className="ghost" onClick={() => folderRef.current?.click()}>
-          Choose a folder
-        </button>
         <span className="pager-info" style={{ alignSelf: "center" }}>
-          a folder is for Telegram (a directory holding result.json) or an unzipped archive
+          folders: drag one onto the box, or paste its path below
         </span>
       </div>
 
