@@ -27,6 +27,13 @@ dependencies = [
 resolve = [
     "rapidfuzz>=3",
 ]
+# Body-entity extraction. English-only in v1 by decision. `spacy` alone is not enough:
+# the model is a separate download (`python -m spacy download en_core_web_sm`), and
+# without it extraction degrades to no nodes plus one warning, never to an error.
+extract = [
+    "spacy>=3.7,<4",
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+]
 # Everything the UI needs. Absent for library-only use, which is the point:
 # importing relate_comms must not pull in a web server.
 app = [
