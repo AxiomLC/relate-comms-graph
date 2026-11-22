@@ -210,7 +210,8 @@ def test_pipeline_ingest_and_idempotency(tmp_path):
         keys = writer.stored_keys(conn, "messenger")
     finally:
         conn.close()
-    assert len(keys) == 2 and second.written == 2
+    # Two keys, not four: the second run skips them as already stored.
+    assert len(keys) == 2 and second.written == 0
 
 
 def test_silent_group_is_dropped_only_when_asked(tmp_path):

@@ -40,10 +40,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import identity, link, manifest, paths, scrub, writer
+from . import extract, identity, link, manifest, paths, scrub, writer
 from .adapters import (email_imap, linkedin, messenger, outlook_pst, sms, telegram,
                        whatsapp, whatsapp_html)
-from .schema import IngestResult
+from .schema import IngestResult, to_utc_string
 
 # Files this module will consider. Suffix is a cheap filter only; the platform is
 # still decided by inspecting the content.
@@ -140,6 +140,19 @@ MAX_WORKERS = 6
 _WA_HEADER = re.compile(r"^\[?\d{1,2}/\d{1,2}/\d{2,4},\s*\d{1,2}:\d{2}", re.MULTILINE)
 
 
+def _count_non_english(result: IngestResult) -> int:
+    """Bodies `extract.language_guess` reads as non-English. A count, never a gate.
+
+    English-only extraction means those bodies contribute no Places. Saying so on the
+    run's warnings is the honest alternative to a silent empty result — it is not an
+    error, and nothing is skipped from the message write.
+    """
+    return sum(
+        1 for message in result.messages
+        if extract.language_guess(message.body) == "non-en"
+    )
+
+
 @dataclass
 class Batch:
     """One export file, before it is parsed."""
@@ -171,6 +184,14 @@ class BatchOutcome:
     withheld: str = ""
     fingerprint: str = ""
     correspondents: int = 0
+    places: int = 0
+    mentions: int = 0
+    non_english: int = 0
+    # Messages the export contained (parsed), and how many of those the delta cutoff
+    # dropped as already-stored. `messages` above is what was actually written, so
+    # `read - delta_dropped == messages` is the invariant a delta run is judged on.
+    read: int = 0
+    delta_dropped: int = 0
 
     @property
     def ok(self) -> bool:
@@ -190,6 +211,12 @@ class BatchOutcome:
             "skipped": self.skipped,
             "withheld": self.withheld,
             "fingerprint": self.fingerprint,
+            "correspondents": self.correspondents,
+            "read": self.read,
+            "delta_dropped": self.delta_dropped,
+            "places": self.places,
+            "mentions": self.mentions,
+            "non_english": self.non_english,
             # Warnings are potentially numerous; the CLI prints them, the JSON
             # summary keeps them so nothing is lost between surfaces.
             "warnings": self.warnings,
@@ -217,6 +244,12 @@ class Report:
     # What `link.py` did: nodes folded, `POSSIBLY` edges drawn. Empty when the run
     # wrote nothing, or when the fold failed (then it holds `error`).
     link: dict[str, Any] = field(default_factory=dict)
+    # Run-level notes that belong to no single batch — currently the extractor being
+    # absent. Batch-level warnings live on `BatchOutcome.warnings`.
+    warnings: list[str] = field(default_factory=list)
+    # Set when a delta run could not read its watermarks and fell back to a full pass.
+    # Empty on a normal run; a non-empty value explains why extraction took so long.
+    delta_note: str = ""
 
     @property
     def written(self) -> int:
@@ -257,6 +290,8 @@ class Report:
             "tz_offsets": self.tz_offsets,
             "tz_note": self.tz_note,
             "link": self.link,
+            "warnings": self.warnings,
+            "delta_note": self.delta_note,
         }
 
 
@@ -522,6 +557,62 @@ def parse_batches(
     ]
 
 
+def apply_delta(
+    result: IngestResult, cutoff: str | None,
+) -> tuple[IngestResult, int]:
+    """Drop the messages this platform already holds. Returns (result, dropped).
+
+    **The delta rule.** `cutoff` is the newest `ts_utc` already in the store for this
+    platform (see `writer.watermark`). Every message at or below it is already written,
+    so it needs neither a write nor — the expensive part — an extraction. Anything
+    newer is new, and is carried through untouched.
+
+    Why this is safe to do *before* the write rather than relying on `MERGE`:
+    `MERGE` already makes a re-write harmless, but it happens after the parse and it
+    cannot stop `extract` re-running over every message in the export. The whole cost
+    of a weekly ingest is NER over messages the graph already has. Filtering here cuts
+    that to the genuinely new rows.
+
+    Deliberately conservative:
+
+    - A platform with no `cutoff` keeps **everything**. Never guess on an empty store.
+    - A message with no `ts_utc` cannot be compared, so it is kept. Silence about a
+      message is worse than re-processing it.
+    - The comparison is string-on-string, which is chronological only because
+      `to_utc_string` writes fixed-width ISO-8601. Comparing `datetime` to the stored
+      string would be a type error, and parsing every row would cost what we are saving.
+
+    What this does **not** re-write: `chats`. A thread whose only new message is older
+    than the cutoff still has no new participant to add, and re-writing the same
+    `WITH` edge is a no-op MERGE anyway.
+    """
+    if not cutoff or not result.messages:
+        return result, 0
+
+    kept = [m for m in result.messages if to_utc_string(m.ts_utc) > cutoff]
+    dropped = len(result.messages) - len(kept)
+    if not dropped:
+        return result, 0
+
+    # A copy, not a mutation: `result` may be shared with a caller that wants the
+    # whole parse (the ingest report counts what was read, not just what was kept).
+    delta = IngestResult(
+        platform=result.platform,
+        export_path=result.export_path,
+        chats=list(result.chats),
+        messages=kept,
+        attachments=list(result.attachments),
+        unknown_kinds=dict(result.unknown_kinds),
+        skipped=dict(result.skipped),
+        warnings=list(result.warnings),
+    )
+    # One skip entry for the whole drop. `note_skip` counts by one, so it is set
+    # directly here rather than called per message — the count is the useful number,
+    # not the per-row noise.
+    delta.skipped[f"already in store (at or before {cutoff[:10]})"] = dropped
+    return delta, dropped
+
+
 # --------------------------------------------------------------------- the run
 
 def ingest(
@@ -546,6 +637,7 @@ def ingest(
     tz_offset_hours: float | None = None,
     scrub_policy: dict[str, scrub.Verdict] | None | bool = None,
     extra_results: Iterable[IngestResult] = (),
+    delta: bool = True,
 ) -> Report:
     """Parse everything in the spool, write it, verify it, and optionally prune.
 
@@ -564,6 +656,14 @@ def ingest(
     (`prune_after`); `0` means keep nothing; `1` keeps the newest run's files. It is
     applied **after** the whole run, not per batch, because "the last ingest" is a
     property of the run rather than of a file.
+
+    `delta=True` (the default) skips messages the store already holds for that
+    platform, **before** the write and therefore before extraction. A weekly export
+    carries mostly messages already in the graph, and NER is the dominant cost of a
+    run, so this is what makes an incremental ingest proportional to what is new
+    rather than to the size of the export. `delta=False` re-processes every message,
+    which is the right call after an extractor change and the only way to re-derive
+    Places for rows written before extraction existed.
     """
     if since is not None and since.tzinfo is None:
         raise ValueError("since must be timezone-aware")
@@ -695,6 +795,25 @@ def ingest(
         if silent_group_platforms is not None:
             parse_kwargs["silent_group_platforms"] = set(silent_group_platforms)
 
+    # One connection, one writer, in discovery order. Concurrent writers to one `.rl`
+    # is corruption, not a speed-up (§9.1.4).
+    #
+    # Opened **before** the delta filter, because the watermark is read from the store
+    # and the filter must run before the write loop decides anything.
+    conn = writer.connect(store_path)
+
+    cutoff_by_platform: dict[str, str] = {}
+    if delta:
+        try:
+            cutoff_by_platform = writer.watermarks(
+                conn, {b.platform for b in batches if b.platform}
+            )
+        except Exception as exc:  # noqa: BLE001 - a delta run must never lose an ingest
+            report.delta_note = (
+                f"delta disabled for this run ({type(exc).__name__}: {exc}); "
+                "every message will be re-processed"
+            )
+
     parsed = parse_batches(batches, parse_kwargs=parse_kwargs, workers=workers)
 
     # Live mailboxes arrive already parsed: email is the one platform with no file to
@@ -713,9 +832,6 @@ def ingest(
             if result is not None:
                 _drop_spam_threads(result, spam_thread_platforms)
 
-    # One connection, one writer, in discovery order. Concurrent writers to one `.rl`
-    # is corruption, not a speed-up (§9.1.4).
-    conn = writer.connect(store_path)
     try:
         for batch, result, error in parsed:
             outcome = BatchOutcome(path=str(batch.path), platform=batch.platform)
@@ -727,6 +843,19 @@ def ingest(
             outcome.kinds = dict(result.unknown_kinds)
             outcome.skipped = dict(result.skipped)
             outcome.warnings = list(result.warnings)
+            outcome.read = len(result.messages)
+
+            # --- the delta cutoff ------------------------------------------------
+            # Runs before scrub and before write, so an already-stored message costs
+            # neither a scrub decision nor an NER pass. The watermark is per platform;
+            # a batch for a platform with nothing in the store keeps all of its rows.
+            # See `apply_delta` for why this is safe ahead of `MERGE`.
+            if delta and batch.platform:
+                result, outcome.delta_dropped = apply_delta(
+                    result, cutoff_by_platform.get(batch.platform)
+                )
+                if outcome.delta_dropped:
+                    outcome.skipped.update(result.skipped)
 
             # §3.2: scrub, then write. The scrub gate runs before anything lands.
             #
@@ -770,6 +899,43 @@ def ingest(
             report.keys.update(written["keys"])
             outcome.attachments = written["attachments"]
 
+            # Body-entity extraction: places only in v1. Runs **after** the messages are
+            # written, because a `MENTIONS` edge hangs off a Thread that must exist, and
+            # because an extraction failure must never cost the messages — it is a
+            # warning, not an error, exactly like the correspondent write above.
+            #
+            # Nothing is decided here: `extract` proposes spans, `write_places` folds
+            # them within this platform via `canon`, and `link.link()` below merges
+            # across platforms. A better extractor can be re-run over old messages
+            # without a re-ingest because the spans are not the graph.
+            if extract.available():
+                try:
+                    found = extract.extract(
+                        (m.key, m.platform, m.body) for m in result.messages
+                    )
+                    outcome.non_english = _count_non_english(result)
+                    if found:
+                        meta = {
+                            m.key: (writer.thread_key(m), to_utc_string(m.ts_utc))
+                            for m in result.messages
+                        }
+                        counted = writer.write_places(
+                            conn, found, message_meta=meta,
+                        )
+                        outcome.places = counted["places"]
+                        outcome.mentions = counted["mentions"]
+                except Exception as exc:  # noqa: BLE001 - never fail the batch over this
+                    outcome.warnings.append(
+                        f"places not written: {type(exc).__name__}: {exc}")
+            else:
+                reason = extract.unavailable_reason()
+                if reason and reason not in report.warnings:
+                    report.warnings.append(reason)
+            if outcome.non_english:
+                outcome.warnings.append(
+                    f"{outcome.non_english} message(s) look non-English and contributed "
+                    "no Places; extraction is English-only in v1")
+
             ok, verification = writer.verify_present(conn, result)
             outcome.verified = ok
             outcome.verification = verification
@@ -780,11 +946,17 @@ def ingest(
             if ok:
                 try:
                     digest = manifest.fingerprint(batch.path)
+                    # **Record what the FILE holds, not what this run wrote.**
+                    # A delta run writes nothing for a file it has already seen, so
+                    # `written["messages"]` is 0 — recording that erased the only record
+                    # of how many messages the file contributed, and left `preview`
+                    # claiming every file was empty. `outcome.read` is captured before
+                    # the cutoff, so it survives a skip.
                     manifest.record(
                         profile, digest,
                         platform=batch.platform or "unrecognised",
                         path=str(batch.path),
-                        messages=written["messages"],
+                        messages=outcome.read,
                         threads=len(result.chats),
                         bytes_=batch.path.stat().st_size,
                     )

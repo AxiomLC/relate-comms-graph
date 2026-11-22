@@ -254,4 +254,9 @@ def test_reingest_is_idempotent(tmp_path):
                                   profile_dir=tmp_path / "profile")
 
     assert first.ok and second.ok
-    assert first.batches[0].messages == second.batches[0].messages
+    # The store must not double. With the delta cutoff the second run skips the rows
+    # outright rather than re-MERGEing them, so the invariant is now "the first run
+    # wrote them, the second wrote none, and the store still holds exactly one copy".
+    assert first.batches[0].messages == 6
+    assert second.batches[0].messages == 0
+    assert second.batches[0].delta_dropped == first.batches[0].messages

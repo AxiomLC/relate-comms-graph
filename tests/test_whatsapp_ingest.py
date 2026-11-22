@@ -288,7 +288,12 @@ def test_ingest_twice_is_idempotent(tmp_path):
 
     first = ingest_module.ingest(root=spool, store=store, workers=1)
     second = ingest_module.ingest(root=spool, store=store, workers=1)
-    assert first.written == second.written == 3
+    # The first run writes all three; the second finds them already stored and skips
+    # them via the delta cutoff. The store must still hold exactly three keys, which
+    # is what "idempotent" actually promises.
+    assert first.written == 3
+    assert second.written == 0
+    assert sum(b.delta_dropped for b in second.batches) == 3
 
     conn = writer.connect(store)
     try:

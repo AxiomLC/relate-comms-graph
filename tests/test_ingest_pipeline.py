@@ -37,10 +37,10 @@ def spool(tmp_path):
     _make_sample(build_module.GENERATED)
 
     root = tmp_path / "spool"
-    for shape in ("telegram_bulk", "telegram_single"):
+    for shape in ("DataExport_2026-11-14", "ChatExport_2026-11-14"):
         target = root / shape
         target.mkdir(parents=True)
-        source = build_module.GENERATED / shape / "result.json"
+        source = build_module.GENERATED / "Telegram Desktop" / shape / "result.json"
         (target / "result.json").write_text(source.read_text(encoding="utf-8"),
                                             encoding="utf-8")
     return root
@@ -168,9 +168,17 @@ def test_ingest_twice_is_idempotent(spool, tmp_path):
         keys = writer.stored_keys(conn, "telegram")
     finally:
         conn.close()
-    assert len(keys) == second.written, "store rows != rows written"
-    # Every key from the second run was already there: no growth.
-    assert first.written == second.written
+    # The store holds exactly what the first run wrote, and grew by nothing on the
+    # second. With the delta cutoff the second run writes zero rows outright: the
+    # messages are skipped before the write, not re-MERGEd.
+    assert len(keys) == first.written, "store rows != rows written on the first run"
+    assert second.written == 0
+    # Two overlapping exports: each reads its own 5 messages, so the drop count is
+    # per-batch (10) while the store holds 5 distinct keys. `written` de-duplicates;
+    # `delta_dropped` does not, and should not — it reports what each batch skipped.
+    dropped = sum(b.delta_dropped for b in second.batches)
+    assert dropped == sum(b.read for b in second.batches)
+    assert dropped >= len(keys)
 
 
 def test_parallel_and_serial_agree(spool, tmp_path):
@@ -214,7 +222,7 @@ def test_prune_requires_verification_and_age(spool, tmp_path):
     assert all(Path(b.path).exists() for b in young.batches)
 
     # Age one file past the threshold: exactly that file goes.
-    victim = next(Path(b.path) for b in young.batches if "bulk" in b.path)
+    victim = next(Path(b.path) for b in young.batches if "DataExport" in b.path)
     old = time.time() - timedelta(days=4).total_seconds()
     os.utime(victim, (old, old))
 
