@@ -10,13 +10,21 @@ Durable facts: [`TECHREADME.md`](TECHREADME.md). UI and visual facts:
 
 ## Where it stands
 
-`pytest tests -q` → **400 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
+`pytest tests -q` → **434 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
 
-**Live store: rebuilt 2026-11-19.** **2,003 messages · 93 correspondents · 34 merged · 7
-`POSSIBLY` edges.** Per platform: telegram 851 · messenger 655 · email 151 · sms 139 ·
-whatsapp 108 · linkedin 93 · outlook 6. Audit query:
-`MATCH (c:Correspondent:Merged) RETURN c.merged_by, count(*)` → `exact_name 27`,
-`nickname 7`.
+**Live store: rebuilt 2026-11-22** (after a truncate, then an ingest of the whole spool).
+**2,085 messages · 177 threads · 98 correspondents · 21 `Place` nodes (8 `:Merged`).**
+Per platform: telegram 831 · messenger 661 · linkedin 228 · sms 139 · email 128 ·
+whatsapp 92 · outlook 6.
+
+> **The manifest's per-file `messages` count is zero for every entry in this build.** The
+> bug is fixed (`outcome.read` is recorded instead of what the run wrote), but the existing
+> entries were written by the broken code. **The next ingest refreshes them.** Until then
+> the "Already in the spool" list cannot say how many messages a file contributed.
+
+**`npm run build` after any `.jsx`/`.css` edit.** Python edits need only a server restart.
+`build` runs `build:css` as a second step — before that, a new CSS rule silently never
+reached the browser, because `index.html` loads `dist/app.css` separately.
 
 **Cross-platform merging is automatic on every ingest.** `link.link()` runs once at the end
 of `ingest()`, over the whole store, so a new export can supply the phone that links two
@@ -69,34 +77,166 @@ renderer with real node components would make overlap a CSS problem instead.
 required vs optional; (b) keep every cytoscape concept (bags, ring, tiers) on the client
 side of that boundary; (c) build one alternative renderer behind a switch, not a rewrite.
 
-### 2. Body-entity extraction — `Person`, `Place`, `Organization`, `Product`
+### 2. Body-entity extraction — Places first, one generic pipeline
 
-The schema, the queries and `canon.KINDS` are already wired for all four; they hold zero
-rows because nothing generates candidates. Three stages, in order:
+**v1 extracts `Place` only.** `Person`, `Organization` and `Product` are deferred until the
+complete pipeline is proven on Places — including ambiguous matches, reversibility and repeat
+ingestion. Then the same architecture serves the other kinds.
 
-**a. Canon flattening.** `canon.canonical(raw, kind=…)` already handles all four kinds and
-raises on an unknown one. What is missing is the input: a candidate generator that reads
-message bodies and proposes `(surface_form, kind)` pairs.
+**The interface is generic even though v1 ships one kind.** A later `Person` or `Organization`
+kind must be an extension of this pipeline, not a second implementation. Where a step can
+only do one kind, that belongs in the caller, not in the step.
 
-**b. Node production.** Write the extracted entities as nodes with the same shape as
-`Correspondent` — `key = <kind>:<canonical>`, `platform`, `mention_count`. The writer path
-exists; it needs a source.
+**Stack:** spaCy `en_core_web_sm` for extraction, existing `canon.canonical()` for
+normalisation, RapidFuzz for candidate matches, existing linker architecture for merging.
+One new dependency, declared as the optional `extract` extra in `pyproject.toml`
+(`pip install -e ".[extract]"`); without it, extraction writes no nodes and the run report
+carries one warning — never an error.
 
-**c. Merged nodes across platforms.** An entity mentioned on more than one platform becomes
-`:Merged`, exactly as a Correspondent does. `link.link()` already runs over the whole store
-and is idempotent, so this is a matter of feeding it the new kinds.
+**Order — and it cannot be reordered:**
 
-**Canvas:** the merged-node template is the one to copy — grey glyph, radial halo, own bag.
-`UIVISUALS.md` §7. Entity bags get their own placement slot; the ring becomes a two-tier
-composition (platforms outside, entities inside).
+1. **Extract**, per message. spaCy proposes spans with offsets and message keys. Extraction
+decides nothing, so a better extractor can be re-run over old messages.
+2. **Fold within a platform.** `canon.canonical(kind=…)` converges spellings; RapidFuzz
+   proposes typo candidates but never merges.
+3. **Match across platforms.** Only then does a place on two platforms become `:Merged`.
 
-**Blocked on:** the candidate generator. Nothing else.
+This is the order `Correspondent` already uses, for the same reason: per-batch linking only
+ever sees one platform.
+
+**Why Places first:** a `Person` extracted from a body competes with the `Correspondent` that
+is already on the thread — a merge with a wrong answer that looks right. A Place has no
+existing node competing with it, so the pipeline is judged on its own terms.
+
+**`canon` cannot substitute for extraction.** It normalises a name it is handed; it cannot
+decide a span *is* a place. Running capitalised words through `canonical(kind="place")`
+yields `monday`, `hi dave`, `ny` — no error, no useful result.
+
+**No LLM calls in this pipeline.** Extraction is spaCy and rules only. The local LLM is a
+chat feature in the UI (§3) and has no role in entity extraction, folding or merging.
+
+**Built.** `relate_comms/extract.py` (spaCy `en_core_web_sm` + an `EntityRuler` place
+dictionary), `writer.write_places()`, `link._link_entity()`, wired into `ingest()`.
+`pytest tests -q` → **422 passed, 2 skipped**; 22 of those are `tests/test_extract_places.py`.
+On the full sample set: **20 Place nodes, 8 `:Merged`**, e.g. `bay area` on four platforms
+and `north dakota` on three.
+
+**Two `canon` bugs this feature exposed, both fixed:**
+
+- The place branch never stripped a leading article, though `ARTICLES` says "thing or
+  place" — `the Bay Area` and `Bay Area` were two nodes. Only `product` implemented it.
+- `_REGION_TAIL` is lowercase-anchored but runs after case flattening, so it could never
+  match and `Kensington, London` kept its country in the key. Now matched
+  case-insensitively and compared casefolded; a spelled-out province is still identity.
+
+A third change is new behaviour rather than a fix: `n`/`s`/`e`/`w` + a word expands to
+`north`/`south`/`east`/`west` (`N Dakota` → `north dakota`), from a fixed table like
+`NICKNAMES`. Without it the sample writer's own `N Dakota` / `North Dakota` pair never folds.
+
+**The extractor needs the ruler.** `en_core_web_sm` labels a bare city `PERSON` with no
+locative cue (`Then Austin on Friday`) and `GPE` with one (`Flying to Austin`). The
+`EntityRuler` dictionary is what makes the feature not-silently-lossy.
+
+**Accepted false positives.** The model calls some products `GPE`/`FAC` in prepositional
+frames (`nothing new from Databricks`, `don't hear from Retool`); `We use Databricks daily`
+proposes nothing. Not filtered — suppressing a `GPE` because it looks like a company is
+extraction deciding. A stray node costs a node, never a merge, and `mention_count` = 1
+makes it obvious.
+
+**A Place is never drawn as `POSSIBLY`.** Two places one letter apart are two places;
+there is no second signal to weigh. Fuzzy candidate lines stay Correspondent-only.
+
+**Language:** English only in v1, by decision. Non-English input yields no nodes rather than
+wrong ones. `extract.language_guess()` sets a non-blocking **warning** on the batch report
+("N message(s) look non-English…"); it never errors and never gates the message write. The
+seam sits above the extractor, so another language is a second model and a language guess,
+not a rewrite.
+
+**Still open, not done:**
+
+- **Canvas.** Places are queryable (`graph_slice(node_types=["Place"],
+  edge_types=["MENTIONS_PLACE"])`) but **not drawn by default** — `DRAWABLE_NODE_TYPES`
+  is still `("Thread", "Correspondent")`. Entity bags need a placement slot; the merged-node
+  template (grey glyph, radial halo, own bag) is the one to copy. `UIVISUALS.md` §7.
+- **`merged_by` remains a weak claim for Places.** A fold means "same canonical name, seen
+  on two platforms". The UI must say exactly that, not imply a verified identity.
+- **`sample_writer` needs no work** — it already exercises both folds. Verified on
+  `sample_writer/out`: `N Dakota`/`North Dakota` and `Bay Area`/`the Bay Area` converge, and
+  `toronto`/`austin` merge across three platforms each.
+
+Full design: [`archive_docs/locking_in_node_extraction.md`](archive_docs/locking_in_node_extraction.md).
+
+### 2c. Incremental ingest — the delta cutoff
+
+**Built.** `ingest(delta=True)` is the **default**. A weekly export is mostly messages
+the graph already holds, and NER costs ~1.5 ms per message, so re-extracting the backlog
+was the dominant cost of a re-ingest.
+
+**The rule.** For each platform, read `max(ts_utc)` from the store (`writer.watermark`,
+indexed by `_SCHEMA`'s new `msg_ts`). Drop every parsed message at or below it **before**
+the write and therefore before `extract`. Conservative by construction: no watermark (an
+empty store) keeps everything; a message with no timestamp is kept.
+
+**Measured** on a realistic weekly case — 10,000 stored + 500 new:
+
+| Run | Time |
+|---|---|
+| full re-process | 25.7 s |
+| delta | 2.6 s |
+| **speedup** | **10×** |
+
+**`delta=False`** is the escape hatch, exposed in the UI as the **Full re-process**
+checkbox (the control is inverted so the fast path is the one nobody has to think about).
+Required after an extractor change, and the only way to re-derive Places for rows written
+before extraction existed.
+
+**Known limit, documented in `tests/test_delta.py`:** a message carrying an older
+timestamp than the watermark is indistinguishable from one already stored, so a genuinely
+backdated export needs `delta=False`. Exports are written in time order, so this is rare.
+
+**Two bugs this exposed, both fixed:**
+
+- **The manifest recorded `msgs=0` for every file.** A delta run writes nothing for a file
+  it has already seen, and the manifest was recording what *this run wrote* rather than
+  what the *file holds*. That erased the only record of a file's message count and broke
+  the "Already in the spool" list. Now records `outcome.read`, captured before the cutoff.
+- **The staged drop-in list never cleared after a successful ingest**, so the next run
+  looked like it would re-read files already taken. It now clears on success and is kept
+  deliberately when a leg failed (the user is about to retry).
+
+### 2d. Drag and drop — `uppie`
+
+**Built.** The drop box now uses [`uppie`](https://github.com/silverwind/uppie)
+(`uppie@4.1.7`, BSD-2, zero dependencies, ~8.8 KB) rather than a hand-rolled handler.
+
+**Why a dependency.** A browser reports a dropped **folder** as zero files — `dataTransfer.files`
+is empty — so the old `onDrop` silently did nothing for the one export shape that needs it
+most (Telegram ships a directory). `uppie` walks `webkitGetAsEntry` to exhaustion, including
+the 100-entry `readEntries` batching, and appends each file under its path relative to the
+dropped folder.
+
+**Verified in a real browser**, not just by reading the README: folder walk reaches nested
+subdirectories, `{ name: "files" }` is required (the default `files[]` is **422** from
+FastAPI), the enclosing folder survives into `spool/real/<platform>/<folder>/`, and a
+genuine OS drag via CDP works.
+
+**A third bug, in our own code:** `api.request()` forced `content-type: application/json`
+on every request with a body, so the `FormData` was sent as JSON and FastAPI answered
+`files: Field required`. A `FormData` body now sets no content-type, letting the browser
+write the multipart boundary.
+
+**Removed:** the separate "Choose a folder" input (`webkitdirectory`) and the folder button.
+Dragging a folder replaces them; the path-paste field remains as the escape hatch.
+
+**Watch for:** an unticked *Ingest Ready* rejects the upload with `write access is disabled`,
+and that message lands in INGEST LOG **below** the dropzone — off-screen at normal modal
+height, so a correct drop can look like nothing happened.
 
 ### 3. The local LLM
 
-Wired, never exercised end to end. Needs a real conversation and a check that
-`MAX_TOOL_CHARS` truncation is **reported** rather than silent. `think: false` is a 28×
-speedup on this box and must stay applied.
+Chat is wired into the UI. Never exercised end to end on a real conversation. Needs a check
+that `MAX_TOOL_CHARS` truncation is **reported** rather than silent. `think: false` is a 28×
+speedup on this box and must stay applied. Not involved in entity extraction (§2) — chat only.
 
 ### 4. MCP wiring
 
@@ -120,6 +260,13 @@ in `tools.py`, so the binding is thin by construction.
 - **WhatsApp's minute-resolution key** was a hazard for the old store's second-resolution
   rows. The 2026-11-18 wipe resolved it; the live store is built entirely at minute
   resolution.
+- **Entity extraction is English-only in v1.** A public repo with users from anywhere will
+  meet non-English exports. Accepted for v1: silence beats a wrong node, and the seam sits
+  above the extractor so a second language is a second model, not a rewrite. Non-English
+  input warns on the report; it never errors.
+- **Place `:Merged` is a weaker claim than Correspondent `:Merged`.** A Correspondent folds
+  on phone or email; a Place folds only on its canonical name. Name matching is the only
+  evidence available, so it is shipped best-effort rather than held back.
 
 ---
 
@@ -150,31 +297,33 @@ reuse it, the way `identity.json` already persists the Owner — not a change to
 
 ---
 
-## Ingest UI — known broken
-
-The **graph is not affected**. The defects are confined to the modal's two picker routes,
-which stage silently and leave the box showing nothing.
+## Ingest UI — state after the `uppie` rebuild
 
 | Path | Behaviour |
 |---|---|
-| **Paste a path** | **Works.** This is the reliable route. |
-| **Drag and drop** | Does not work, and the staged list never shows whether staging succeeded. |
-| **Select file / select folder** | Selection is not reflected in the box either. |
+| **Drag a file** | **Works.** Verified with a synthetic drop and a real OS drag. |
+| **Drag a folder** | **Works.** `uppie` walks the tree; the folder name survives into the spool. |
+| **Select files** | **Works** — the hidden input feeds the same upload path. |
+| **Paste a path** | **Works**, unchanged, and still the escape hatch. |
+| **Select a folder** | The separate button is **gone**; dragging a folder replaces it. |
 
-**Two confirmed defects:**
+**Two of the three old defects are fixed:**
 
-1. `app/ui/src/lib/api.js` — `body.append("files", file, file.name)` sends only the **bare
-   filename**. `webkitRelativePath` is never sent, so the folder a folder-pick holds is lost
-   before it reaches the server. The route's `parts[-2]` logic can never fire.
-2. `app/routers/ingest.py::upload` — detects **per uploaded file**. A dropped `email_eml/`
-   folder arrives as ~190 individual `.eml` files, none of which is a mailbox on its own, so
-   every one is filed under `spool/real/unrecognised/`. The same folder works when pasted,
-   because `stage()` asks `detect_platform()` about the **directory** first.
+1. ~~`api.js` sent only the bare filename, losing the folder.~~ `uppie` appends each file
+   under its path relative to the dropped folder, so `parts[-2]` now fires.
+2. ~~A dropped `email_eml/` folder arrived as ~190 loose `.eml` files, all unrecognised.~~
+   **Still partly true.** `uppie` now preserves `email_eml/Inbox/...`, so the *parent* is
+   right, but `app/routers/ingest.py::upload` still calls `detect_platform()` on each
+   **file**, not on the reconstructed directory — so a dropped `.eml` tree can still be
+   filed as `unrecognised` even though pasting the same path works. Fixing it means
+   grouping uploads by top folder and asking `detect_platform()` about the folder, the way
+   `stage()` does.
+3. ~~Silent staging.~~ The modal now logs `reading N file(s)…`, `staged N file(s)`, and one
+   line per staged file.
 
-**Fix, in order:** (a) send `file.webkitRelativePath || file.name` in `api.js`; (b) make
-`upload` group files by their top folder and ask `detect_platform()` about the reconstructed
-folder the way `stage()` does; (c) surface `result.ok` / the error text so a silent empty
-response is visible.
+**One trap worth knowing:** an unticked *Ingest Ready* rejects the upload with `write access
+is disabled`, logged in INGEST LOG **below** the dropzone. A correct drop can look like
+nothing happened if that line is off-screen.
 
 ---
 
@@ -239,6 +388,20 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
 ---
 
 ## Done — one line each
+
+- **2026-11-22** — Incremental ingest (`delta`, 10x on a weekly case) with a `msg_ts`
+  index and a `Full re-process` escape hatch; drag and drop rebuilt on `uppie` so a folder
+  drops correctly; three bugs fixed on the way (manifest recording `msgs=0`, the API layer
+  forcing JSON on a `FormData` body, the staged list never clearing); merged Correspondents
+  finally show every platform plus a `Merged` pill in the Viewer; entity glyphs for Place /
+  Organization / Person generated per platform colour.
+- **2026-11-22** — Place extraction built end to end (`extract.py` + `writer.write_places` +
+  `link._link_entity`, wired into `ingest`); **Viewer bug fixed** — `CorrespondentView` and
+  `EntityView` rendered one platform from `entry.platform` and never said "merged", so a
+  4-platform node looked like a 1-platform one (the store and API were always correct); now
+  one pill per platform from `platforms` plus a `Merged` pill; `npm run build` gained
+  `build:css`, because `npm run build` alone never rewrote `static/dist/app.css` and a new
+  rule would have silently never reached the browser.
 
 - **2026-11-21** — Merged bag built and centred; merged nodes styled (grey glyph + orange
   radial underlay); `UIVISUALS.md` written; theme persistence changed to **overrides-only**

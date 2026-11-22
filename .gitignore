@@ -57,6 +57,11 @@ tools/ai_visual_graph_tool/last_run_positions.json
 # so `npm ci` reproduces the exact tree.
 node_modules/
 
+# Serena / aider tool state — per-machine caches, not source.
+.serena/
+# `.aiderignore` IS committed: it is the repo-shape policy the aider map reads.
+# (Deliberately no rule for it.)
+
 # Python
 __pycache__/
 *.py[cod]
