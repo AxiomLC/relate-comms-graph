@@ -127,6 +127,17 @@ LEGAL_SUFFIXES = frozenset({
 # Leading articles that carry no identity for a thing or place.
 ARTICLES = frozenset({"the", "a", "an"})
 
+# Qualifying words people abbreviate to their initial: `N Dakota` and `North Dakota`
+# are one place, `N` alone is not `North`. Only a *single letter* that is the first
+# letter of one of these is expanded, and only when a real word follows it — so
+# `N` at the end of a name, or `Q Street`, is untouched.
+#
+# This is not fuzzy matching: it is a fixed table, the same kind `NICKNAMES` is, and
+# every entry is a claim that two spellings are one place.
+PLACE_QUALIFIERS: dict[str, str] = {
+    "n": "north", "s": "south", "e": "east", "w": "west",
+}
+
 # A place's region tail is dropped only when it cannot change which place is meant:
 # a two-letter code (`new york, ny`) or a country (`london, uk`). A province or state
 # spelled out is identity — `london, ontario` is not `london` — so it is kept.
@@ -140,6 +151,14 @@ _COUNTRY_TAIL = frozenset({
     "united arab emirates", "uae", "israel", "turkey", "greece", "czechia",
 })
 _REGION_TAIL = re.compile(r",\s*([a-z][a-z. ]{1,24})\s*$")
+
+# The same tail, matched case-insensitively, for the case the place branch actually sees.
+#
+# `_canonical_text` has already flattened case before `_REGION_TAIL` is applied, so the
+# lowercase pattern never fires on a real name: `Kensington, London` was reaching the
+# store as the key `kensington, london`, with the comma inside a node key. That broke
+# the one fold `lock_in_node_extraction.md` names as the point of the place branch.
+_REGION_TAIL_ANY = re.compile(r",\s*([^,]{1,24}?)\s*$")
 
 # `New York, NY 10001` -> the postal code is not identity.
 _POSTAL = re.compile(r"\s+\d{4,10}$")
@@ -420,23 +439,45 @@ def _canonical_text(text: str, kind: Kind) -> Canonical:
         if stripped and evidence == "raw":
             evidence = "suffix"
     elif kind == "place":
+        # `the Bay Area` and `Bay Area` are one place; the article carries no identity.
+        # This branch previously skipped the strip, so the same place arrived as two
+        # nodes the moment one platform capitalised the sentence differently — which is
+        # exactly the intra-platform fold this pipeline exists to perform.
+        if len(words) > 1 and words[0] in ARTICLES:
+            words = words[1:]
+            if evidence == "raw":
+                evidence = "article"
         joined = " ".join(words)
         trimmed = _POSTAL.sub("", joined)
         if trimmed != joined:
             joined, evidence = trimmed, evidence if evidence != "raw" else "suffix"
+        # `N Dakota` -> `north dakota`. Expanded before the region tail is read, because
+        # the tail test wants the region's real name, not its initial.
+        parts = joined.split()
+        if (len(parts) > 1 and len(parts[0]) == 1
+                and parts[0] in PLACE_QUALIFIERS):
+            joined = " ".join([PLACE_QUALIFIERS[parts[0]], *parts[1:]])
+            if evidence == "raw":
+                evidence = "suffix"
         # `New York, NY` and `New York` are one place; `London, Ontario` is not
         # `London`. The tail is dropped only when it is a two-letter code or a country,
         # and only when a real name precedes it, so `NY` alone stays `ny`.
-        match = _REGION_TAIL.search(joined)
+        #
+        # Matched with the case-insensitive tail pattern and compared casefolded: the
+        # text is already flattened here, so `_REGION_TAIL` (delimited on the left by a
+        # comma followed by a letter) could never match, and `Kensington, London` kept
+        # its country in the key.
+        match = _REGION_TAIL_ANY.search(joined)
         if match:
-            tail = match.group(1).strip()
+            tail = match.group(1).strip().casefold()
+            without_region = joined[:match.start()].strip()
+            # A two-letter code (`ny`, `tx`) or a country (`uk`). A spelled-out province
+            # or state is identity and stays.
             is_code = len(tail) == 2 and tail.isalpha()
-            if is_code or tail in _COUNTRY_TAIL:
-                without_region = joined[:match.start()].strip()
-                if without_region and len(without_region) > 2:
-                    joined = without_region
-                    if evidence == "raw":
-                        evidence = "suffix"
+            if (is_code or tail in _COUNTRY_TAIL) and without_region and len(without_region) > 2:
+                joined = without_region
+                if evidence == "raw":
+                    evidence = "suffix"
         words = joined.split()
     elif kind == "product":
         if len(words) > 1 and words[0] in ARTICLES:

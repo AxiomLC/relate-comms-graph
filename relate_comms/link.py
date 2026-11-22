@@ -58,6 +58,20 @@ from . import canon
 # name is still a phone fold, and the audit query should say so.
 EVIDENCE_ORDER: tuple[str, ...] = ("phone", "email", "exact_name", "nickname")
 
+# The entity labels `link()` folds after the Correspondent pass. `Place` is the only
+# member in v1; `canon.KINDS`-derived so a second kind joins by existing in `canon`.
+# Correspondent is excluded on purpose — it has its own loader and its own evidence.
+ENTITY_LABELS: tuple[str, ...] = tuple(
+    kind.capitalize() for kind in canon.KINDS if kind != "person"
+)
+
+# A Place has one kind of evidence and only one: its canonical name. There is no phone
+# and no address to fall back on, so `:Merged` on a Place means "same canonical name,
+# seen on two platforms" — a weaker claim than the Correspondent case, and the UI must
+# not imply otherwise. That is accepted rather than gated: name matching is what we
+# have, so it is done as well as it can be.
+ENTITY_EVIDENCE_ORDER: tuple[str, ...] = ("exact_name",)
+
 # Below this a fuzzy pair is noise. Same knob the report uses, so a candidate that
 # `canon.candidates()` would print is a candidate this draws.
 FUZZY_THRESHOLD = canon.FUZZY_REPORT
@@ -73,12 +87,26 @@ def link(conn: Any, *, fold_on_name: bool | None = None) -> dict[str, Any]:
         possibly    how many `POSSIBLY` edges were written
         groups      the fold groups, as `[[survivor, loser, …], …]`, for the log
 
+    `entities` carries the Place pass, in the same shape but counting `place`:
+
+        entities    {Place: {folded, merged_by, groups, possibly}}
+
     Running it twice changes nothing: the second run finds one node per group, and
     `MERGE` on the `POSSIBLY` edge is a no-op.
     """
     if fold_on_name is None:
         fold_on_name = canon.FOLD_ON_NAME
 
+    report = _link_correspondents(conn, fold_on_name=fold_on_name)
+    report["entities"] = {
+        label: _link_entity(conn, label) for label in ENTITY_LABELS
+    }
+    return report
+
+
+def _link_correspondents(conn: Any, *, fold_on_name: bool) -> dict[str, Any]:
+    """The Correspondent pass. Split out so `link()` reads as two calls, not two halves.
+    """
     nodes = _load(conn)
     if len(nodes) < 2:
         return {"folded": 0, "merged_by": {}, "possibly": 0, "groups": []}
@@ -130,23 +158,40 @@ def link(conn: Any, *, fold_on_name: bool | None = None) -> dict[str, Any]:
 # ------------------------------------------------------------------------ reading
 
 
-def _load(conn: Any) -> list[dict[str, Any]]:
+def _load(conn: Any, label: str = "Correspondent") -> list[dict[str, Any]]:
     """Every Correspondent, with the facts a fold decision needs.
+
+    `label` generalises it to an entity kind (`Place`). The two differ in exactly one
+    way that matters: a Correspondent's weight is its `WITH` threads, a Place's is its
+    `MENTIONS` threads. Everything the fold itself reads — `key`, per-platform
+    `handle_<p>` / `seen_<p>` — is identical, which is why the fold can be shared.
 
     Placeholders are excluded: `messenger:placeholder:facebook user` and
     `linkedin:placeholder:linkedin member` are two different accounts that happen to
     both be anonymous, and folding them would claim one platform's spam is the
     other's. `canon` already keeps them platform-scoped; this keeps them unfolded.
     """
+    if label == "Correspondent":
+        cypher = (
+            "MATCH (c:Correspondent) "
+            "OPTIONAL MATCH (t:Thread)-[:WITH]->(c) "
+            "RETURN c.key AS key, c.platform AS platform, "
+            "       coalesce(c.platforms, [c.platform]) AS platforms, "
+            "       c.display_name AS display_name, c.phone_e164 AS phone, "
+            "       c.email AS email, count(DISTINCT t) AS threads "
+        )
+    else:
+        cypher = (
+            f"MATCH (e:{label}) "
+            "OPTIONAL MATCH (t:Thread)-[:MENTIONS]->(e) "
+            "RETURN e.key AS key, e.platform AS platform, "
+            "       coalesce(e.platforms, [e.platform]) AS platforms, "
+            "       e.display_name AS display_name, null AS phone, "
+            "       null AS email, count(DISTINCT t) AS threads "
+        )
+
     cur = conn.cursor()
-    cur.execute(
-        "MATCH (c:Correspondent) "
-        "OPTIONAL MATCH (t:Thread)-[:WITH]->(c) "
-        "RETURN c.key AS key, c.platform AS platform, "
-        "       coalesce(c.platforms, [c.platform]) AS platforms, "
-        "       c.display_name AS display_name, c.phone_e164 AS phone, "
-        "       c.email AS email, count(DISTINCT t) AS threads "
-    )
+    cur.execute(cypher)
     nodes = []
     for row in cur.fetchall():
         node = dict(row)
@@ -156,7 +201,7 @@ def _load(conn: Any) -> list[dict[str, Any]]:
     return nodes
 
 
-def _handles(conn: Any, keys: Iterable[str]) -> dict[str, dict[str, str]]:
+def _handles(conn: Any, keys: Iterable[str], *, label: str = "Correspondent") -> dict[str, dict[str, str]]:
     """`key -> {platform: spelling}` from the flat `handle_<p>` properties.
 
     A name fold needs the *spelling*, not the canonical key: `person:+27845189029`
@@ -170,7 +215,7 @@ def _handles(conn: Any, keys: Iterable[str]) -> dict[str, dict[str, str]]:
         return {}
     cur = conn.cursor()
     cur.execute(
-        "MATCH (c:Correspondent) WHERE c.key IN $keys RETURN properties(c) AS p",
+        f"MATCH (n:{label}) WHERE n.key IN $keys RETURN properties(n) AS p",
         {"keys": keys},
     )
     out: dict[str, dict[str, str]] = {}
@@ -189,6 +234,7 @@ def _handles(conn: Any, keys: Iterable[str]) -> dict[str, dict[str, str]]:
 
 def _fold_groups(
     nodes: list[dict[str, Any]], *, fold_on_name: bool,
+    evidence: tuple[str, ...] = EVIDENCE_ORDER,
 ) -> list[tuple[dict[str, Any], list[dict[str, Any]], str]]:
     """Group nodes that are provably one entity. Returns (survivor, losers, reason).
 
@@ -196,6 +242,10 @@ def _fold_groups(
     joined to a named node by phone, and that named node joined to a third by email,
     is one person with three keys. Folding pairwise would leave two of the three
     apart depending on iteration order.
+
+    `evidence` is the ladder this pass may use, strongest first. A `Place` passes
+    `ENTITY_EVIDENCE_ORDER`, which holds only `exact_name` — it has no identifier to
+    read, and asking for one would fold on a property the node never has.
     """
     index = {node["key"]: position for position, node in enumerate(nodes)}
     parent = list(range(len(nodes)))
@@ -214,11 +264,13 @@ def _fold_groups(
         parent[rb] = ra
         # Keep the strongest evidence for the group: a phone match outranks a name.
         current = reason_of.get(ra)
-        if current is None or EVIDENCE_ORDER.index(reason) < EVIDENCE_ORDER.index(current):
+        if current is None or evidence.index(reason) < evidence.index(current):
             reason_of[ra] = reason
 
     # --- phone and email: the identifiers ------------------------------------
     for field, reason in (("phone", "phone"), ("email", "email")):
+        if reason not in evidence:
+            continue
         buckets: dict[str, list[int]] = defaultdict(list)
         for position, node in enumerate(nodes):
             value = node.get(field)
@@ -229,7 +281,7 @@ def _fold_groups(
                 union(members[0], other, reason)
 
     # --- names: only when asked, and only on the canonical form --------------
-    if fold_on_name:
+    if fold_on_name and "exact_name" in evidence:
         buckets = defaultdict(list)
         for position, node in enumerate(nodes):
             for form in _name_forms(node):
@@ -291,63 +343,87 @@ def _name_forms(node: dict[str, Any]) -> set[str]:
 # ------------------------------------------------------------------------- folding
 
 
-def _fold(conn: Any, survivor: dict[str, Any], losers: list[dict[str, Any]]) -> None:
+def _fold(
+    conn: Any, survivor: dict[str, Any], losers: list[dict[str, Any]],
+    *, label: str = "Correspondent", edge: str = "WITH",
+) -> None:
     """Move every edge onto the survivor, then delete the losers.
 
-    `DETACH DELETE` is deliberately not used: it would drop the `WITH` edges that are
-    the whole reason the node exists. Each edge type is re-pointed explicitly, and a
-    duplicate (both nodes already attached to the same thread) is removed rather than
-    merged into a self-edge.
+    `DETACH DELETE` is deliberately not used: it would drop the edges that are the
+    whole reason the node exists — `WITH` for a Correspondent, `MENTIONS` for a Place.
+    Each edge type is re-pointed explicitly, and a duplicate (both nodes already
+    attached to the same thread) is removed rather than merged into a self-edge.
+
+    `label` / `edge` generalise it to an entity kind. `POSSIBLY` is only re-pointed
+    for Correspondents: a Place is never drawn as a fuzzy candidate, because its only
+    evidence is its spelling and a typo there is a different place, not a guess.
     """
     cur = conn.cursor()
     for loser in losers:
         cur.execute(
-            "MATCH (t:Thread)-[r:WITH]->(l:Correspondent {key: $loser}) "
-            "MATCH (s:Correspondent {key: $survivor}) "
-            "MERGE (t)-[:WITH]->(s) "
+            f"MATCH (t:Thread)-[r:{edge}]->(l:{label} {{key: $loser}}) "
+            f"MATCH (s:{label} {{key: $survivor}}) "
+            f"MERGE (t)-[:{edge}]->(s) "
             "DELETE r",
             {"loser": loser["key"], "survivor": survivor["key"]},
         )
-        # `POSSIBLY` is symmetric in meaning, so both directions are re-pointed and a
-        # self-edge (the pair that just became one node) is dropped.
-        cur.execute(
-            "MATCH (a:Correspondent)-[r:POSSIBLY]->(l:Correspondent {key: $loser}) "
-            "MATCH (s:Correspondent {key: $survivor}) "
-            "FOREACH (_ IN CASE WHEN a.key = $survivor THEN [] ELSE [1] END | "
-            "  MERGE (a)-[:POSSIBLY]->(s)) "
-            "DELETE r",
-            {"loser": loser["key"], "survivor": survivor["key"]},
-        )
-        cur.execute(
-            "MATCH (l:Correspondent {key: $loser})-[r:POSSIBLY]->(b:Correspondent) "
-            "MATCH (s:Correspondent {key: $survivor}) "
-            "FOREACH (_ IN CASE WHEN b.key = $survivor THEN [] ELSE [1] END | "
-            "  MERGE (s)-[:POSSIBLY]->(b)) "
-            "DELETE r",
-            {"loser": loser["key"], "survivor": survivor["key"]},
-        )
+        if edge == "WITH":
+            _repoint_possibly(cur, survivor["key"], loser["key"], label)
         # The loser's per-platform facts are copied onto the survivor *before* the
         # delete, so `_reconcile` can rebuild `platforms` / `platform_label` from the
         # union rather than from the survivor alone.
-        _inherit(cur, survivor["key"], loser["key"])
+        _inherit(cur, survivor["key"], loser["key"], label=label)
         cur.execute(
-            "MATCH (l:Correspondent {key: $loser}) DETACH DELETE l",
+            f"MATCH (l:{label} {{key: $loser}}) DETACH DELETE l",
             {"loser": loser["key"]},
         )
     conn.commit()
 
 
-def _inherit(cur: Any, survivor_key: str, loser_key: str) -> None:
+def _repoint_possibly(cur: Any, survivor_key: str, loser_key: str,
+                      label: str) -> None:
+    """Re-point both directions of `POSSIBLY`, dropping the pair that became one node.
+
+    `POSSIBLY` is symmetric in meaning, so an edge in either direction has to move. An
+    edge between the survivor and the loser would become a self-edge and is dropped
+    instead.
+    """
+    params = {"loser": loser_key, "survivor": survivor_key}
+    cur.execute(
+        f"MATCH (a:{label})-[r:POSSIBLY]->(l:{label} {{key: $loser}}) "
+        f"MATCH (s:{label} {{key: $survivor}}) "
+        "FOREACH (_ IN CASE WHEN a.key = $survivor THEN [] ELSE [1] END | "
+        "  MERGE (a)-[:POSSIBLY]->(s)) "
+        "DELETE r",
+        params,
+    )
+    cur.execute(
+        f"MATCH (l:{label} {{key: $loser}})-[r:POSSIBLY]->(b:{label}) "
+        f"MATCH (s:{label} {{key: $survivor}}) "
+        "FOREACH (_ IN CASE WHEN b.key = $survivor THEN [] ELSE [1] END | "
+        "  MERGE (s)-[:POSSIBLY]->(b)) "
+        "DELETE r",
+        params,
+    )
+
+
+def _inherit(cur: Any, survivor_key: str, loser_key: str,
+             *, label: str = "Correspondent") -> None:
     """Copy the loser's `handle_<p>` / `seen_<p>` / address onto the survivor.
 
     Written as a read-then-write rather than one Cypher statement because the property
     names are dynamic (`handle_telegram`), and Relate cannot parameterise a property
     name in a `SET`. The values are flat strings, so this is a handful of assignments.
+
+    `mention_count` is a Place's own flat fact and joins the copy: the survivor of a
+    Place fold has seen every message either loser saw, so the counts are summed. It is
+    the one place the two labels differ, and the difference is deliberate rather than
+    an oversight — a Correspondent has no equivalent scalar.
     """
     from .writer import HANDLE_PREFIX, SEEN_PREFIX
 
     cur.execute(
-        "MATCH (l:Correspondent {key: $key}) RETURN properties(l) AS p",
+        f"MATCH (l:{label} {{key: $key}}) RETURN properties(l) AS p",
         {"key": loser_key},
     )
     rows = cur.fetchall()
@@ -373,8 +449,16 @@ def _inherit(cur: Any, survivor_key: str, loser_key: str) -> None:
         slot = f"v{position}"
         params[slot] = value
         sets.append(f"SET s.{name} = coalesce(s.{name}, ${slot}) ")
+
+    # `mention_count` is additive, not coalesced: both nodes counted distinct messages,
+    # and the survivor has now seen the union of them.
+    if props.get("mention_count"):
+        params["mentions"] = int(props["mention_count"])
+        sets.append(
+            "SET s.mention_count = coalesce(s.mention_count, 0) + $mentions "
+        )
     cur.execute(
-        "MATCH (s:Correspondent {key: $key}) " + "".join(sets),
+        f"MATCH (s:{label} {{key: $key}}) " + "".join(sets),
         params,
     )
 
@@ -429,3 +513,55 @@ def _draw_possibly(conn: Any, nodes: list[dict[str, Any]]) -> int:
     )
     conn.commit()
     return len(pairs)
+
+
+# ----------------------------------------------------------------- entities
+
+
+def _link_entity(conn: Any, label: str) -> dict[str, Any]:
+    """Fold one entity kind across platforms. Correspondent rules, one weaker ladder.
+
+    A Place has no phone and no address, so `ENTITY_EVIDENCE_ORDER` holds only
+    `exact_name`. That means a fold here is "the same canonical name, seen on more than
+    one platform" — the canonical name having already absorbed case, accents, a postal
+    code and a trailing region code via `canon`. It is the best evidence a place can
+    offer, and it is weaker than the Correspondent case; `:Merged` carries the same
+    label, so the UI must say "same spelling" rather than "same place".
+
+    `POSSIBLY` is **not** drawn between entities. A fuzzy pair is a line saying two
+    spellings might be one person, and a human can adjudicate it from a name. Two
+    places one letter apart are two places (a `Fargo`/`Largo` typo is not a merge
+    candidate, it is a different town), and there is no second signal to weigh.
+    """
+    nodes = _load(conn, label)
+    if len(nodes) < 2:
+        return {"folded": 0, "merged_by": {}, "groups": [], "possibly": 0}
+
+    handles = _handles(conn, [node["key"] for node in nodes], label=label)
+    for node in nodes:
+        node["handles"] = handles.get(node["key"], {})
+
+    groups = _fold_groups(
+        nodes, fold_on_name=True, evidence=ENTITY_EVIDENCE_ORDER,
+    )
+    folded = 0
+    by_reason: dict[str, int] = defaultdict(int)
+    report_groups: list[list[str]] = []
+
+    for survivor, losers, reason in groups:
+        _fold(conn, survivor, losers, label=label, edge="MENTIONS")
+        folded += len(losers)
+        by_reason[reason] += len(losers)
+        report_groups.append([survivor["key"], *[n["key"] for n in losers]])
+
+    if folded:
+        # Same reason as the Correspondent pass: the union of two nodes' platforms can
+        # cross the `:Merged` threshold, so the derived properties must be rebuilt from
+        # the facts `_inherit` just merged.
+        from .writer import _reconcile
+
+        _reconcile(conn.cursor(), [group[0] for group in report_groups], label=label)
+        conn.commit()
+
+    return {"folded": folded, "merged_by": dict(by_reason),
+            "groups": report_groups, "possibly": 0}

@@ -489,17 +489,26 @@ _NODE_QUERIES: dict[str, str] = {
     ),
     # The four extracted kinds share one query. `mention_count` is the only quantity
     # the store will have for them, counted through `MENTIONS` the way a
-    # correspondent's `thread_count` is counted through `WITH`. The edge does not
-    # exist yet, so this returns 0 today — which is the honest answer, not a bug.
+    # correspondent's `thread_count` is counted through `WITH`.
+    #
+    # `merged` is the `:Merged` label as a boolean, exactly as the Correspondent query
+    # returns it. Without it the canvas cannot put a multi-platform Place in the
+    # merged bag, cannot draw its halo, and cannot pick the neutral glyph — every
+    # entity would have looked single-platform no matter what the store said.
     **{
         kind: (
             f"MATCH (e:{kind}) "
             "{where}"
             "OPTIONAL MATCH (t:Thread)-[:MENTIONS]->(e) "
+            # Aggregated so the node appears ONCE however many threads mention it, and
+            # grouped on the stable fields so `e:Merged`/`mention_count` read through.
+            "WITH e, count(DISTINCT t) AS threads "
             "RETURN e.key AS id, e.display_name AS label, e.platform AS platform, "
             "       coalesce(e.platforms, [e.platform]) AS platforms, "
             "       e.platform_label AS platform_label, "
-            "       count(DISTINCT t) AS mention_count "
+            "       e:Merged AS merged, "
+            "       coalesce(e.mention_count, 0) AS mention_count, "
+            "       threads AS thread_count "
             "ORDER BY {order} "
             "LIMIT $n"
         )
@@ -1221,6 +1230,7 @@ def ingest(
     prune: bool = False,
     prune_keep: int | None = None,
     write_enabled: bool = False,
+    delta: bool = True,
 ) -> dict[str, Any]:
     """Parse exports into the store: stage, parse, resolve, scrub, write, verify.
 
@@ -1283,6 +1293,7 @@ def ingest(
         prune_keep=None if prune_keep is None else int(prune_keep),
         tz_offset_hours=None if tz_offset_hours is None else float(tz_offset_hours),
         extra_results=extra_results,
+        delta=bool(delta),
     )
     payload = report.to_dict()
     payload["staged"] = staged

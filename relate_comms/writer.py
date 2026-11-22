@@ -13,6 +13,7 @@ Two properties this file exists to guarantee:
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -25,6 +26,13 @@ _SCHEMA = (
     "CREATE INDEX thread_key IF NOT EXISTS FOR (t:Thread) ON (t.key)",
     "CREATE INDEX attachment_key IF NOT EXISTS FOR (a:Attachment) ON (a.key)",
     "CREATE INDEX correspondent_key IF NOT EXISTS FOR (c:Correspondent) ON (c.key)",
+    # Named, not iterated over `canon.KINDS`, because this tuple is imported lazily at
+    # connect time and an entity written unindexed is a silent per-ingest scan.
+    "CREATE INDEX place_key IF NOT EXISTS FOR (p:Place) ON (p.key)",
+    # The delta watermark: `max(ts_utc)` for one platform. Without this index that
+    # query is a full scan of every message, which defeats the point of a delta run —
+    # measured at 63 ms for 910 messages, i.e. linear and growing with the store.
+    "CREATE INDEX msg_ts IF NOT EXISTS FOR (m:Message) ON (m.ts_utc)",
 )
 
 _MSG_CYPHER = (
@@ -329,12 +337,18 @@ def _first_seen_by_person(
 _PLATFORM_ORDER = tuple(PLATFORM_TITLE_LABELS)
 
 
-def _reconcile(cur: Any, keys: Iterable[str]) -> None:
+def _reconcile(cur: Any, keys: Iterable[str], *, label: str = "Correspondent") -> None:
     """Recompute every derived property from the flat per-platform facts.
 
     Runs after the rows have landed, because a node's `platforms` list depends on
     stamps written by *other* batches and a batch cannot see them. It is idempotent:
     it reads only `seen_<p>` and `handle_<p>`, which the row statement owns.
+
+    **The rules are the same for every entity label**, which is why this takes a label
+    rather than a query: a `Place` seen on Telegram and on WhatsApp carries exactly the
+    properties a `Correspondent` does (`handle_<p>`, `seen_<p>`), and `:Merged` has to
+    mean the same thing on both. The `WHERE` is spelled out per label rather than
+    built from a parameter because Relate cannot parameterise a label in `MATCH`.
 
     What it decides, and why each rule is what it is:
 
@@ -354,7 +368,7 @@ def _reconcile(cur: Any, keys: Iterable[str]) -> None:
 
     rows = []
     cur.execute(
-        "MATCH (c:Correspondent) WHERE c.key IN $keys RETURN properties(c) AS p",
+        f"MATCH (n:{label}) WHERE n.key IN $keys RETURN properties(n) AS p",
         {"keys": keys},
     )
     for record in cur.fetchall():
@@ -388,13 +402,13 @@ def _reconcile(cur: Any, keys: Iterable[str]) -> None:
         })
 
     cur.execute(
-        "UNWIND $rows AS row MATCH (c:Correspondent {key: row.key}) "
-        "SET c.platform = row.platform, c.platforms = row.platforms, "
-        "    c.display_name = row.display_name, "
-        "    c.first_seen_utc = row.first_seen_utc, "
-        "    c.platform_label = row.platform_label "
-        "FOREACH (_ IN CASE WHEN row.merged THEN [1] ELSE [] END | SET c:Merged) "
-        "FOREACH (_ IN CASE WHEN row.merged THEN [] ELSE [1] END | REMOVE c:Merged) ",
+        f"UNWIND $rows AS row MATCH (n:{label} {{key: row.key}}) "
+        "SET n.platform = row.platform, n.platforms = row.platforms, "
+        "    n.display_name = row.display_name, "
+        "    n.first_seen_utc = row.first_seen_utc, "
+        "    n.platform_label = row.platform_label "
+        "FOREACH (_ IN CASE WHEN row.merged THEN [1] ELSE [] END | SET n:Merged) "
+        "FOREACH (_ IN CASE WHEN row.merged THEN [] ELSE [1] END | REMOVE n:Merged) ",
         {"rows": rows},
     )
 
@@ -685,6 +699,44 @@ def stored_keys(conn: Any, platform: str) -> set[str]:
     return {row["m.key"] for row in cur.fetchall()}
 
 
+def watermark(conn: Any, platform: str) -> str | None:
+    """The newest `ts_utc` this platform already holds, or None for an empty platform.
+
+    This is the delta cutoff: a message at or below it is already in the store, so it
+    needs neither a write nor an extraction. It is a *timestamp*, not a set of keys,
+    because the point is to answer "what is new?" without shipping every key back.
+
+    Indexed by `_SCHEMA`'s `msg_ts`. The string comparison is safe because every
+    `ts_utc` is written by `schema.to_utc_string` — ISO-8601 with `Z`, fixed width, so
+    lexical order equals chronological order.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "MATCH (m:Message) WHERE m.platform = $platform "
+        "RETURN max(m.ts_utc) AS newest",
+        {"platform": platform},
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return None
+    value = rows[0]["newest"]
+    return str(value) if value else None
+
+
+def watermarks(conn: Any, platforms: Iterable[str]) -> dict[str, str]:
+    """`platform -> newest ts_utc` for every platform that holds messages.
+
+    A platform with no rows is simply absent, which the caller reads as "nothing is
+    already ingested, keep everything".
+    """
+    out: dict[str, str] = {}
+    for platform in sorted({p for p in platforms if p}):
+        newest = watermark(conn, platform)
+        if newest:
+            out[platform] = newest
+    return out
+
+
 def verify_present(conn: Any, result: IngestResult) -> tuple[bool, dict[str, Any]]:
     """Is every key from this ingest actually in the store?
 
@@ -712,6 +764,124 @@ def counts_by_kind(conn: Any, platform: str) -> dict[str, int]:
         {"platform": platform},
     )
     return {row["kind"]: row["n"] for row in cur.fetchall()}
+
+
+# ------------------------------------------------------------ entity extraction
+
+# One statement for the entity kinds, shaped exactly like `_CORRESPONDENT_CYPHER`.
+#
+# The label cannot be a parameter (Relate will not accept a dynamic label in `MATCH`
+# or `MERGE`), so the writer builds the statement once per kind at import time; the
+# kind set is `canon.KINDS`, which is the same source `tools.ENTITY_KINDS` reads.
+#
+# The split is the Correspondent split and for the same reason: `handle_<p>` /
+# `seen_<p>` are flat per-platform facts, and everything derived (`platforms`,
+# `platform_label`, `:Merged`) is recomputed by `_reconcile` afterwards, because an
+# `UNWIND` row cannot see what a sibling row just wrote.
+#
+# **`mention_count` is accumulated, not set.** Two ingests of the same export both see
+# a place, and the second must not double it. It is therefore computed here from the
+# distinct message keys this run holds (`row.mentions`), then the node keeps the
+# larger of the two — an entity seen in three messages stays three when re-ingested.
+_PLACE_CYPHER = (
+    "UNWIND $rows AS row "
+    "MERGE (p:Place {key: row.key}) "
+    "SET p[row.handle_prop] = CASE WHEN p[row.seen_prop] IS NULL "
+    "        OR (row.first_seen_utc IS NOT NULL AND row.first_seen_utc < p[row.seen_prop]) "
+    "    THEN row.handle ELSE p[row.handle_prop] END "
+    "SET p[row.seen_prop] = CASE WHEN p[row.seen_prop] IS NULL "
+    "        OR (row.first_seen_utc IS NOT NULL AND row.first_seen_utc < p[row.seen_prop]) "
+    "    THEN coalesce(row.first_seen_utc, p[row.seen_prop]) ELSE p[row.seen_prop] END "
+    "SET p.mention_count = CASE WHEN p.mention_count IS NULL OR row.mentions > p.mention_count "
+    "    THEN row.mentions ELSE p.mention_count END "
+    "WITH p, row "
+    "MATCH (t:Thread {key: row.thread_key}) "
+    "MERGE (t)-[:MENTIONS]->(p)"
+)
+
+# Evidence for a Place fold -> the `merged_by` value the audit query reads.
+_ENTITY_MERGED_BY = {"suffix": "exact_name", "case": "exact_name",
+                     "diacritic": "exact_name", "camel": "exact_name"}
+
+
+def write_places(
+    conn: Any,
+    mentions: Iterable[Any],
+    *,
+    message_meta: dict[str, tuple[str, str]],
+) -> dict[str, int]:
+    """Write one `Place` per canonical name, attached to threads with `MENTIONS`.
+
+    `mentions` are `extract.Mention` records; `message_meta` maps `message_key ->
+    (thread_key, ts_utc)` so a mention knows which thread to hang from and what its
+    first sighting is. Both are passed in rather than looked up, so this runs after
+    `write()` without a query per message.
+
+    **Folding happens here, inside one platform.** `canon.canonical(kind="place")`
+    drops the postal code and the trailing region code, so `Kensington`,
+    `kensington` and `Kensington, London` converge to one key on one platform. That is
+    `canon` doing its real work; this function only asks it and groups the answer.
+
+    Cross-platform merging is **not** done here. `link.py` does it afterwards, over the
+    whole store, exactly as it does for Correspondents.
+
+    Returns `{"places": n, "mentions": n}` where `places` counts distinct keys.
+    """
+    from .canon import canonical
+
+    # task (key, platform) -> the facts a single `MERGE` row needs.
+    facts: dict[tuple[str, str], dict[str, Any]] = {}
+    thread_rows: list[dict[str, Any]] = []
+    seen_messages: dict[str, set[str]] = defaultdict(set)
+
+    for mention in mentions:
+        meta = message_meta.get(mention.message_key)
+        if meta is None:
+            continue
+        thread_key, ts_utc = meta
+        platform = mention.platform or ""
+        record = canonical(mention.text, kind="place")
+        if not record.key:
+            continue
+        key = f"place:{record.key}"
+        seen_messages[key].add(mention.message_key)
+
+        slot = (key, platform)
+        fact = facts.get(slot)
+        if fact is None:
+            fact = facts[slot] = {
+                "key": key,
+                "handle": record.display,
+                "handle_prop": f"{HANDLE_PREFIX}{platform}",
+                "seen_prop": f"{SEEN_PREFIX}{platform}",
+                "first_seen_utc": ts_utc,
+            }
+        elif ts_utc and (fact["first_seen_utc"] is None
+                         or ts_utc < fact["first_seen_utc"]):
+            fact["first_seen_utc"] = ts_utc
+        thread_rows.append({**fact, "thread_key": thread_key})
+
+    if not facts:
+        return {"places": 0, "mentions": 0}
+
+    # One row per (thread, place, platform); `mentions` carries the count for the whole
+    # key so every row agrees on it — the same order-independence the Correspondent
+    # statement relies on.
+    rows: list[dict[str, Any]] = []
+    seen_threads: set[tuple[str, str]] = set()
+    for row in thread_rows:
+        dedupe = (row["thread_key"], row["key"])
+        if dedupe in seen_threads:
+            continue
+        seen_threads.add(dedupe)
+        rows.append({**row, "mentions": len(seen_messages[row["key"]])})
+
+    cur = conn.cursor()
+    for batch in _chunks(rows):
+        cur.execute(_PLACE_CYPHER, {"rows": batch})
+    _reconcile(cur, set(seen_messages), label="Place")
+    conn.commit()
+    return {"places": len(seen_messages), "mentions": len(thread_rows)}
 
 
 def ingest_file(
