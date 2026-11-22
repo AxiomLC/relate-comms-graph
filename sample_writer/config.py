@@ -33,18 +33,18 @@ SEED = 20261114
 OWNER = "Mark Jones"
 # Quiet threads need to be 3+ years older than the newest message (UNDESIRABLES §10),
 # so the window is deliberately longer than the data it carries.
-START = "2022-01-01"
+START = "2024-01-01"
 END = "2026-11-01"
 
 CORRESPONDENTS = (60, 120)       # (min, max) random cast size
-CROSS_PLATFORM_MIN = 0.08        # 8-12% of the random cast appears on >1 platform
-CROSS_PLATFORM_MAX = 0.12
+CROSS_PLATFORM_MIN = 0.05        # 8-12% of the random cast appears on >1 platform
+CROSS_PLATFORM_MAX = 0.08
 BODY_OVERLAP_MAX = 0.05          # body mentions stay rare and never make edges
 
 # --------------------------------------------------------------- message volume
 
 # Ordinary threads per platform. Each platform then adds its mandated shapes on top.
-THREADS_PER_PLATFORM = 20
+THREADS_PER_PLATFORM = 25
 
 # Message-count weights for ordinary threads. 2-12 dominates; long threads are rare.
 # The mandated shapes (below) are added regardless of this distribution.
@@ -107,7 +107,7 @@ PLATFORMS = (
 VARIANTS = {
     "email": ("eml",),
     "telegram": ("bulk", "single"),
-    "whatsapp": ("chat_txt", "underscore", "bare", "html"),
+    "whatsapp": ("web", "html"),
     "messenger": ("zip", "dir"),
     "linkedin": ("zip", "dir"),
     # `sms_json_app` is a negative case: a different Android app's shape, which the app
@@ -143,7 +143,7 @@ FUZZ_SENDERS_CROSS = 4
 FUZZ_BODIES_INTRA = 8
 FUZZ_BODIES_INTRA_PLATFORMS = 4
 # The same entity spelled differently across two platforms (`N Dakota` / `North Dakota`).
-FUZZ_BODIES_CROSS = 8
+FUZZ_BODIES_CROSS = 6
 
 # Which entity kinds may vary in a body. `Thing` is deliberately excluded.
 FUZZ_BODY_KINDS = ("org", "place", "person")

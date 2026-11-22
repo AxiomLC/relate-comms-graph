@@ -143,7 +143,7 @@ def test_spam_group_is_at_least_half_noise(world):
 
 
 def test_telegram_bulk_ingests(generated):
-    path = generated / "telegram" / "telegram_bulk" / "result.json"
+    path = generated / "telegram" / "Telegram Desktop" / "DataExport_2026-11-01" / "result.json"
     assert ingest.detect_platform(path) == "telegram"
     result = telegram.parse(path)
     assert result.chats, "no chats parsed from the bulk export"
@@ -152,7 +152,7 @@ def test_telegram_bulk_ingests(generated):
 
 def test_telegram_zero_message_chat_is_skipped_not_emitted(generated):
     """§6: a chat whose only rows are service rows yields no Chat."""
-    path = generated / "telegram" / "telegram_bulk" / "result.json"
+    path = generated / "telegram" / "Telegram Desktop" / "DataExport_2026-11-01" / "result.json"
     result = telegram.parse(path)
     titles = {chat.title for chat in result.chats}
     assert "Old Group" not in titles
@@ -161,16 +161,16 @@ def test_telegram_zero_message_chat_is_skipped_not_emitted(generated):
 
 def test_telegram_service_rows_are_kept_and_kinded(generated):
     """§7: service rows inside a live thread survive include_service=True."""
-    path = generated / "telegram" / "telegram_bulk" / "result.json"
+    path = generated / "telegram" / "Telegram Desktop" / "DataExport_2026-11-01" / "result.json"
     result = telegram.parse(path)
     service_kinds = [k for k in result.unknown_kinds if k.startswith("service:")]
     assert service_kinds, "no service rows reached the adapter"
 
 
 def test_whatsapp_native_detects_and_parses(generated):
-    """§11a: native zip, one chat per file, chat.txt inside a conversation folder."""
-    zips = sorted((generated / "whatsapp" / "whatsapp_chat_txt").glob("*.zip"))
-    assert zips, "no native WhatsApp zips written"
+    """§11a: WhatsApp Web single-chat zip, one chat per file, chat.txt at the root."""
+    zips = sorted((generated / "whatsapp" / "whatsapp_web").glob("*.zip"))
+    assert zips, "no WhatsApp Web zips written"
     path = zips[0]
     assert ingest.detect_platform(path) == "whatsapp"
     result = whatsapp.parse(path)
@@ -184,7 +184,9 @@ def test_whatsapp_html_detects_and_parses(generated):
     **file** by `ingest._parser_for()` — not by the platform name. Asserting on
     `detect_platform()` alone would pass while the file was handed to the text adapter.
     """
-    path = generated / "whatsapp" / "whatsapp_html" / "whatsapp-chats-20261117.zip"
+    zips = list((generated / "whatsapp" / "whatsapp_html").glob("whatsapp-chats-*.zip"))
+    assert zips, "no HTML WhatsApp zip written"
+    path = zips[0]
     assert path.exists()
 
     platform = ingest.detect_platform(path)
@@ -203,7 +205,7 @@ def test_whatsapp_html_reaches_the_store_through_ingest(generated, tmp_path):
     """The routing fix must hold through a whole ingest, not just a direct parse."""
     folder = tmp_path / "only_html"
     folder.mkdir()
-    source = generated / "whatsapp" / "whatsapp_html" / "whatsapp-chats-20261117.zip"
+    source = next((generated / "whatsapp" / "whatsapp_html").glob("whatsapp-chats-*.zip"))
     shutil.copy2(source, folder / source.name)
 
     report = ingest.ingest(root=folder, store=tmp_path / "g.rl",
@@ -214,29 +216,35 @@ def test_whatsapp_html_reaches_the_store_through_ingest(generated, tmp_path):
 
 def test_whatsapp_group_has_membership_row(generated):
     """§1: an owner-silent group is only classifiable via a membership system row."""
-    zips = sorted((generated / "whatsapp" / "whatsapp_chat_txt").glob("*Watch*.zip"))
+    zips = sorted((generated / "whatsapp" / "whatsapp_web").glob("*.zip"))
     assert zips, "owner-silent group zip missing"
     import zipfile
-    with zipfile.ZipFile(zips[0]) as archive:
-        text = archive.read(archive.namelist()[0]).decode("utf-8")
-    # The phrases `whatsapp._GROUP_SYSTEM` matches, not a hand-picked subset: the
-    # writer may legitimately pick `joined using this group's invite link`, and a
-    # test that omits it fails on a correct build.
-    for phrase in ("added", "removed", "changed the group", "created group",
-                   "joined using this group's invite"):
-        if phrase in text:
-            return
+    for path in zips:
+        with zipfile.ZipFile(path) as archive:
+            text = archive.read("chat.txt").decode("utf-8")
+        # The phrases `whatsapp._GROUP_SYSTEM` matches, not a hand-picked subset: the
+        # writer may legitimately pick `joined using this group's invite link`, and a
+        # test that omits it fails on a correct build.
+        for phrase in ("added", "removed", "changed the group", "created group",
+                       "joined using this group's invite"):
+            if phrase in text:
+                return
     raise AssertionError("no membership system row in the owner-silent group")
 
 
 def test_whatsapp_owner_silent_group_is_classified_as_group(generated):
     """The whole point of §1: the app sees a group with zero owner rows."""
-    zips = sorted((generated / "whatsapp" / "whatsapp_chat_txt").glob("*Watch*.zip"))
-    result = whatsapp.parse(zips[0])
-    groups = [chat for chat in result.chats if getattr(chat, "is_group", False)]
-    assert groups, "owner-silent group parsed as personal_chat"
-    owner_rows = [m for m in result.messages if getattr(m, "is_self", False)]
-    assert not owner_rows, "owner rows leaked into an owner-silent group"
+    zips = sorted((generated / "whatsapp" / "whatsapp_web").glob("*.zip"))
+    assert zips, "owner-silent group zip missing"
+    for path in zips:
+        result = whatsapp.parse(path)
+        groups = [chat for chat in result.chats if getattr(chat, "is_group", False)]
+        if not groups:
+            continue
+        owner_rows = [m for m in result.messages if getattr(m, "is_self", False)]
+        assert not owner_rows, "owner rows leaked into an owner-silent group"
+        return
+    raise AssertionError("no owner-silent group parsed as a group")
 
 
 def test_linkedin_parses_with_placeholder_sender(generated):
@@ -247,7 +255,7 @@ def test_linkedin_parses_with_placeholder_sender(generated):
     present as a row sender, and the chat is titled after a real person instead. Assert
     the placeholder reached the adapter, not that it titled the chat.
     """
-    path = generated / "linkedin" / "linkedin_zip" / "Basic_LinkedInDataExport_11-14-2026.zip.zip"
+    path = next((generated / "linkedin" / "linkedin_zip").glob("Basic_LinkedInDataExport_*.zip.zip"))
     assert ingest.detect_platform(path) == "linkedin"
     import csv
     import io
@@ -265,11 +273,11 @@ def test_linkedin_parses_with_placeholder_sender(generated):
 
 
 def test_sms_xml_and_zip_both_detect(generated):
-    plain = generated / "sms" / "sms_xml" / "sms-20261116212209.xml"
+    plain = next((generated / "sms" / "sms_xml").glob("sms-*.xml"))
     assert ingest.detect_platform(plain) == "sms"
     assert sms.parse(plain).messages
 
-    zipped = generated / "sms" / "sms_xml_zip" / "sms-20261116212209.xml.zip"
+    zipped = next((generated / "sms" / "sms_xml_zip").glob("sms-*.xml.zip"))
     # Both halves matter: `sms._head_text()` unwraps the zip so detection sees the
     # decompressed `<smses>`, and the parser reads the same member. Asserting only the
     # parser let a detection regression pass unnoticed.
@@ -349,7 +357,7 @@ def test_email_export_is_discovered_by_ingest(generated):
 
 
 def test_messenger_zip_ingests(generated):
-    path = generated / "messenger" / "messenger_zip" / "facebook-sampleuser-2026-11-14-1G300tUX.zip"
+    path = next((generated / "messenger" / "messenger_zip").glob("facebook-sampleuser-*.zip"))
     assert ingest.detect_platform(path) == "messenger"
     result = messenger.parse(path)
     assert result.messages
@@ -358,7 +366,7 @@ def test_messenger_zip_ingests(generated):
 
 def test_messenger_has_placeholder_titled_threads(generated):
     """§5: three threads titled `Facebook user`."""
-    path = generated / "messenger" / "messenger_zip" / "facebook-sampleuser-2026-11-14-1G300tUX.zip"
+    path = next((generated / "messenger" / "messenger_zip").glob("facebook-sampleuser-*.zip"))
     result = messenger.parse(path)
     titled = [c for c in result.chats if c.title == "Facebook user"]
     assert len(titled) >= config.PLACEHOLDER_THREADS["messenger"]
@@ -366,7 +374,7 @@ def test_messenger_has_placeholder_titled_threads(generated):
 
 def test_messenger_spam_group_is_dropped_when_asked(generated):
     """§2: the gate must fire on the generated spam group."""
-    path = generated / "messenger" / "messenger_zip" / "facebook-sampleuser-2026-11-14-1G300tUX.zip"
+    path = next((generated / "messenger" / "messenger_zip").glob("facebook-sampleuser-*.zip"))
     kept = messenger.parse(path)
     dropped = messenger.parse(path, exclude_spam_groups=True)
     assert len(dropped.messages) < len(kept.messages), "spam group not detected"
@@ -374,7 +382,7 @@ def test_messenger_spam_group_is_dropped_when_asked(generated):
 
 def test_owner_silent_group_survives_in_the_zip_unless_filtered(generated):
     """§1 + §8: the gate drops them only when asked, and 1:1s are never touched."""
-    path = generated / "messenger" / "messenger_zip" / "facebook-sampleuser-2026-11-14-1G300tUX.zip"
+    path = next((generated / "messenger" / "messenger_zip").glob("facebook-sampleuser-*.zip"))
     kept = messenger.parse(path)
     filtered = messenger.parse(path, exclude_silent_groups=True)
     assert len(filtered.chats) < len(kept.chats)
@@ -489,13 +497,13 @@ def test_sender_fuzz_reaches_the_payloads(generated, world):
     import zipfile
 
     telegram_doc = json.loads(
-        (generated / "telegram" / "telegram_bulk" / "result.json")
+        (generated / "telegram" / "Telegram Desktop" / "DataExport_2026-11-01" / "result.json")
         .read_text(encoding="utf-8"))
     telegram_text = json.dumps(telegram_doc)
     whatsapp_text = "\n".join(
-        path.read_text(encoding="utf-8", errors="ignore")
-        for path in (generated / "whatsapp" / "whatsapp_bare").glob("*.txt"))
-    sms_text = (generated / "sms" / "sms_xml" / "sms-20261116212209.xml") \
+        zipfile.ZipFile(path).read("chat.txt").decode("utf-8", "ignore")
+        for path in (generated / "whatsapp" / "whatsapp_web").glob("*.zip"))
+    sms_text = next((generated / "sms" / "sms_xml").glob("sms-*.xml")) \
         .read_text(encoding="utf-8", errors="ignore")
 
     def present(spelling, platform):
@@ -527,20 +535,19 @@ def test_body_fuzz_reaches_the_payloads(generated, world):
     import zipfile
 
     blobs = {
-        "sms": (generated / "sms" / "sms_xml" / "sms-20261116212209.xml")
+        "sms": next((generated / "sms" / "sms_xml").glob("sms-*.xml"))
         .read_text(encoding="utf-8", errors="ignore"),
         "linkedin": zipfile.ZipFile(
-            generated / "linkedin" / "linkedin_zip"
-            / "Basic_LinkedInDataExport_11-14-2026.zip.zip")
+            next((generated / "linkedin" / "linkedin_zip").glob("Basic_LinkedInDataExport_*.zip.zip")))
         .read("messages.csv").decode("utf-8-sig"),
-        "telegram": (generated / "telegram" / "telegram_bulk" / "result.json")
+        "telegram": (generated / "telegram" / "Telegram Desktop" / "DataExport_2026-11-01" / "result.json")
         .read_text(encoding="utf-8"),
         "whatsapp": "\n".join(
-            path.read_text(encoding="utf-8", errors="ignore")
-            for path in (generated / "whatsapp" / "whatsapp_bare").glob("*.txt")),
+            zipfile.ZipFile(path).read("chat.txt").decode("utf-8", "ignore")
+            for path in (generated / "whatsapp" / "whatsapp_web").glob("*.zip")),
     }
-    with zipfile.ZipFile(generated / "messenger" / "messenger_zip"
-                         / "facebook-sampleuser-2026-11-14-1G300tUX.zip") as archive:
+    with zipfile.ZipFile(next((generated / "messenger" / "messenger_zip")
+                              .glob("facebook-sampleuser-*.zip"))) as archive:
         blobs["messenger"] = "\n".join(
             archive.read(name).decode("utf-8", "ignore")
             for name in archive.namelist() if name.endswith(".html"))

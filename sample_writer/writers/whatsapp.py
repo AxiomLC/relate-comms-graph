@@ -1,9 +1,11 @@
-"""WhatsApp. Both dialects the app reads, and the loose text forms.
+"""WhatsApp. The two shapes a dev actually meets, matching the real exports in `in/`.
 
-  chat_txt    native zip: `WhatsApp Chat with X/<id>@s.whatsapp.net/chat.txt`
-  underscore  older iPhone packaging: `_chat.txt`
-  bare        a loose `.txt`, no zip
-  html        the browser-extension dialect: many chats in one zip, `chats/*.html`
+  web   WhatsApp Web single-chat zips: `whatsapp_web/<number>.zip`, each flat
+        `chat.txt` + `chat.md`. WhatsApp Web names the archive by the contact's
+        phone number (not their name), and the contact name lives in the `chat.txt`
+        sender lines. This is the native Web/Windows export.
+  html  the browser-extension dialect: many chats in one zip, `chats/*.html` + `index`.
+        This is the only way to bulk-download, and the shape a dev most often ingests.
 
 **§1 depends on the membership system row.** A group the Owner never wrote in has no
 `You:` line at all, so the only group signal the adapter can see is a membership row
@@ -104,11 +106,6 @@ def _txt(thread_rows: list[tuple[datetime, str | None, str]]) -> list[str]:
     return lines
 
 
-def _chat_id(thread: Thread) -> str:
-    digits = "".join(ch for ch in str(abs(hash(thread.key))) if ch.isdigit())
-    return f"{(digits or '447700900123')[:12]}@s.whatsapp.net"
-
-
 def _safe(title: str) -> str:
     """A filename that Windows, Linux and macOS all accept."""
     for bad in '\\/:*?"<>|':
@@ -116,61 +113,26 @@ def _safe(title: str) -> str:
     return title.strip() or "chat"
 
 
-def write_chat_txt(plan: Plan, world: World, out_dir: Path, rng: Random,
-                   filer) -> list[Path]:
-    """One chat per zip, inside the conversation folder. The native Android export.
+def write_web(plan: Plan, world: World, out_dir: Path, rng: Random,
+              filer) -> list[Path]:
+    """WhatsApp Web single-chat zips, one per thread, named by phone number.
 
-    §11a: the native format is **one chat per file** and the chat title is the zip name,
-    so `_chat_id()` can derive the thread key. Concatenating every thread into one file
-    would still parse, but would produce one giant conversation the real exporter never
-    writes.
+    WhatsApp Web names the archive by the contact's **phone number** (`+27 61 164 2135.zip`),
+    not their name — the contact name appears only in the `chat.txt` sender lines. Each zip
+    holds a flat `chat.txt` and a markdown twin `chat.md`, exactly as the native export does.
     """
-    folder = out_dir / "whatsapp_chat_txt"
+    folder = out_dir / "whatsapp_web"
     folder.mkdir(parents=True, exist_ok=True)
     made: list[Path] = []
     for thread in plan.threads:
         if thread.silent:
             continue
-        safe = _safe(thread.title)
-        target = filer.file(folder, f"{safe}.zip")
-        body = "\r\n".join(_txt(_rows(thread, world, rng))) + "\r\n"
-        inner = f"WhatsApp Chat with {safe}/{_chat_id(thread)}/chat.txt"
-        with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr(inner, body)
-            archive.writestr(inner.replace("chat.txt", "chat.md"), "# WhatsApp chat\n")
-        made.append(target)
-    return made
-
-
-def write_underscore(plan: Plan, world: World, out_dir: Path, rng: Random,
-                     filer) -> list[Path]:
-    """Older iPhone-style packaging: one zip per chat, `_chat.txt` at the archive root."""
-    folder = out_dir / "whatsapp_underscore"
-    folder.mkdir(parents=True, exist_ok=True)
-    made: list[Path] = []
-    for thread in plan.threads:
-        if thread.silent:
-            continue
-        target = filer.file(folder, f"{_safe(thread.title)}.zip")
+        number = thread.participants[0].phone or _safe(thread.title)
+        target = filer.file(folder, f"{number}.zip")
         body = "\r\n".join(_txt(_rows(thread, world, rng))) + "\r\n"
         with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("_chat.txt", body)
-        made.append(target)
-    return made
-
-
-def write_bare(plan: Plan, world: World, out_dir: Path, rng: Random,
-               filer) -> list[Path]:
-    """Loose text files, one per chat: what a copy-pasted export looks like."""
-    folder = out_dir / "whatsapp_bare"
-    folder.mkdir(parents=True, exist_ok=True)
-    made: list[Path] = []
-    for thread in plan.threads:
-        if thread.silent:
-            continue
-        target = filer.file(folder, f"WhatsApp Chat with {_safe(thread.title)}.txt")
-        body = "\r\n".join(_txt(_rows(thread, world, rng))) + "\r\n"
-        target.write_text(body, encoding="utf-8")
+            archive.writestr("chat.txt", body)
+            archive.writestr("chat.md", f"# WhatsApp chat\n")
         made.append(target)
     return made
 
@@ -221,7 +183,7 @@ def write_html(plan: Plan, world: World, out_dir: Path, rng: Random,
     """Many chats in one zip, one page each. The browser-extension dialect (§11b)."""
     folder = out_dir / "whatsapp_html"
     folder.mkdir(parents=True, exist_ok=True)
-    target = filer.file(folder, "whatsapp-chats-20261117.zip")
+    target = filer.file(folder, f"whatsapp-chats-{world.export_date('%Y%m%d')}.zip")
     pages: list[tuple[str, str]] = []
     used: set[str] = set()
     for index, thread in enumerate(plan.threads):
@@ -248,9 +210,7 @@ def write_html(plan: Plan, world: World, out_dir: Path, rng: Random,
 
 
 WRITERS = {
-    "chat_txt": write_chat_txt,
-    "underscore": write_underscore,
-    "bare": write_bare,
+    "web": write_web,
     "html": write_html,
 }
 

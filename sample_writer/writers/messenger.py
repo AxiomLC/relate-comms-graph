@@ -108,7 +108,8 @@ def write_zip(plan: Plan, world: World, out_dir: Path, rng: Random,
               filer) -> Path:
     folder = out_dir / "messenger_zip"
     folder.mkdir(parents=True, exist_ok=True)
-    target = filer.file(folder, "facebook-sampleuser-2026-11-14-1G300tUX.zip")
+    target = filer.file(
+        folder, f"facebook-sampleuser-{world.export_date('%Y-%m-%d')}-1G300tUX.zip")
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, body in _layout(plan, world).items():
             archive.writestr(name, body)

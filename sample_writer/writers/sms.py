@@ -83,14 +83,16 @@ def _messages(plan: Plan, world: World, rng: Random) -> list[dict]:
     return rows
 
 
-def _xml(rows: list[dict], count_total: int) -> str:
+def _xml(rows: list[dict], count_total: int, world: World) -> str:
+    moment = world.end
     head = (
         "<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n"
-        "<!--File Created By SMS Backup & Restore v10.21.001 on 16/11/2026 21:22:18-->\n"
+        f"<!--File Created By SMS Backup & Restore v10.21.001 on "
+        f"{moment:%d/%m/%Y %H:%M:%S}-->\n"
         "<!--\n\nTo view this file in a more readable format, visit "
         "https://synctech.com.au/view-backup/\n\n-->\n"
         f'<smses count="{count_total}" backup_set="{BACKUP_SET}" '
-        f'backup_date="{int(datetime(2026, 11, 16).timestamp() * 1000)}" type="full">\n'
+        f'backup_date="{int(moment.timestamp() * 1000)}" type="full">\n'
     )
     parts = [head]
     for row in rows:
@@ -117,8 +119,9 @@ def write_xml(plan: Plan, world: World, out_dir: Path, rng: Random,
     folder = out_dir / "sms_xml"
     folder.mkdir(parents=True, exist_ok=True)
     rows = _messages(plan, world, rng)
-    target = filer.file(folder, "sms-20261116212209.xml")
-    target.write_text(_xml(rows, len(rows)), encoding="utf-8")
+    name = f"sms-{world.export_date('%Y%m%d%H%M%S')}.xml"
+    target = filer.file(folder, name)
+    target.write_text(_xml(rows, len(rows), world), encoding="utf-8")
     return target
 
 
@@ -127,9 +130,10 @@ def write_xml_zip(plan: Plan, world: World, out_dir: Path, rng: Random,
     folder = out_dir / "sms_xml_zip"
     folder.mkdir(parents=True, exist_ok=True)
     rows = _messages(plan, world, rng)
-    target = filer.file(folder, "sms-20261116212209.xml.zip")
+    name = f"sms-{world.export_date('%Y%m%d%H%M%S')}.xml"
+    target = filer.file(folder, f"{name}.zip")
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("sms-20261116212209.xml", _xml(rows, len(rows)))
+        archive.writestr(name, _xml(rows, len(rows), world))
     return target
 
 

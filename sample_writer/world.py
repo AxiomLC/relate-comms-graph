@@ -295,61 +295,75 @@ class World:
         pool = [p for p in self.people
                 if not p.is_fixed and norm_person_name(p.name) != owner]
         self.rng.shuffle(pool)
+        # The platforms a person can be promoted onto. `_populate` has its own local
+        # `platforms`; this method needs its own copy because the cross-promotion below
+        # can add a second platform to a person who only has one.
+        platforms = ["whatsapp", "telegram", "messenger", "sms", "linkedin", "email"]
 
         # A cross-platform pair needs two platforms. A nickname is the nicest case
         # (`Chris` / `Christopher`), but a mistyped given name across two platforms is
         # just as real a mismatch and is available for anybody — so a candidate without
         # a nickname falls back to that rather than leaving the knob unmet. Measured on
         # 60 seeds: nickname-only left 14 of them short.
-        crossable = [p for p in pool if len(p.on) > 1]
         need = max(0, config.FUZZ_SENDERS_CROSS)
-        # The cross shape needs two platforms *per candidate*, and only ~8-12% of the
-        # cast is multi-platform, so a fixed quota of 2 could not be met on 26 of 60
-        # seeds. Rather than report a knob that silently does nothing, promote the
-        # shortfall to a second platform: the cast is synthetic, and a person being on
-        # two platforms is exactly what the cross case requires.
-        if len(crossable) < need:
-            for person in [p for p in pool if len(p.on) < 2]:
-                if len(crossable) >= need:
-                    break
-                extra = self.rng.choice([x for x in platforms if x not in person.on])
-                person.on.add(extra)
-                crossable.append(person)
-        cross = crossable[:need]
-        # Keyed by name, not by object: `Person` is a mutable dataclass and therefore
-        # unhashable. Names are unique in the cast (`_populate` dedupes on them).
-        used: set[str] = set()
+        # The cross shape needs two platforms *per candidate*, and only a small share of
+        # the cast is multi-platform, so a fixed quota can exceed the multi-platform
+        # pool. Two passes keep the cross-platform share band intact:
+        #   1. use people already on two platforms — no promotion, so the share is
+        #      untouched;
+        #   2. only if the quota is still unmet, promote single-platform people onto a
+        #      second platform, and only as many as the quota still needs.
         made = 0
-        # Walk the candidates in order and keep going: a 3-letter given name (`Ada`)
-        # has no variant to offer, and stopping at the first such pair left the knob
-        # short even when later candidates could satisfy it.
-        for person in crossable:
-            if made >= need:
-                break
-            # Prefer two platforms that are NOT the intra ones, so a cross pair does
-            # not spend the same platform slots the intra quota needs. Seed 21 hit
-            # exactly this: one person took both WhatsApp and Telegram as their cross
-            # pair, starving the intra pass.
+
+        def _assign(person) -> bool:
+            """Give `person` a cross pair of spellings; True if it took."""
+            nonlocal made
+            # Prefer two platforms that are NOT the intra ones, so a cross pair does not
+            # spend the same platform slots the intra quota needs (seed 21 hit this).
             preferred = [x for x in sorted(person.on)
                          if x not in config.FUZZ_SENDERS_INTRA_PLATFORMS]
             if len(preferred) >= 2:
                 first, second = preferred[:2]
             elif len(person.on) == 2 and set(person.on) <= set(
                     config.FUZZ_SENDERS_INTRA_PLATFORMS):
-                # Both platforms are intra ones: using this person would consume the
-                # very slots the intra quota needs, and the summary would then count one
-                # person as `cross` while intra came up short. Leave them for intra.
-                continue
+                # Both platforms are intra ones. The person is already multi-platform,
+                # so using them for cross adds no platform and cannot inflate the share
+                # band; the intra pass simply skips anyone already carrying a label.
+                first, second = sorted(person.on)[:2]
             else:
                 first, second = sorted(person.on)[:2]
             other = fuzz.nicknamed(person.name) or fuzz.vary_sender(person.name, self.rng)
             if not other or other == person.name:
-                continue
+                return False
             person.labels[first] = person.name
             person.labels[second] = other
-            used.add(person.name)
             made += 1
+            return True
 
+        # Pass 1: already-multi-platform people only. No promotion, so the
+        # cross-platform share band is untouched.
+        for person in list(pool):
+            if made >= need:
+                break
+            if len(person.on) >= 2:
+                _assign(person)
+        # Pass 2: promote singles only if the quota is still unmet. Promote one at a
+        # time and **revert** if the person cannot be varied, so a failed promotion does
+        # not inflate the cross-platform share band.
+        if made < need:
+            for person in list(pool):
+                if made >= need:
+                    break
+                if len(person.on) >= 2:
+                    continue
+                extra = self.rng.choice([x for x in platforms if x not in person.on])
+                person.on.add(extra)
+                if not _assign(person):
+                    person.on.discard(extra)
+
+        # Keyed by name, not by object: `Person` is a mutable dataclass and therefore
+        # unhashable. Names are unique in the cast (`_populate` dedupes on them).
+        used: set[str] = set()
         intra_pool = list(pool)
         for platform in config.FUZZ_SENDERS_INTRA_PLATFORMS:
             quota = max(0, config.FUZZ_SENDERS_INTRA)
@@ -534,6 +548,16 @@ class World:
         return words or ["it"]
 
     # --- time --------------------------------------------------------------------
+
+    def export_date(self, fmt: str = "%Y-%m-%d") -> str:
+        """The date this world's export is stamped with, from the world's clock.
+
+        Real downloads carry the export date in their names (`DataExport_2026-11-14/`,
+        `facebook-...-2026-11-14-....zip`). The seed is only a date by coincidence at
+        the default; the date must come from the schedule, so a seed like `4` still
+        names its files with a real date.
+        """
+        return self.end.strftime(fmt)
 
     def random_time(self, rng: random.Random | None = None) -> datetime:
         rng = rng or self.rng

@@ -97,7 +97,8 @@ def write_zip(plan: Plan, world: World, out_dir: Path, rng: Random,
               filer) -> Path:
     folder = out_dir / "linkedin_zip"
     folder.mkdir(parents=True, exist_ok=True)
-    target = filer.file(folder, "Basic_LinkedInDataExport_11-14-2026.zip.zip")
+    target = filer.file(
+        folder, f"Basic_LinkedInDataExport_{world.export_date('%m-%d-%Y')}.zip.zip")
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("messages.csv", _csv(_rows(plan, world, rng), COLUMNS))
         archive.writestr("Connections.csv", _csv(_connections(world, rng), CONNECTION_COLUMNS))

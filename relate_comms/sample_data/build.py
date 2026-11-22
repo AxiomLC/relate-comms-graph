@@ -20,10 +20,12 @@ SAMPLE SHAPES
 -------------
 Two payloads, because Telegram has two parse paths and one payload cannot prove both:
 
-  telegram_bulk/result.json    Result wrapper -> chats.list[]
-  telegram_single/result.json  bare Chat object -> messages[]
+  Telegram Desktop/DataExport_<date>/result.json   Result wrapper -> chats.list[]
+  Telegram Desktop/ChatExport_<date>/result.json   bare Chat object -> messages[]
 
-Both are `result.json` inside a folder, matching the shape of a real download.
+Both are `result.json` inside a folder, matching the shape of a real Telegram Desktop
+download (same layout `sample_writer/` emits), so the whole folder drops into Ingest
+as-is.
 
 SCRUBBING CAVEAT: names appear in message BODIES as well as in `from`. The first
 version of this script only rewrote the structured fields and leaked a real name
@@ -54,12 +56,6 @@ FIXTURES = ROOT / "tests" / "fixtures"
 # Real exports live in `spool/real/`, gitignored. Used only as shape references when a
 # developer happens to have them; the minimal fallback works without them.
 from ..paths import real_dir  # noqa: E402
-
-# Where `main()` writes the generated Telegram payloads. This is a **build output**,
-# not a second ingest queue: `sample_writer/` is the dummy leg now, and its output is
-# dropped into the one spool like any real export. Kept only because
-# `tests/test_ingest_pipeline.py` builds its spool from here.
-SAMPLE = GENERATED / "telegram"
 
 _SINGLE_CANDIDATES = [
     real_dir() / "ChatExport_2026-11-14 (1)" / "result.json",
@@ -328,17 +324,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=20261114)
     args = parser.parse_args(argv)
 
-    target_root = SAMPLE if args.dest == "generated" else FIXTURES
-
     single, model_single = build(SINGLE_EXPORT, args.seed)
     bulk, model_bulk = build(BULK_EXPORT, args.seed)
     bulk = shrink(bulk)
 
     # A build output, not a queue. `sample_writer/` is the dummy leg now; this exists
     # because `tests/test_ingest_pipeline.py` builds its spool from here.
-    platform_root = target_root / "telegram" if args.dest == "generated" else target_root
-    single_path = platform_root / "telegram_single" / "result.json"
-    bulk_path = platform_root / "telegram_bulk" / "result.json"
+    if args.dest == "generated":
+        # Mirror a real Telegram Desktop download (same layout `sample_writer/` emits)
+        # so the whole folder drops into Ingest as-is.
+        target_root = GENERATED
+        # The export date is the fixture's pinned date, not the seed (the seed is only
+        # the RNG key and need not be a date). `tests/test_ingest_pipeline.py` reads
+        # these exact paths.
+        export_date = "2026-11-14"
+        single_path = target_root / "Telegram Desktop" / f"ChatExport_{export_date}" / "result.json"
+        bulk_path = target_root / "Telegram Desktop" / f"DataExport_{export_date}" / "result.json"
+    else:
+        # Committed, pinned fixtures. `paths.fixture()` and `test_telegram_ingest.py`
+        # read these exact paths, so the layout must not move casually.
+        target_root = FIXTURES
+        single_path = target_root / "telegram_single" / "result.json"
+        bulk_path = target_root / "telegram_bulk" / "result.json"
     _write(single_path, single)
     _write(bulk_path, bulk)
 

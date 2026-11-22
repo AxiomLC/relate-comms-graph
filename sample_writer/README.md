@@ -78,8 +78,8 @@ not a ceiling.
 | Platform | Artifacts today | What the app sees |
 |---|---|---|
 | **Facebook Messenger** | `messenger_zip/`, `messenger_dir/` | `your_facebook_activity/messages/{inbox,filtered_threads,message_requests,e2ee_cutover}/…` (zip and the same tree unzipped) |
-| **Telegram** | `telegram_bulk/`, `telegram_single/` | bulk DataExport and single‑chat ChatExport |
-| **WhatsApp** | `whatsapp_chat_txt/`, `whatsapp_underscore/`, `whatsapp_bare/`, `whatsapp_html/` | one chat per zip (`chat.txt`), the `_chat.txt` packaging, loose `.txt`, and the HTML dialect |
+| **Telegram** | `Telegram Desktop/DataExport_<date>/`, `Telegram Desktop/ChatExport_<date>/` | bulk DataExport and single‑chat ChatExport, in the real `Telegram Desktop` folder so it drops into Ingest as‑is |
+| **WhatsApp** | `whatsapp-chats-<date>.zip` + `whatsapp_web/` | the browser‑extension bulk zip (many chats, `chats/*.html` + `index.html`) at top level, plus `whatsapp_web/` of WhatsApp‑Web single‑chat zips |
 | **LinkedIn** | `linkedin_zip/`, `linkedin_dir/` | `messages.csv` + `Connections.csv` |
 | **SMS** | `sms_xml/`, `sms_xml_zip/`, `sms_json_app/` | SyncTech `<smses>`, the compressed form, and a deliberate negative case |
 | **Email** | `email_eml/<thread>/*.eml` | one RFC 5322 message per file (email is never a discoverable file) |
@@ -87,10 +87,23 @@ not a ceiling.
 
 A couple of deliberate quirks worth knowing:
 
+- **Dated filenames are dynamic, from the world's clock** (`world.end`), not hardcoded.
+  `Telegram Desktop/DataExport_<date>/`, `facebook-sampleuser-<date>-1G300tUX.zip`,
+  `Basic_LinkedInDataExport_<date>.zip.zip`, `sms-<timestamp>.xml`, and
+  `whatsapp-chats-<date>.zip` all carry the export date, so a different seed produces
+  differently-named files — exactly like real downloads.
 - `messenger_dir` and `linkedin_dir` exist because the adapters branch on `is_dir()` —
   two code paths, both worth generating.
 - `sms_json_app` is a different Android app's shape and **should** be reported
   unrecognised: it proves the app does not guess.
+- **WhatsApp Web names single-chat zips by phone number, not contact name.**
+  `whatsapp_web/<number>.zip` holds a flat `chat.txt` + `chat.md`, and the contact name
+  lives only in the `chat.txt` sender lines. Note the **Android** single-chat export is
+  different: it names the zip `WhatsApp Chat with <contact>.zip`, puts the text file at
+  the archive root as `WhatsApp Chat with <contact>.txt` (not `chat.txt`), bundles
+  `.vcf` contact cards, and writes dates as `22/06/23, 6:55 pm` (day-first, 2-digit
+  year, no seconds) — unlike Web's `[10/9/26, 10:23:45 AM]`. The app reads both; the
+  writer emits the Web shape, which is what a dev on WhatsApp Web actually gets.
 - **`outlook_copy/Outlook.pst` is a byte-for-byte copy of
   `tests/fixtures/outlook/Outlook.pst`** (same SHA-256). A dummy writer **cannot**
   synthesise a `.pst`: the format is a paged `MS-PST` database with an on-disk B-tree

@@ -3,6 +3,11 @@
   bulk   DataExport: {about, contacts, frequent_contacts, chats:{about,list}, left_chats}
   single ChatExport: {name, type, id, messages[]}
 
+Both are written under `out/telegram/Telegram Desktop/` as
+`DataExport_<date>/result.json` and `ChatExport_<date>/result.json`, mirroring a real
+Telegram Desktop download so the whole `Telegram Desktop` folder can be dropped into
+Ingest as-is. The date is derived from the seed.
+
 Service rows (`type: "service"`) are what make §6 (zero-message) and §7 (service rows in
 a live thread) expressible: §6 is a chat whose ONLY rows are service rows, and the
 adapter then emits no `Chat` for it and counts `skipped`.
@@ -142,7 +147,7 @@ def _chat(thread: Thread, world: World, rng: Random, start_id: int) -> tuple[dic
 
 def write_bulk(plan: Plan, world: World, out_dir: Path, rng: Random,
                 filer) -> Path:
-    folder = out_dir / "telegram_bulk"
+    folder = out_dir / "Telegram Desktop" / f"DataExport_{world.export_date()}"
     folder.mkdir(parents=True, exist_ok=True)
     chats, next_id = [], 100000
     for thread in plan.threads:
@@ -162,7 +167,7 @@ def write_bulk(plan: Plan, world: World, out_dir: Path, rng: Random,
 
 def write_single(plan: Plan, world: World, out_dir: Path, rng: Random,
                  filer) -> Path:
-    folder = out_dir / "telegram_single"
+    folder = out_dir / "Telegram Desktop" / f"ChatExport_{world.export_date()}"
     folder.mkdir(parents=True, exist_ok=True)
     thread = next((t for t in plan.threads if t.count > 1 and not t.is_group),
                   plan.threads[0])
