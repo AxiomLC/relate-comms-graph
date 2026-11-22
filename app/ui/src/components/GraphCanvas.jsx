@@ -10,13 +10,36 @@ import {
 import {
   NODE_TYPES,
   PERSON_ICONS,
+  PLATFORM_COLORS,
   PLATFORM_ICONS,
+  entityIcon,
   kindClass,
   nodeIcon,
   platformColor,
   platformLabel,
   truncateLabel,
 } from "../config/nodeTypes.js";
+
+/**
+ * A radial-gradient stop list for one halo colour, opaque at the centre and
+ * transparent at the rim.
+ *
+ * `theme.visual.mergedGlowStops` hardcodes the orange ramp for Correspondents. Any
+ * other merged kind needs its OWN ramp in its own hue, or the halo would fade orange
+ * into grey and read as a rendering fault.
+ *
+ * The transparent stop is `rgba(...,0)`, never 8-digit hex: Cytoscape's `hex2tuple`
+ * accepts only 3 and 6 digits, and a null stop throws inside `parseImpl` and takes the
+ * entire stylesheet — and therefore the app — down.
+ */
+function mergedStopsFor(hex) {
+  const value = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(value)) return [];
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(value.slice(i, i + 2), 16));
+  return [0.85, 0.62, 0.3, 0.1, 0].map(
+    (alpha) => `rgba(${r},${g},${b},${alpha})`,
+  );
+}
 
 /**
  * The canvas: Cytoscape.js + fcose, 2D, Canvas renderer.
@@ -679,6 +702,36 @@ function buildStylesheet(theme) {
         "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`,
       },
     },
+    // Extracted entities (`Place`, `Organization`, `Person`). One rule per type and
+    // platform, built from the icon set `nodeTypes.js` already exports — the same
+    // static-rule approach as persons, never `data()` for a background-image.
+    //
+    // Keyed on `[type = "…"]` rather than on the kind class because each entity kind
+    // has its OWN artwork; `icon.entity` alone could not tell a pin from a building.
+    ...Object.entries(NODE_TYPES)
+      .filter(([, meta]) => meta.iconKind === "entity")
+      .flatMap(([type]) =>
+        Object.entries(PLATFORM_COLORS).map(([platform]) => ({
+          selector: `node.icon[type = "${type}"][platform = "${platform}"]`,
+          style: {
+            "background-image": `url("${entityIcon(type, platform)}")`,
+            "background-width": `${Math.round(visual.correspondentIconScale * 100)}%`,
+            "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`,
+          },
+        })),
+      ),
+    // A MERGED entity, after the per-platform rules for the same reason as persons: a
+    // merged node keeps a real `platform`, so it matches its own platform rule too.
+    ...Object.entries(NODE_TYPES)
+      .filter(([, meta]) => meta.iconKind === "entity")
+      .map(([type]) => ({
+        selector: `node.icon[type = "${type}"].merged`,
+        style: {
+          "background-image": `url("${entityIcon(type, "merged", true)}")`,
+          "background-width": `${Math.round(visual.correspondentIconScale * 100)}%`,
+          "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`,
+        },
+      })),
     // Shape and glow are generated from `NODE_TYPES`, so a new kind is a config
     // entry rather than a rule. Both are static literals — never `data()` — because
     // a mapper that fails to parse takes the whole stylesheet down with it.
@@ -758,6 +811,24 @@ function buildStylesheet(theme) {
         "bounds-expansion": visual.mergedGlowPadding,
       },
     },
+    // A merged PLACE overrides the halo colour to dark grey, per `NODE_TYPES.Place`.
+    //
+    // Why not orange: orange is the correspondent bridge colour and means "one person,
+    // several platforms", which is a verified identity. A merged Place only means
+    // "same canonical spelling on two platforms", a weaker claim that must not borrow
+    // the stronger signal. Same rule, later block, so it wins on equal specificity.
+    ...Object.entries(NODE_TYPES)
+      .filter(([, meta]) => meta.mergedGlowColor)
+      .map(([type, meta]) => ({
+        selector: `node.merged[type = "${type}"]`,
+        style: {
+          "underlay-color": meta.mergedGlowColor,
+          // Derived from the same hex, so the gradient tapers to a transparent stop of
+          // the SAME hue. Must be `rgba(...)`: Cytoscape's colour parser rejects
+          // 8-digit hex, and a null stop takes the whole stylesheet down.
+          "underlay-gradient-stop-colors": mergedStopsFor(meta.mergedGlowColor),
+        },
+      })),
 
     {
       // Selection cannot also be a glow now that correspondents glow by default, so

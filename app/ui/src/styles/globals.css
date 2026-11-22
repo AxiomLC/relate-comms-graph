@@ -420,6 +420,17 @@ textarea::placeholder {
   text-transform: uppercase;
 }
 
+/* A node that exists on more than one platform. The canvas already draws these
+   differently (grey glyph, orange radial halo, pulled to the merged bag), so the
+   Viewer must not be the one place that stays silent about it. */
+.pill.merged {
+  color: var(--orange-text);
+  border-color: rgb(217 122 43 / 0.6);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 
 .spark {
   display: flex;

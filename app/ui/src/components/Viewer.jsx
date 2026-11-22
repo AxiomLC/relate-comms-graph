@@ -39,6 +39,20 @@ const CHAR_BUDGET = 1000;
 const FETCH = 40; // rows asked of the server per request; consumed by budget
 const MIN_PER_LOAD = 1; // a single long message still gets its own load
 
+/**
+ * Every platform a node spans, in the order the API gives them.
+ *
+ * `platform` is the single first-by-date string the source filter reads; `platforms`
+ * is the full list. A merged node carries both, and they disagree on purpose — so
+ * anything that *displays* platforms must read the list, never the string.
+ */
+function platformsOf(entry) {
+  if (Array.isArray(entry?.platforms) && entry.platforms.length) {
+    return entry.platforms;
+  }
+  return entry?.platform ? [entry.platform] : [];
+}
+
 export default function Viewer({
   entry,
   theme,
@@ -637,9 +651,24 @@ function CorrespondentView({ entry, onOpen }) {
         <h1 className="viewer-title">{entry.label}</h1>
         <div className="viewer-sub">
           <span className="pill kind">Correspondent</span>
-          <span className="pill platform" style={{ color: platformColor(entry.platform) }}>
-            {platformLabel(entry.platform)}
-          </span>
+          {/* One pill per platform the node spans, each in its own colour.
+
+              **Not `entry.platform`.** That is the single string used by the source
+              filter (first platform by date), so a node on four platforms rendered one
+              pill and looked identical to a one-platform node — the bug this fixes.
+              `entry.platforms` is the full list the API already returns; the fallback
+              covers a node written before the list existed. */}
+          {platformsOf(entry).map((platform) => (
+            <span
+              key={platform}
+              className="pill platform"
+              style={{ color: platformColor(platform) }}
+              title={`Seen on ${platformLabel(platform)}`}
+            >
+              {platformLabel(platform)}
+            </span>
+          ))}
+          {entry.merged && <span className="pill merged">Merged</span>}
           {isPlaceholder(entry.label) && <span className="pill">placeholder account</span>}
         </div>
 
@@ -722,9 +751,18 @@ function EntityView({ entry, onOpen }) {
         <h1 className="viewer-title">{entry.label}</h1>
         <div className="viewer-sub">
           <span className="pill kind">{meta.label || entry.nodeType}</span>
-          <span className="pill platform" style={{ color: platformColor(entry.platform) }}>
-            {platformLabel(entry.platform)}
-          </span>
+          {/* Same rule as `CorrespondentView`: the list, never the single string. */}
+          {platformsOf(entry).map((platform) => (
+            <span
+              key={platform}
+              className="pill platform"
+              style={{ color: platformColor(platform) }}
+              title={`Seen on ${platformLabel(platform)}`}
+            >
+              {platformLabel(platform)}
+            </span>
+          ))}
+          {entry.merged && <span className="pill merged">Merged</span>}
         </div>
       </div>
 
@@ -733,8 +771,7 @@ function EntityView({ entry, onOpen }) {
         {!rows && !error && <div className="empty">Loading…</div>}
         {rows?.length === 0 && (
           <div className="empty">
-            No threads mention this {String(meta.label || "entity").toLowerCase()} yet.
-            Body-entity extraction has not run.
+            No threads mention this {String(meta.label || "entity").toLowerCase()}.
           </div>
         )}
         {(rows || []).map((row) => (
