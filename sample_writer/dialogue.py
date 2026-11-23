@@ -8,7 +8,18 @@ from __future__ import annotations
 
 import random
 
-from .world import ORG_FORMS, PLACES, Person, World
+from . import config
+from .world import ORG_FORMS, PLACES, Person, World, product_section
+
+
+def _entity_lines() -> int:
+    """`config.BODY_ENTITY_LINES`, read at call time.
+
+    Local rather than a module-level constant so a test can monkeypatch the knob — the same
+    shape as the `from .config import ...` calls further down, and the reason this file
+    takes `config` as a module instead of importing four names.
+    """
+    return config.BODY_ENTITY_LINES
 
 # ---------------------------------------------------------------- subject subjects
 #
@@ -90,7 +101,7 @@ INDUSTRIAL_FRAMES = [
     "we're migrating off {product} in Q2.",
     "our {product} licence is up for renewal.",
     "{product} is still the bottleneck.",
-    "they shipped the {product} config last week.",
+    "they shipped the {product} update last week.",
     "we're piloting {product} on one team.",
     "who owns the {product} account?",
     "{product} went down again this morning.",
@@ -109,21 +120,62 @@ CONSUMER_FRAMES = [
     "we're out of {product} stock.",
 ]
 
-# Which frame set a given product takes. **Consumer names are listed explicitly** rather
-# than inferred from a suffix or a pool position, because the distinction is a judgement
-# about the real world: `Sprite` is a drink and `Spark` is a data engine, and only a human
-# can say which is which.
-CONSUMER_PRODUCTS = frozenset({
-    "Coca-Cola", "Diet Coke", "Sprite", "Fanta", "Powerade", "Monster Energy",
-    "Weetabix", "Marmite", "Irn-Bru", "Yorkshire Tea",
+# Durable goods are OWNED and MAINTAINED, not consumed. `ran out of the Mazda` is not a
+# sentence; `the Mazda needs new tyres` is. This is the frame set that was missing when
+# the pool was software-only and the distinction did not exist.
+#
+# **Deliberately generic across cars, watches and furniture.** The first draft said `needs
+# new tyres` and `getting it serviced`, which produced `I'm getting the Rolex Submariner
+# serviced next week`. Only the car-specific frames are marked below.
+DURABLE_FRAMES = [
+    "we finally pulled the trigger on the {product}.",
+    "the {product} arrived and it's lovely.",
+    "did the {product} quote come through?",
+    "the {product} was worth every penny.",
+    "she's had that {product} for years.",
+    "still paying off the {product}.",
+    "something's gone wrong with the {product}.",
+    "is the {product} still under warranty?",
+    "I need to get the {product} fixed.",
+    "we're thinking about the {product}.",
+    "the {product} is at my parents' place.",
+    "he's obsessed with that {product}.",
+]
+
+# The subset that only makes sense for a vehicle. Drawn only for the CARS below, so a
+# sofa is never in the garage and a watch never needs new tyres.
+VEHICLE_FRAMES = [
+    "the {product} needs new tyres.",
+    "I'm getting the {product} serviced next week.",
+    "the {product} is in the garage until Thursday.",
+    "someone scratched the {product} in the car park.",
+]
+
+CARS = frozenset({
+    "Toyota Highlander", "Honda Civic", "Ford Escape", "Mazda CX-5", "Tesla Model 3",
+    "BMW 3 Series", "Volkswagen Golf", "Audi A4", "Subaru Outback", "Jeep Wrangler",
+    "Range Rover Sport", "Volvo XC90", "Hyundai Tucson", "Kia Sportage",
+    "Mercedes C-Class", "Porsche 911", "Mini Cooper", "Land Cruiser", "Ford Ranger",
 })
 
-
+# Which frame set a given product takes. The section is declared in `world.py` next to the
+# pool, because it is a judgement about the real world rather than a property of the name:
+# `Sprite` is a drink and `Spark` is a data engine.
+#
+# **Nothing in the extraction pipeline may consult this.** A generator that hinted at the
+# answer would make the corpus easier than a real export.
 def product_frames(name: str) -> list[str]:
-    """The sentence frames this product may appear in. Never consult this in extraction."""
-    return (CONSUMER_FRAMES if name in CONSUMER_PRODUCTS
-            else INDUSTRIAL_FRAMES)
+    """The sentence frames this product may appear in."""
+    if product_section(name) == "durable" and name in CARS:
+        return DURABLE_FRAMES + VEHICLE_FRAMES
+    return _FRAMES_BY_SECTION.get(product_section(name), INDUSTRIAL_FRAMES)
 
+
+_FRAMES_BY_SECTION = {
+    "tech": INDUSTRIAL_FRAMES,
+    "durable": DURABLE_FRAMES,
+    "food": CONSUMER_FRAMES,
+}
 
 PRODUCT_LINES = INDUSTRIAL_FRAMES  # kept: the default a caller gets with no catalogue
 
@@ -304,7 +356,12 @@ def turn_pairs(world: World, person: Person, count: int, rng: random.Random,
     # The opening rows of every thread carry an entity, so a thread always has one
     # before the random mixing starts. Rows 2-4 rather than 1: a thread of two messages
     # should not be entirely entity names.
-    for _ in range(3):
+    #
+    # **The count is `config.BODY_ENTITY_LINES`, and it is the real ceiling on how often a
+    # name reaches the corpus.** `entity_line()` samples from all three pools, so this many
+    # slots per thread divided across 586 items is what produces the `mention_count: 1`
+    # tail — a bigger pool does not add slots, it divides the same ones further.
+    for _ in range(_entity_lines()):
         if len(out) >= count:
             break
         forced = entity_line(world, platform, rng)

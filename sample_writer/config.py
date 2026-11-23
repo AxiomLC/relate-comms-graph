@@ -130,6 +130,21 @@ BODY_MULTI_MENTION = 0.08    # named 2+ times on ONE platform
 BODY_MULTI_PLATFORM = 0.04   # on 2+ platforms; mention count independent of this
 MENTIONS_MULTI = (2, 4)      # (min, max) mentions for a multi-mention item
 
+# How many entity lines are forced into the opening of every thread.
+#
+# **This, not the pool size, sets how often a name reaches the corpus.** Every thread gets
+# up to this many entity rows before the random mixing starts, so the total mention slots
+# are `THREADS_PER_PLATFORM x this`, divided across `ORGS` + `PLACES` + `PRODUCTS`.
+#
+# Measured 2026-11-24: at 3 with a 586-item pool, roughly **1 body in 12** names an entity,
+# and only 25 of 184 product names landed in any body at all. Growing a pool without
+# raising this makes every item *rarer* — which is realistic, but it means a bigger list
+# buys variety rather than more product nodes.
+#
+# 4 is the middle: enough that a 184-name product pool is actually exercised, short enough
+# that a 2-message thread is not nothing but names.
+BODY_ENTITY_LINES = 4
+
 # Upstream spelling mismatches. `FUZZ_SENDERS_INTRA` is a shape of its own — one
 # sender, two spellings inside ONE export — and is not implied by the axes above.
 FUZZ_SENDERS_INTRA = 4
@@ -148,8 +163,13 @@ FUZZ_VARIANTS = {
     "org": ["lower", "upper", "drop_letter", "swap", "legal_suffix", "acronym"],
     "place": ["lower", "upper", "drop_letter", "swap", "abbrev", "postal_code",
               "region_tail"],
-    # Narrowest list: no acronym, no postal code, no credentials.
     "product": ["lower", "upper", "drop_letter", "swap", "hyphen"],
+    # **Physical goods do not hyphenate.** `hyphen` exists for software names that carry
+    # one (`Coca-Cola`) or are joined in real writing (`MacBook Pro`); applied to a car it
+    # produces `Mazda-CX-5`, which nobody writes and no normaliser should be asked to
+    # fold. Everything else about the dice is identical.
+    "product_durable": ["lower", "upper", "drop_letter", "swap"],
+    "product_food": ["lower", "upper", "drop_letter", "swap"],
 }
 
 # --------------------------------------------------------------- thread timing

@@ -135,7 +135,7 @@ def _link_correspondents(conn: Any, *, fold_on_name: bool) -> dict[str, Any]:
     report_groups: list[list[str]] = []
 
     for survivor, losers, reason in groups:
-        _fold(conn, survivor, losers)
+        _fold(conn, survivor, losers, reason=reason)
         folded += len(losers)
         by_reason[reason] += len(losers)
         report_groups.append([survivor["key"], *[n["key"] for n in losers]])
@@ -403,19 +403,25 @@ def _name_forms(node: dict[str, Any]) -> set[str]:
 
 def _fold(
     conn: Any, survivor: dict[str, Any], losers: list[dict[str, Any]],
-    *, label: str = "Correspondent", edge: str = "WITH",
+    *, label: str = "Correspondent", edge: str = "WITH", reason: str = "",
 ) -> None:
     """Move every edge onto the survivor, then delete the losers.
 
     `DETACH DELETE` is deliberately not used: it would drop the edges that are the
-    whole reason the node exists — `WITH` for a Correspondent, `MENTIONS` for a Place.
-    Each edge type is re-pointed explicitly, and a duplicate (both nodes already
-    attached to the same thread) is removed rather than merged into a self-edge.
+    whole reason the node exists — `WITH` for a Correspondent, `MENTIONS` for an entity.
+    Each edge type is re-pointed explicitly, and a duplicate is removed rather than
+    merged into a self-edge.
 
     `label` / `edge` generalise it to an entity kind. The **source** differs by kind:
     a Correspondent hangs off a `Thread` via `WITH`, an entity hangs off a `Message` via
     `MENTIONS` (since 2026-11-23). Re-pointing the wrong source silently deletes every
     edge the node had, because `DETACH DELETE` takes whatever is left.
+
+    `reason` is the evidence class that made this fold (`fuzzy`, `exact_name`, `phone`…)
+    and is **stamped onto the survivor here**. This is the only place that knows why a
+    merge happened — the writer sees one batch and cannot, and `coalesce` let a stale
+    write-time value win, which is how every fuzzy fold on the live store came to report
+    `exact_name`.
     """
     source = "m:Message" if edge == "MENTIONS" else "t:Thread"
     cur = conn.cursor()
@@ -434,6 +440,13 @@ def _fold(
         cur.execute(
             f"MATCH (l:{label} {{key: $loser}}) DETACH DELETE l",
             {"loser": loser["key"]},
+        )
+    if reason:
+        # After the deletes, so a survivor that was itself a loser elsewhere cannot have
+        # the stamp overwritten by a later group in the same pass.
+        cur.execute(
+            f"MATCH (s:{label} {{key: $key}}) SET s.merged_by = $reason",
+            {"key": survivor["key"], "reason": reason},
         )
     conn.commit()
 
@@ -534,7 +547,7 @@ def _link_entity(conn: Any, label: str) -> dict[str, Any]:
     report_groups: list[list[str]] = []
 
     for survivor, losers, reason in groups:
-        _fold(conn, survivor, losers, label=label, edge="MENTIONS")
+        _fold(conn, survivor, losers, label=label, edge="MENTIONS", reason=reason)
         folded += len(losers)
         by_reason[reason] += len(losers)
         report_groups.append([survivor["key"], *[n["key"] for n in losers]])

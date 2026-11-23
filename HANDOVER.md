@@ -10,19 +10,32 @@ Durable facts: [`TECHREADME.md`](TECHREADME.md). UI and visual facts:
 
 ## Where it stands
 
-`pytest tests -q` → **441 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
+`pytest tests -q` → **479 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
 
-**Live store: rebuilt 2026-11-22** (after a truncate, then an ingest of the whole spool).
-**2,085 messages · 177 threads · 98 correspondents · 21 `Place` nodes (8 `:Merged`).**
-**Default canvas load: 296 nodes / 323 edges** — Thread + Correspondent + Place, with
-`WITH`, `POSSIBLY` and 118 `MENTIONS_PLACE`.
+**Live store: rebuilt 2026-11-23** after the extraction rework. **2,117 messages · 175
+threads · 94 correspondents · 98 Places · 113 Organizations · 22 Products.**
+**Default canvas load: 502 nodes / 572 edges** — Thread + Correspondent + Place +
+Organization + Product, with `WITH` and 118+ `MENTIONS_*` edges.
 Per platform: telegram 831 · messenger 661 · linkedin 228 · sms 139 · email 128 ·
 whatsapp 92 · outlook 6.
 
-> **The manifest's per-file `messages` count is zero for every entry in this build.** The
-> bug is fixed (`outcome.read` is recorded instead of what the run wrote), but the existing
-> entries were written by the broken code. **The next ingest refreshes them.** Until then
-> the "Already in the spool" list cannot say how many messages a file contributed.
+**Extraction rework landed 2026-11-23** (commit `f782812`). Three structural changes:
+- **`POSSIBLY` is gone.** Fuzzy spelling pairs now fold instead of drawing a guessed edge.
+- **`MENTIONS` hangs off the Message, not the Thread.** `Thread → Entity` is a read-time
+  projection in `tools._EDGE_QUERIES`. `mention_count` is message-based.
+- **`Product` is a live kind** (`extract.PRODUCT_ENABLED = True`), backed by
+  `relate_comms/products.py` — 92 entries in three tiers with a four-rule ladder.
+
+**Rebuild needed after any extractor change:** `delta=False` (the UI's **Full re-process**).
+A delta run keeps everything already stored, which is exactly wrong after the reading of
+bodies changes.
+
+> **Restart the server, not just the ingest.** Modules are cached in the running process; a
+> rebuild through a stale server writes a store that matches neither the old code nor the
+> new. This has happened twice.
+
+> **The manifest's per-file `messages` count is zero for older entries.** Fixed
+> (`outcome.read` is recorded instead of what the run wrote); the next ingest refreshes them.
 
 **`npm run build` after any `.jsx`/`.css` edit.** Python edits need only a server restart.
 `build` runs `build:css` as a second step — before that, a new CSS rule silently never
@@ -57,29 +70,54 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 
 ## Next
 
-### 0. `sample_writer` now generates Product mentions the app cannot read
+### 0. Entity lists — drafted, not yet loaded
 
-**2026-11-23, raised while building the fuzz model.** The generator emits `Product`
-mentions in message bodies and follows all three distribution knobs per kind. The app's
-extraction does **not** produce them, in two independent places:
+**Three lists are drafted** in [`temp-lists`](temp-lists) (2,126 lines) from the brief in
+[`entity_list_brief.md`](entity_list_brief.md):
 
-1. **`extract.py` emits no `product` mention at all** — there is no `PRODUCT_LABELS`,
-   no product dictionary, nothing in `extract()`. A body naming `Coca-Cola` yields a
-   `GPE` or `ORG` span, or nothing (`Enrichment` §2's accepted false-positive note).
-2. **`writer._ENTITY_WRITE_KINDS` is `{place, organization}`** — even a mention that
-existed would be filtered out by `write_entities()`.
+| List | Entries | Current in code |
+|---|---|---|
+| Places | **684** | `PLACE_DICTIONARY` 97 |
+| Organizations | **576** | `ORG_DICTIONARY` 26 |
+| Products | **739** (636 `plain`, 22 `gated`) | `products.INDEX` 92 |
 
-So the generator is ahead of the pipeline, which is the right order, but **Product-node
-testing cannot start** until both are addressed. Rough shape of the work: a
-`PRODUCT_LABELS`/`PRODUCT_DICTIONARY` pair alongside the org ones, `product` added to
-`_ENTITY_WRITE_KINDS`, and a decision on whether `canon(kind="product")` suffices to
-fold `Coca-Cola`/`Coca Cola` against the extractor's output. Sized for a half day, not a
-phase.
+Plus **CONSIDERED AND REJECTED** and **UNSURE — your call** sections, which are the point of
+the brief: they show where the boundary was drawn.
 
-**Watch for:** ~10 of the 100 `PRODUCTS` are common nouns (`Contract`, `Seat`, `Credits`,
-`SLA`, `Rack`, `embeddings`). spaCy will not propose them as product spans and `canon`
-cannot know they are generic, so they are decoration rather than population — their
-absence from the store is not a bug.
+**Quality checked, not assumed.** Every generic-noun land mine is either absent or in the
+rejected section with a reason (`Seat`, `Contract`, `Credits`, `Desk`, `Shoes`, `Watch`,
+`Flight`, `Rack`, `Switch`, `Plan` — all zero in `plain`). Only one bare brand slipped
+through as `plain` (`Rolex`), which is defensible. The `gated` entries are the genuinely
+ambiguous middle, each with its reason — `Slack` (*"cut me some slack"*), `Zoom`
+(*"zoom in"*), `Notion`, `Obsidian`, `Asana`, `Confluence`.
+
+**Not loaded yet.** `temp-lists` is not imported by anything. Loading means:
+
+1. **Places / Organizations** — paste into `extract.PLACE_DICTIONARY` / `ORG_DICTIONARY`.
+   Safe: proper nouns, measured flat per message up to ~2,000 names.
+2. **Products** — `plain` and `gated` into `products._PLAIN` / `_CONTEXT_GATED`; the rejected
+   section into `products.GENERIC`. **Needs care**: a common noun in `plain` mints junk
+   nodes, and `GENERIC` is the only thing that stops it.
+3. **Rebuild** (`delta=False`), then query `MATCH (p:Product) WHERE p.mention_count >= 2`.
+   The canvas is not the instrument — hidden single mentions are still stored.
+
+**`sample_writer` was rebalanced alongside it** (2026-11-24): `PRODUCTS` 100 → **184**,
+tech 75 / durable 89 / food 20, three frame sets, per-section fuzz variants (physical goods
+never hyphenate). The knobs that raise how many entities a body names live in
+`sample_writer/config.py` — `BODY_ENTITY_LINES` is the real ceiling, not pool size.
+
+### 0b. Per-kind single-mention visibility
+
+`theme.filter.hideSingleMentions` exists, defaults **off**, and `:Merged` overrides it. Proposal:
+split it per kind (Place / Organization / Product) so a large product list can be read once
+and stay invisible until something is actually mentioned more than once.
+
+**It does not replace the generic block.** Hiding works on mention count; blocking works on
+what the word *is*. `seat` is mentioned *more* often than a rare product, so a mention floor
+promotes junk instead of suppressing it.
+
+**Judging a list:** the canvas is not the instrument. Hidden single mentions are still stored,
+counted and searchable — query `MATCH (p:Product) WHERE p.mention_count >= 2`.
 
 ### 1. The graph as a portable module
 
@@ -94,54 +132,47 @@ payload is already renderer-neutral; the cost is the canvas, not the data.
 - **The two losses to expect** are native label LOD and merged-halo occlusion — both
   already recorded as unsolvable in Cytoscape, so a new renderer may *fix* them.
 
-### 2. Body-entity extraction — Places first, one generic pipeline
+**Stored shape is now portable.** As of 2026-11-23 the store holds facts, not summaries:
+`(message)-[:IN]->(thread)` and `(message)-[:MENTIONS]->(entity)`. `Thread → Entity` is a
+read-time projection in `tools._EDGE_QUERIES`. That is the triple model another graph engine
+would accept — keep it that way, and do not let `_EDGE_QUERIES` become the schema.
 
-**`Organization` is built too** — same pipeline, second kind. `ORG_LABELS` (`ORG`, which
-covers companies, councils, NGOs, unions, clubs, universities), `ORG_DICTIONARY` (26 names
-`en_core_web_sm` misses — it reads `Snowflake`/`Databricks`/`BlackRock` as brands and skips
-non-English names like `Médecins Sans Frontières`), `TRUNCATION_TAILS` (drops `University of`),
-and `writer.write_entities()` which handles every kind through one table. 11/11 on a
-named-org probe; 19 Org nodes on the live corpus after the document guard below.
+### 2. Body-entity extraction — the pipeline, as built
 
-**The noise finding that reframed the design.** Every junk Org came from ONE 11,719-char
-marketing newsletter, against a corpus median of 28 chars and p99 of 122. So the tail was
-never a long tail of uncertain mentions — it was a document read as a conversation. Fix is
-`extract.DOCUMENT_CHARS = 2000` (4× p99), reported as a warning, never an error.
-**A `count >= 2` floor would have kept every junk node**, because the signal (`sox`, 15
-mentions on two platforms) and the junk differ by message LENGTH, not by count.
+**All three kinds are live: Place, Organization, Product.** One pipeline, one write table
+(`writer._ENTITY_WRITE_KINDS`). Adding a kind is a table entry, not an implementation.
 
-The single-mention floor therefore lives in the **view**: `theme.filter.showSingleMentions`
-(default off), overridden by `:Merged` — one mention on Telegram is one sighting, the same
-name on two platforms is two independent ones.
+**The order, and it cannot be reordered:**
 
-**v1 extracts `Place` only.** `Person`, `Organization` and `Product` are deferred until the
-complete pipeline is proven on Places — including ambiguous matches, reversibility and repeat
-ingestion. Then the same architecture serves the other kinds.
+1. **Extract**, per message (and per `<br>` fragment). spaCy proposes spans; `_arbitrate()`
+   decides the kind; the index can overrule the model for `GPE`/`FAC`/`LOC`/`PERSON` but
+   **never** for `ORG`.
+2. **Fold within a platform.** `canon.canonical(kind=…)` converges spellings.
+3. **Match across platforms.** `link.link()` merges on exact canonical name.
 
-**The interface is generic even though v1 ships one kind.** A later `Person` or `Organization`
-kind must be an extension of this pipeline, not a second implementation. Where a step can
-only do one kind, that belongs in the caller, not in the step.
+**The dictionaries are the feature, not a stopgap.** `en_core_web_sm` has no gazetteer — it
+is a neural net guessing from sentence shape. It labels `Austin` a person, `Grafana` a
+person, and `Databricks` a place. `PLACE_DICTIONARY` (97), `ORG_DICTIONARY` (26) and
+`products.py` (92) run *before* the model and win.
 
-**Stack:** spaCy `en_core_web_sm` for extraction, existing `canon.canonical()` for
-normalisation, RapidFuzz for candidate matches, existing linker architecture for merging.
-One new dependency, declared as the optional `extract` extra in `pyproject.toml`
-(`pip install -e ".[extract]"`); without it, extraction writes no nodes and the run report
-carries one warning — never an error.
+**`PRODUCT_ENABLED` is ON** as of 2026-11-23. The flag still exists and still gates
+`MENTIONS_PRODUCT` in `DRAWABLE_*`; turning it off returns the graph to Place+Org without a
+rebuild.
 
-**Order — and it cannot be reordered:**
+**The document guard.** `extract.DOCUMENT_CHARS = 2000` (4× p99). Every junk Org came from
+ONE 11,719-char marketing newsletter read as a conversation. Reported as a warning, never an
+error. **A `count >= 2` floor would have kept every junk node** — the signal and the junk
+differ by message LENGTH, not by count.
 
-1. **Extract**, per message. spaCy proposes spans with offsets and message keys. Extraction
-decides nothing, so a better extractor can be re-run over old messages.
-2. **Fold within a platform.** `canon.canonical(kind=…)` converges spellings; RapidFuzz
-   proposes typo candidates but never merges.
-3. **Match across platforms.** Only then does a place on two platforms become `:Merged`.
+**The generic block lives in the index, not in `canon`.** `canon` folds `Seat` and `seat` to
+one key, which is correct — it is a spelling function. Only the index can say one is a
+licence concept and the other is furniture.
 
-This is the order `Correspondent` already uses, for the same reason: per-batch linking only
-ever sees one platform.
+**Language:** English only in v1. Non-English input yields no nodes rather than wrong ones;
+`extract.language_guess()` warns on the report and never gates the write.
 
-**Why Places first:** a `Person` extracted from a body competes with the `Correspondent` that
-is already on the thread — a merge with a wrong answer that looks right. A Place has no
-existing node competing with it, so the pipeline is judged on its own terms.
+Full design history: [`archive_docs/locking_in_node_extraction.md`](archive_docs/locking_in_node_extraction.md);
+what is still open: [`rework_extraction.md`](rework_extraction.md).
 
 **`canon` cannot substitute for extraction.** It normalises a name it is handed; it cannot
 decide a span *is* a place. Running capitalised words through `canonical(kind="place")`
@@ -150,71 +181,47 @@ yields `monday`, `hi dave`, `ny` — no error, no useful result.
 **No LLM calls in this pipeline.** Extraction is spaCy and rules only. The local LLM is a
 chat feature in the UI (§3) and has no role in entity extraction, folding or merging.
 
-**Built.** `relate_comms/extract.py` (spaCy `en_core_web_sm` + an `EntityRuler` place
-dictionary), `writer.write_places()`, `link._link_entity()`, wired into `ingest()`.
-`pytest tests -q` → **422 passed, 2 skipped**; 22 of those are `tests/test_extract_places.py`.
-On the full sample set: **20 Place nodes, 8 `:Merged`**, e.g. `bay area` on four platforms
-and `north dakota` on three.
-
-**Two `canon` bugs this feature exposed, both fixed:**
-
-- The place branch never stripped a leading article, though `ARTICLES` says "thing or
-  place" — `the Bay Area` and `Bay Area` were two nodes. Only `product` implemented it.
-- `_REGION_TAIL` is lowercase-anchored but runs after case flattening, so it could never
-  match and `Kensington, London` kept its country in the key. Now matched
-  case-insensitively and compared casefolded; a spelled-out province is still identity.
-
-A third change is new behaviour rather than a fix: `n`/`s`/`e`/`w` + a word expands to
-`north`/`south`/`east`/`west` (`N Dakota` → `north dakota`), from a fixed table like
-`NICKNAMES`. Without it the sample writer's own `N Dakota` / `North Dakota` pair never folds.
-
-**The extractor needs the ruler.** `en_core_web_sm` labels a bare city `PERSON` with no
-locative cue (`Then Austin on Friday`) and `GPE` with one (`Flying to Austin`). The
-`EntityRuler` dictionary is what makes the feature not-silently-lossy.
+**Two `canon` bugs the Place leg exposed, both fixed:** the place branch never stripped a
+leading article (`the Bay Area` = `Bay Area` is now one node); and `_REGION_TAIL` was
+lowercase-anchored but ran after case flattening, so it never matched and `Kensington,
+London` kept its country in the key. Plus new behaviour: `n`/`s`/`e`/`w` + a word expands to
+`north`/`south`/`east`/`west`.
 
 **Accepted false positives.** The model calls some products `GPE`/`FAC` in prepositional
-frames (`nothing new from Databricks`, `don't hear from Retool`); `We use Databricks daily`
-proposes nothing. Not filtered — suppressing a `GPE` because it looks like a company is
-extraction deciding. A stray node costs a node, never a merge, and `mention_count` = 1
-makes it obvious.
+frames (`nothing new from Databricks`). With `PRODUCT_ENABLED` on, most of those are now
+reclaimed as `Product` by the index — that was 29 of 212 entity nodes. What remains is a
+stray node, never a merge, and `mention_count: 1` makes it obvious.
 
-**A Place is never drawn as `POSSIBLY`.** Two places one letter apart are two places;
-there is no second signal to weigh. Fuzzy candidate lines stay Correspondent-only.
+**A Place is never fuzzy-folded.** Two places one letter apart are two places; there is no
+second signal to weigh. Entities fold on exact canonical name only
+(`ENTITY_EVIDENCE_ORDER = ("exact_name",)`), while a Correspondent also has a `fuzzy` rung —
+a typo'd surname has no other reading, a typo'd town does.
 
 **Language:** English only in v1, by decision. Non-English input yields no nodes rather than
-wrong ones. `extract.language_guess()` sets a non-blocking **warning** on the batch report
-("N message(s) look non-English…"); it never errors and never gates the message write. The
-seam sits above the extractor, so another language is a second model and a language guess,
-not a rewrite.
+wrong ones. `extract.language_guess()` sets a non-blocking **warning** on the batch report;
+it never errors and never gates the message write. The seam sits above the extractor, so
+another language is a second model and a language guess, not a rewrite.
 
-**Still open, not done:**
-
-- **`merged_by` wording.** Now surfaced as a hover title on the `Merged` pill in
-  `EntityView` ("a spelling match, not a verified identity"). Good enough; a visible
-  second line would be better if Places turn out to confuse.
-- **`sample_writer` needs no work** — it already exercises both folds. Verified on
-  `sample_writer/out`: `N Dakota`/`North Dakota` and `Bay Area`/`the Bay Area` converge, and
-  `toronto`/`austin` merge across three platforms each.
-
-**Drawn since 2026-11-22.** Places draw with the design's own art (`place-*.svg`, map
-pin, 8 colour variants from `scripts/build_entity_icons.py`) and the design's own halo —
+**Drawn since 2026-11-22.** Places draw with the design's own art (`place-*.svg`, map pin,
+8 colour variants from `scripts/build_entity_icons.py`) and the design's own halo —
 `#5a5f66` dark grey, not the Correspondent orange, because a Place merge is the weaker
-claim. **Bagging is the standard rule for every kind:** one platform → that platform's bag
-(13 of 21 Places), merged → the centre (8 of 21). An earlier attempt gave entities their
-own bag; it stranded single-platform places away from the conversations that mention them
-and was removed. `Organization` and `Product` were given the yellow `#b8912a` halo the note
-asked for; both still need their extractors before the option means anything.
+claim. **Bagging is the standard rule for every kind:** one platform → that platform's bag,
+merged → the centre. An earlier attempt gave entities their own bag; it stranded
+single-platform places away from the conversations that mention them and was removed.
 
-⚠ **Place art replaced 2026-11-22** with the `location-svgrepo-com.svg` map pin. The source
-is committed (normalised) at `scripts/icons_src/place.svg`, so `python
-scripts/build_entity_icons.py` regenerates all 8 files from the repo alone. An absent
-source is now *skipped*, not fatal, so one kind can be rebuilt without the others.
+⚠ **Icon caching is handled on the server, not in the UI.** `app/main.py`'s `IconsElsewhere`
+mount returns `Cache-Control: no-cache` for `/static/icons/*`; the `ETag` then answers 304, so
+a replaced glyph appears on a hard refresh with no version to bump. (Starlette passes the path
+with the OS separator — the check normalises `\` to `/`, or it never matches on Windows.)
 
-⚠ **Icon caching is handled on the server, not in the UI.** `app/main.py`'s
-`IconsElsewhere` mount returns `Cache-Control: no-cache` for `/static/icons/*`; the `ETag`
-then answers 304, so a replaced glyph appears on a hard refresh with no version to bump.
-(Starlette passes the path with the OS separator — the check normalises `\` to `/`, or it
-never matches on Windows.)
+**Still open:**
+
+- **`merged_by` has two sources that disagree.** `writer` sets it from `canon` evidence at
+  write time; `link` can only `coalesce` into it, so a node that entered as `exact_name` keeps
+  that value even when a later fold was fuzzy. The link-time reason is in
+  `report["merged_by"]` only. Fixing it means deciding which is canonical.
+- **`merged_by` wording** — surfaced as a hover title on the `Merged` pill ("a spelling
+  match, not a verified identity"). Good enough.
 
 Full design: [`archive_docs/locking_in_node_extraction.md`](archive_docs/locking_in_node_extraction.md).
 
@@ -319,6 +326,16 @@ in `tools.py`, so the binding is thin by construction.
 - **Place `:Merged` is a weaker claim than Correspondent `:Merged`.** A Correspondent folds
   on phone or email; a Place folds only on its canonical name. Name matching is the only
   evidence available, so it is shipped best-effort rather than held back.
+- **A `Product` may take a span the model called `GPE`/`FAC`/`LOC`/`PERSON`, but never
+  `ORG`.** Correct for `Gemini`-the-model and `Tableau`-the-product; wrong for someone who
+  lives in Gemini, Texas. Asymmetric on purpose: an `ORG` span is often a *longer* name than
+  the product inside it (`Grafana Labs` contains `Grafana`), and demoting it would lose the
+  organisation. Revisit on real data.
+- **`Snowflake` is a company and a product.** It stays an `organization:` node unless
+  `snowflake cortex` appears in the body. Deliberate — the graph can hold both once keys are
+  namespaced per kind.
+- **`merged_by` has two sources that disagree** (see §2). Unfixed, on purpose: choosing
+  between them is a store-wide decision.
 
 ---
 
@@ -391,8 +408,12 @@ nothing happened if that line is off-screen.
   deliberately, because `TO` also contains names with credentials (`Steve Mikano CIA, AIC-M,
   AINS, SSBB`). `canon.split_list()` implements the separator heuristic but the adapter does
   not call it yet.
-- **Two unfocolded spelling-variant pairs stretch long edges across the ring** —
-  `dimitri/dimitir whitfield`, `sahfi/shafi hassan`. Fix lives in `link.py`, not layout.
+- **The two unfocolded spelling pairs are folded now** — `dimitri/dimitir whitfield` and
+  `sahfi/shafi hassan` were the known long-edge stretchers, and the fuzzy fold (2026-11-23)
+  takes both. **But `merged_by` says `exact_name`**, not `fuzzy`, on every one of the 48
+  merged nodes: the writer stamps the field at write time and `link` can only `coalesce` into
+  it. The link-time reason is in `report["merged_by"]` only. Two sources, one field — see
+  §2.
 
 ---
 
@@ -441,6 +462,18 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
 
 ## Done — one line each
 
+- **2026-11-23** — **Extraction rework: Product leg, message-anchored mentions, no
+  `POSSIBLY`.** `POSSIBLY` removed (all 6 edges were typo pairs; `r.score` was null on
+  every one) — fuzzy is now a fifth rung in `_fold_groups`. `MENTIONS` moved from Thread to
+  Message; `Thread → Entity` became a projection (measured 1.2 ms vs 2.5 ms). `<br>` bodies
+  fragment before extraction (28 → 33 mentions, junk spans gone). `Product` is a live kind
+  behind `extract.PRODUCT_ENABLED`, backed by `relate_comms/products.py` (92 entries, three
+  tiers, four-rule ladder, no weights). **22 Product nodes, 22/22 correct, 0 false
+  positives.** Three bugs found on the way: `union()` dropped the absorbed root's reason;
+  `PERSON` spans were dropped outright so the index could never rescue `Grafana`; and
+  `DRAWABLE_NODE_TYPES` was a hardcoded list, so Products existed with **zero edges drawn**.
+  **Correction:** `en_core_web_sm` *does* emit `PRODUCT` — rarely and frame-sensitively;
+  two research reports and two earlier notes said it did not.
 - **2026-11-23** — **`sample_writer` fuzz rebuilt on three independent axes.** Spelling /
   platforms / mentions now roll separately per item, so all four body combinations exist
   (`single×1`, `single×N`, `multi×1`, `multi×N`). Knobs are **shares, not counts**:

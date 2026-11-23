@@ -104,16 +104,19 @@ _CORRESPONDENT_CYPHER = (
     "    THEN coalesce(row.first_seen_utc, c[row.seen_prop]) ELSE c[row.seen_prop] END "
     "SET c.email = coalesce(c.email, row.email) "
     "SET c.phone_e164 = coalesce(c.phone_e164, row.phone_e164) "
-    "SET c.merged_by = coalesce(c.merged_by, row.merged_by) "
     "WITH c, row "
     "MATCH (t:Thread {key: row.thread_key}) "
     "MERGE (t)-[:WITH]->(c)"
 )
 
-# `canon` evidence -> the `merged_by` value the audit query reads. Anything that is
-# not a phone, an address or a nickname is a name match, which is what `exact_name`
-# means here: the canonical forms were already identical.
-_MERGED_BY = {"phone": "phone", "email": "email", "nickname": "nickname"}
+# **`merged_by` is NOT written here.** It used to be, from `canon` evidence at write time,
+# and that produced a field that disagreed with itself: a node that entered the store as
+# `exact_name` kept that value even when the fold that actually merged it was `fuzzy`,
+# because `link` could only `coalesce` into an already-set property. Every one of the 48
+# merged Correspondents on the live store reported `exact_name`, including the typo pairs.
+#
+# `link._fold` now owns it: it is the only thing that *merges*, so it is the only thing
+# that knows why. See `rework_extraction.md` §4 open decision 5.
 
 # Per-platform spellings and first sightings are stored **flat**, not as a map:
 # Relate rejects a map property (`DataError: InvalidPropertyType`). The plan's
@@ -252,7 +255,6 @@ def write_correspondents(
                     "handle_prop": f"{HANDLE_PREFIX}{chat.platform}",
                     "seen_prop": f"{SEEN_PREFIX}{chat.platform}",
                     "first_seen_utc": first_seen.get((chat.platform, record.key)),
-                    "merged_by": _MERGED_BY.get(record.evidence, "exact_name"),
                     "email": (record.key if record.evidence == "email"
                               else contact.get("email")),
                     "phone_e164": (record.key if record.evidence == "phone"
@@ -363,6 +365,8 @@ def _reconcile(cur: Any, keys: Iterable[str], *, label: str = "Correspondent") -
       platform_label `Telegram-WhatsApp-Fcbk Mssgr`, in the same date order.
       :Merged        set when more than one platform is present, removed when not.
                      Additive, so `MATCH (c:Correspondent)` still finds it.
+      merged_by      `same_name` when two platforms meet under one key with no fold —
+                     never overwriting a reason `link._fold` already set.
     """
     keys = sorted(set(keys))
     if not keys:
@@ -410,7 +414,19 @@ def _reconcile(cur: Any, keys: Iterable[str], *, label: str = "Correspondent") -
         "    n.first_seen_utc = row.first_seen_utc, "
         "    n.platform_label = row.platform_label "
         "FOREACH (_ IN CASE WHEN row.merged THEN [1] ELSE [] END | SET n:Merged) "
-        "FOREACH (_ IN CASE WHEN row.merged THEN [] ELSE [1] END | REMOVE n:Merged) ",
+        "FOREACH (_ IN CASE WHEN row.merged THEN [] ELSE [1] END | REMOVE n:Merged) "
+        # **`merged_by` is backfilled here, only for a node that was never folded.**
+        #
+        # Two platforms under one key is not a merge — it is one node from the first
+        # write, and `link._fold` never saw it, so it has no reason to record. But the UI
+        # shows a `Merged` pill on it, and a pill with no explanation reads as a missing
+        # value rather than as "nothing needed merging". So the no-fold case records
+        # `same_name`, which is precisely what it is.
+        #
+        # `coalesce` on the left: a real fold has already stamped a stronger reason
+        # (`fuzzy`, `phone`, `email`, `exact_name`) and must not be overwritten by this.
+        "SET n.merged_by = coalesce(n.merged_by, "
+        "    CASE WHEN row.merged THEN 'same_name' ELSE null END) ",
         {"rows": rows},
     )
 
@@ -828,10 +844,9 @@ def _entity_cypher(label: str) -> str:
 #
 # This replaced a fixed `_PLACE_CYPHER`; the statement is generated per label because
 # Relate cannot parameterise a label, and two hand-written copies would drift.
-
-# Evidence for a name-only fold -> the `merged_by` value the audit query reads.
-_ENTITY_MERGED_BY = {"suffix": "exact_name", "case": "exact_name",
-                     "diacritic": "exact_name", "camel": "exact_name"}
+#
+# Entities never carried a `merged_by` from this writer (only Correspondents did), and
+# `link._fold` now owns the field for every kind — so there is no entity-side table.
 
 
 def write_places(

@@ -1,0 +1,2127 @@
+# ENTITY LISTS — Places / Organizations / Products
+# Conventions
+#   - One entry per line. Text after "#" is a note, not part of the entry.
+#   - Products use "Name | class" (plain / gated), then an optional note after "—".
+#   - Diacritics are kept where people type them. Where people often type the plain-ASCII form
+#     (São Paulo / Sao Paulo, Zürich / Zurich) I have listed one form; add the other as an alias if you want.
+
+###############################################################################
+## PLACES
+###############################################################################
+
+# --- Africa: cities ---
+Lagos
+Abuja
+Kano
+Ibadan
+Port Harcourt
+Accra
+Kumasi
+Nairobi
+Mombasa
+Kisumu
+Addis Ababa
+Dar es Salaam
+Dodoma
+Arusha
+Zanzibar
+Kampala
+Entebbe
+Kigali
+Lusaka
+Harare
+Bulawayo
+Maputo
+Luanda
+Windhoek
+Gaborone
+Lilongwe
+Johannesburg
+Cape Town
+Durban
+Pretoria
+Soweto
+Sandton
+Stellenbosch
+Gqeberha
+Bloemfontein
+Polokwane
+Cairo
+Alexandria
+Giza
+Luxor
+Casablanca
+Marrakech
+Rabat
+Tangier
+Tunis
+Algiers
+Tripoli
+Dakar
+Abidjan
+Bamako
+Ouagadougou
+Conakry
+Freetown
+Monrovia
+Lomé
+Cotonou
+Kinshasa
+Lubumbashi
+Brazzaville
+Douala
+Yaoundé
+Libreville
+Khartoum
+Mogadishu
+Antananarivo
+Port Louis
+Maseru
+# --- Africa: countries / regions ---
+Nigeria
+Ghana
+Kenya
+Ethiopia
+Tanzania
+Uganda
+Rwanda
+Zambia
+Zimbabwe
+Mozambique
+Angola
+Namibia
+Botswana
+Malawi
+South Africa
+Egypt
+Morocco
+Tunisia
+Algeria
+Libya
+Senegal
+Ivory Coast
+Mali
+Cameroon
+Sudan
+Somalia
+Mauritius
+Madagascar
+Lesotho
+Eswatini
+Democratic Republic of the Congo
+Western Cape
+Gauteng
+KwaZulu-Natal
+
+# --- Middle East & Central Asia ---
+Dubai
+Abu Dhabi
+Sharjah
+Doha
+Riyadh
+Jeddah
+Mecca
+Medina
+Kuwait City
+Manama
+Muscat
+Amman
+Beirut
+Damascus
+Baghdad
+Tehran
+Isfahan
+Tel Aviv
+Jerusalem
+Haifa
+Istanbul
+Ankara
+Izmir
+Baku
+Tbilisi
+Yerevan
+Almaty
+Astana
+Tashkent
+Bishkek
+Kabul
+United Arab Emirates
+Saudi Arabia
+Qatar
+Kuwait
+Bahrain
+Oman
+Lebanon
+Iraq
+Iran
+Israel
+Turkey
+Azerbaijan
+Armenia
+Kazakhstan
+Uzbekistan
+Afghanistan
+
+# --- South Asia ---
+Mumbai
+Delhi
+New Delhi
+Bangalore
+Bengaluru
+Hyderabad
+Chennai
+Kolkata
+Pune
+Ahmedabad
+Jaipur
+Surat
+Lucknow
+Kochi
+Goa
+Chandigarh
+Gurgaon
+Gurugram
+Noida
+Indore
+Nagpur
+Coimbatore
+Thiruvananthapuram
+Karachi
+Lahore
+Islamabad
+Rawalpindi
+Peshawar
+Dhaka
+Chittagong
+Colombo
+Kandy
+Kathmandu
+Thimphu
+India
+Pakistan
+Bangladesh
+Sri Lanka
+Nepal
+Bhutan
+Maldives
+Kerala
+Rajasthan
+Maharashtra
+Tamil Nadu
+Karnataka
+
+# --- Southeast Asia ---
+Jakarta
+Surabaya
+Bandung
+Bali
+Denpasar
+Yogyakarta
+Medan
+Singapore
+Kuala Lumpur
+Penang
+Johor Bahru
+Bangkok
+Chiang Mai
+Phuket
+Pattaya
+Hanoi
+Ho Chi Minh City
+Saigon
+Da Nang
+Manila
+Cebu
+Davao
+Quezon City
+Makati
+Phnom Penh
+Siem Reap
+Vientiane
+Yangon
+Indonesia
+Malaysia
+Thailand
+Vietnam
+Philippines
+Cambodia
+Laos
+Myanmar
+Brunei
+
+# --- East Asia ---
+Tokyo
+Osaka
+Kyoto
+Yokohama
+Nagoya
+Sapporo
+Fukuoka
+Kobe
+Hiroshima
+Seoul
+Busan
+Incheon
+Beijing
+Shanghai
+Shenzhen
+Guangzhou
+Chengdu
+Hangzhou
+Wuhan
+Xi'an
+Nanjing
+Chongqing
+Tianjin
+Suzhou
+Hong Kong
+Kowloon
+Macau
+Taipei
+Kaohsiung
+Ulaanbaatar
+Japan
+China
+South Korea
+North Korea
+Taiwan
+Mongolia
+
+# --- Oceania ---
+Sydney
+Melbourne
+Brisbane
+Perth
+Adelaide
+Canberra
+Gold Coast
+Hobart
+Darwin
+Cairns
+Wollongong
+Bondi
+Auckland
+Wellington
+Christchurch
+Queenstown
+Dunedin
+Suva
+Port Moresby
+Apia
+Nouméa
+Papeete
+Tahiti
+Tasmania
+Queensland
+New South Wales
+Western Australia
+Australia
+New Zealand
+Fiji
+Samoa
+Tonga
+Vanuatu
+Papua New Guinea
+
+# --- South America ---
+São Paulo                 # also typed "Sao Paulo"; consider alias
+Rio de Janeiro
+Brasília
+Salvador
+Belo Horizonte
+Fortaleza
+Recife
+Porto Alegre
+Curitiba
+Florianópolis
+Manaus
+Buenos Aires
+Rosario
+Mendoza
+Santiago
+Valparaíso
+Lima
+Cusco
+Arequipa
+Bogotá
+Medellín
+Cali
+Cartagena
+Quito
+Guayaquil
+Caracas
+Montevideo
+Asunción
+La Paz
+Patagonia
+Brazil
+Argentina
+Chile
+Peru
+Colombia
+Ecuador
+Venezuela
+Uruguay
+Paraguay
+Bolivia
+
+# --- Central America & Caribbean ---
+Mexico City
+Guadalajara
+Monterrey
+Cancún
+Tijuana
+Puebla
+Oaxaca
+Guatemala City
+San Salvador
+Tegucigalpa
+Managua
+Panama City
+Havana
+Kingston
+Nassau
+Santo Domingo
+Port-au-Prince
+San Juan
+Bridgetown
+Port of Spain
+Punta Cana
+Mexico
+Guatemala
+Costa Rica
+Panama
+Cuba
+Jamaica
+Bahamas
+Barbados
+Trinidad and Tobago
+Dominican Republic
+Haiti
+Puerto Rico
+Honduras
+El Salvador
+Nicaragua
+
+# --- United States ---
+New York
+Los Angeles
+Chicago
+Houston
+Phoenix
+Philadelphia
+San Antonio
+San Diego
+Dallas
+San Jose
+Austin
+Jacksonville
+Fort Worth
+Columbus
+Charlotte
+San Francisco
+Indianapolis
+Seattle
+Denver
+Washington
+Boston
+Nashville
+Detroit
+Portland
+Las Vegas
+Memphis
+Louisville
+Baltimore
+Milwaukee
+Albuquerque
+Tucson
+Fresno
+Sacramento
+Kansas City
+Atlanta
+Miami
+Raleigh
+Omaha
+Minneapolis
+Tampa
+Orlando
+New Orleans
+Cleveland
+Pittsburgh
+Cincinnati
+St. Louis
+Salt Lake City
+Oakland
+Honolulu
+Anchorage
+Boise
+Richmond
+Charleston
+Savannah
+Palo Alto
+Silicon Valley
+Berkeley
+Brooklyn                  # borough/district — people say where they are
+Manhattan
+Queens
+Harlem
+Hollywood
+Santa Monica
+Napa Valley
+the Bay Area
+New England
+the Midwest
+California
+Texas
+Florida
+United States
+# --- Canada ---
+Toronto
+Montreal
+Vancouver
+Calgary
+Edmonton
+Ottawa
+Winnipeg
+Quebec City
+Halifax
+Saskatoon
+Mississauga
+Ontario
+British Columbia
+Alberta
+Quebec
+Canada
+
+# --- UK & Ireland ---
+London
+Manchester
+Birmingham
+Liverpool
+Leeds
+Glasgow
+Edinburgh
+Bristol
+Sheffield
+Newcastle
+Cardiff
+Belfast
+Nottingham
+Leicester
+Oxford
+Cambridge
+Brighton
+York
+Southampton
+Aberdeen
+Dundee
+Milton Keynes
+Shoreditch
+Hackney
+Camden
+Soho
+Kensington
+Chelsea
+Islington
+Canary Wharf
+Notting Hill
+Brixton
+Peckham
+Dublin
+Cork
+Galway
+Limerick
+England
+Scotland
+Wales
+Northern Ireland
+Ireland
+United Kingdom
+Cornwall
+Yorkshire
+the Cotswolds
+the Lake District
+
+# --- France ---
+Paris
+Lyon
+Marseille
+Toulouse
+Nantes
+Strasbourg
+Bordeaux
+Lille
+Montpellier
+Cannes
+Montmartre
+Provence
+Normandy
+Brittany
+Alsace
+Burgundy
+France
+# --- Germany ---
+Berlin
+Munich
+Hamburg
+Frankfurt
+Cologne
+Stuttgart
+Düsseldorf
+Dortmund
+Leipzig
+Dresden
+Hanover
+Nuremberg
+Bremen
+Bonn
+Heidelberg
+Kreuzberg
+Neukölln
+Prenzlauer Berg
+Bavaria
+Saxony
+Germany
+# --- Spain & Portugal ---
+Madrid
+Barcelona
+Valencia
+Seville
+Bilbao
+Málaga
+Zaragoza
+Palma
+Granada
+San Sebastián
+Ibiza
+Mallorca
+Tenerife
+Catalonia
+Andalusia
+Canary Islands
+Spain
+Lisbon
+Porto
+Faro
+Algarve
+Madeira
+Portugal
+# --- Italy ---
+Rome
+Milan
+Naples
+Turin
+Florence
+Venice
+Bologna
+Genoa
+Verona
+Palermo
+Catania
+Bari
+Pisa
+Tuscany
+Sicily
+Sardinia
+Lombardy
+Puglia
+Amalfi
+Italy
+# --- Benelux, Alpine, Nordics ---
+Amsterdam
+Rotterdam
+The Hague
+Utrecht
+Eindhoven
+Netherlands
+Brussels
+Antwerp
+Ghent
+Bruges
+Belgium
+Luxembourg
+Zurich
+Geneva
+Basel
+Bern
+Lausanne
+Zug
+Switzerland
+Vienna
+Salzburg
+Graz
+Innsbruck
+Austria
+Copenhagen
+Aarhus
+Denmark
+Stockholm
+Gothenburg
+Malmö
+Sweden
+Oslo
+Bergen
+Norway
+Helsinki
+Finland
+Reykjavik
+Iceland
+# --- Central & Eastern Europe, Balkans, Baltics ---
+Warsaw
+Kraków
+Gdańsk
+Wrocław
+Poland
+Prague
+Brno
+Czechia
+Bratislava
+Slovakia
+Budapest
+Hungary
+Bucharest
+Cluj-Napoca
+Romania
+Sofia
+Bulgaria
+Athens
+Thessaloniki
+Crete
+Santorini
+Greece
+Zagreb
+Dubrovnik
+Croatia
+Belgrade
+Serbia
+Ljubljana
+Slovenia
+Sarajevo
+Tallinn
+Riga
+Vilnius
+Estonia
+Latvia
+Lithuania
+Kyiv
+Lviv
+Odesa
+Ukraine
+Moscow
+Saint Petersburg
+Russia
+Minsk
+Belarus
+Malta
+Valletta
+Cyprus
+Monaco
+Tirana
+Albania
+Montenegro
+North Macedonia
+Skopje
+
+###############################################################################
+## ORGANIZATIONS
+###############################################################################
+# Notes only where non-obvious. "# model reads as place/product" = highest-value class.
+
+# --- Tech & data platforms ---
+Snowflake                 # very high value: model reads as a place/brand. Ordinary noun — see unsure list
+Databricks                # very high value: model labels as place
+Stripe                    # model reads as brand; ordinary noun — see unsure list
+Cloudflare                # model reads as brand
+Datadog                   # also a product — same word, company vs. tool
+MongoDB                   # also a product
+Grafana Labs              # vendor — the product "Grafana" is in PRODUCTS
+Confluent
+HashiCorp
+Elastic                   # company; also an adjective — unsure list
+GitHub                    # org and product
+GitLab
+Atlassian
+Anthropic
+OpenAI
+Mistral AI
+DeepMind
+Hugging Face
+Red Hat
+Canonical
+VMware
+Microsoft
+Google
+Alphabet
+Amazon Web Services
+Netflix
+Spotify
+Nvidia
+Intel
+Advanced Micro Devices
+Qualcomm
+Broadcom
+Cisco
+Dell Technologies
+Lenovo
+Samsung
+Sony
+Siemens
+SAP
+Adobe
+Salesforce
+ServiceNow
+Workday
+Zendesk
+HubSpot
+Shopify
+Twilio
+Okta
+CrowdStrike
+Palantir
+Uber
+Lyft
+Airbnb                    # also a product
+DoorDash
+Deliveroo
+Just Eat Takeaway
+Booking Holdings
+Expedia
+Tripadvisor
+Skyscanner
+Canva
+Figma
+Notion Labs
+Dropbox
+Zoom Video Communications
+PayPal
+Klarna
+Revolut
+Monzo
+Wise Payments
+Adyen
+Coinbase
+Binance
+Block Inc
+Tesla
+SpaceX
+Rivian
+ByteDance
+Tencent
+Alibaba
+Baidu
+Huawei
+Xiaomi
+Infosys
+Tata Consultancy Services
+Wipro
+Cognizant
+Accenture
+Capgemini
+Naspers
+Prosus
+Flutterwave
+Paystack
+Takealot
+Gojek
+Grab Holdings
+Sea Limited
+Rakuten
+Mercado Libre
+Nubank
+Zalando
+Spotify Technology
+Wikimedia Foundation
+Mozilla
+Linux Foundation
+Apache Software Foundation
+
+# --- Telecoms ---
+Vodafone
+Vodacom
+MTN
+Safaricom
+Airtel
+Telkom
+Telstra
+Verizon
+AT&T
+T-Mobile
+Deutsche Telekom
+Telefónica
+Singtel
+Jio Platforms
+
+# --- Banks, insurers, asset managers, exchanges ---
+JPMorgan Chase
+Goldman Sachs
+Morgan Stanley
+Citigroup
+Bank of America
+Wells Fargo
+HSBC
+Barclays
+Lloyds Banking Group
+NatWest
+Standard Chartered
+Santander
+BBVA
+UBS
+Credit Suisse
+Deutsche Bank
+BNP Paribas
+Société Générale
+Crédit Agricole
+ING
+ABN Amro
+Rabobank
+Nordea
+Danske Bank
+Commerzbank
+UniCredit
+Intesa Sanpaolo
+Mizuho
+Mitsubishi UFJ Financial Group
+Sumitomo Mitsui
+DBS
+OCBC
+United Overseas Bank
+ICICI Bank
+HDFC Bank
+State Bank of India
+Royal Bank of Canada
+TD Bank
+Scotiabank
+Commonwealth Bank
+Westpac
+ANZ
+National Australia Bank
+Standard Bank
+Absa
+Nedbank
+FirstRand
+Capitec
+Access Bank
+Zenith Bank
+Guaranty Trust Bank
+Ecobank
+Equity Bank
+Itaú
+Bradesco
+BlackRock                 # high value: model reads as a place/brand
+Vanguard
+Fidelity Investments
+State Street
+Blackstone
+KKR
+Carlyle
+Apollo Global Management
+Bridgewater Associates
+Citadel
+Mastercard
+American Express
+Berkshire Hathaway
+Allianz
+AXA
+Zurich Insurance
+Aviva
+Legal & General
+Munich Re
+Swiss Re
+Old Mutual
+Sanlam
+Moody's
+S&P Global
+London Stock Exchange
+Nasdaq
+Bloomberg
+
+# --- Consultancies, audit, law ---
+McKinsey & Company
+Boston Consulting Group
+Bain & Company
+Deloitte
+PwC
+KPMG
+Ernst & Young
+Oliver Wyman
+Roland Berger
+Booz Allen Hamilton
+Clifford Chance
+Linklaters
+Freshfields
+Baker McKenzie
+Latham & Watkins
+
+# --- Retail & consumer ---
+Walmart
+Costco
+Tesco
+Sainsbury's
+Asda
+Aldi
+Lidl
+Carrefour
+IKEA
+H&M
+Inditex
+Marks & Spencer
+John Lewis
+Woolworths
+Pick n Pay
+Shoprite
+Checkers
+Home Depot
+Best Buy
+Currys
+MediaMarkt
+Walgreens
+Nike
+Adidas
+Puma
+Lululemon
+Uniqlo
+Patagonia
+Starbucks
+McDonald's
+Nando's
+Domino's
+Pret A Manger
+Costa Coffee
+Unilever
+Procter & Gamble
+Nestlé
+Coca-Cola
+PepsiCo
+Diageo
+Heineken
+AB InBev
+Danone
+Mondelez
+L'Oréal
+LVMH
+Hermès
+Kering
+Richemont
+Burberry
+Rolex                     # also product
+Ferrari
+Porsche
+Toyota
+Volkswagen
+BMW
+Mercedes-Benz
+Ford                      # surname — model labels as a person; high value
+General Motors
+Honda
+Nissan
+Hyundai
+Kia
+Volvo
+Renault
+Stellantis
+Tata Motors
+BYD
+
+# --- Airlines ---
+British Airways
+Lufthansa
+Air France
+KLM
+Emirates
+Qatar Airways
+Etihad
+Turkish Airlines
+Singapore Airlines
+Cathay Pacific
+Qantas
+Delta Air Lines
+United Airlines
+American Airlines
+Southwest Airlines
+Ryanair
+easyJet
+Wizz Air
+Air Canada
+Ethiopian Airlines
+Kenya Airways
+South African Airways
+FlySafair
+Virgin Atlantic
+Air New Zealand
+LATAM
+Avianca
+Japan Airlines
+All Nippon Airways
+Korean Air
+Air India
+IndiGo
+Garuda Indonesia
+Thai Airways
+Vietnam Airlines
+Philippine Airlines
+Jet2
+Iberia
+Finnair
+Aer Lingus
+Swiss International Air Lines
+JetBlue
+Alaska Airlines
+
+# --- Energy, industrials, mining, logistics ---
+BP
+ExxonMobil
+Chevron
+TotalEnergies
+Equinor
+Saudi Aramco
+Eni
+Repsol
+Sasol
+Eskom
+Orsted
+Vestas
+National Grid
+Electricité de France
+Enel
+Iberdrola
+Octopus Energy
+Boeing
+Airbus
+Rolls-Royce
+BAE Systems
+Lockheed Martin
+General Electric
+Caterpillar
+Honeywell
+ABB
+Schneider Electric
+Maersk
+DHL
+FedEx
+Rio Tinto
+BHP
+Glencore
+Vale
+ArcelorMittal
+Anglo American
+Gold Fields
+Sibanye-Stillwater
+Impala Platinum
+De Beers
+Dangote Group
+
+# --- Healthcare & pharma ---
+Pfizer
+Moderna
+Novartis
+Roche
+Johnson & Johnson
+AstraZeneca
+GlaxoSmithKline
+Sanofi
+Novo Nordisk
+Bayer
+Eli Lilly
+Medtronic
+Mayo Clinic
+Cleveland Clinic
+Kaiser Permanente
+Bupa
+Discovery Health
+Mediclinic
+Netcare
+UnitedHealth Group
+Cigna
+Aetna
+
+# --- Media & entertainment ---
+BBC
+CNN
+Reuters
+Associated Press
+Financial Times
+The Guardian
+The New York Times
+The Wall Street Journal
+The Economist
+Al Jazeera
+Walt Disney Company
+Warner Bros. Discovery
+Comcast
+Channel 4
+ITV
+News Corp
+Condé Nast
+Penguin Random House
+Universal Music Group
+Sony Music
+Multichoice
+
+# --- Government, regulators, international bodies ---
+European Commission
+European Central Bank
+European Union
+International Monetary Fund
+World Bank
+World Health Organization
+World Trade Organization
+United Nations
+NATO
+OECD
+Federal Reserve
+Bank of England
+Reserve Bank of India
+South African Reserve Bank
+Securities and Exchange Commission
+Federal Trade Commission
+Food and Drug Administration
+Centers for Disease Control and Prevention
+Environmental Protection Agency
+Department of Homeland Security
+Federal Bureau of Investigation
+NASA
+Internal Revenue Service
+HM Revenue and Customs
+National Health Service
+Home Office
+Foreign Office
+Financial Conduct Authority
+Competition and Markets Authority
+Ofcom
+South African Revenue Service
+Department of Home Affairs
+Australian Taxation Office
+Canada Revenue Agency
+European Space Agency
+CERN
+UNHCR
+UNICEF
+World Food Programme
+World Economic Forum
+
+# --- Universities & business schools ---
+Harvard University
+Stanford University
+Massachusetts Institute of Technology
+Yale University
+Princeton University
+Columbia University
+University of Chicago
+Cornell University
+Duke University
+Northwestern University
+Johns Hopkins University
+Carnegie Mellon University
+California Institute of Technology
+New York University
+University of California
+University of Oxford
+University of Cambridge
+Imperial College London
+London School of Economics
+University College London
+King's College London
+University of Edinburgh
+University of Manchester
+University of Warwick
+Durham University
+ETH Zurich
+EPFL
+Sorbonne University
+Technical University of Munich
+Humboldt University
+Heidelberg University
+Leiden University
+University of Amsterdam
+KU Leuven
+Karolinska Institute
+University of Copenhagen
+Bocconi University
+INSEAD
+IESE Business School
+London Business School
+HEC Paris
+University of Toronto
+McGill University
+University of British Columbia
+University of Waterloo
+University of Melbourne
+University of Sydney
+Australian National University
+University of Auckland
+National University of Singapore
+Nanyang Technological University
+University of Hong Kong
+Tsinghua University
+Peking University
+Fudan University
+University of Tokyo
+Kyoto University
+Seoul National University
+KAIST
+Indian Institute of Technology
+Indian Institute of Management
+University of Cape Town
+University of the Witwatersrand
+Stellenbosch University
+University of Pretoria
+University of Nairobi
+University of Lagos
+American University in Cairo
+University of São Paulo
+Universidad Nacional Autónoma de México
+
+# --- NGOs, charities, foundations ---
+Médecins Sans Frontières  # diacritics; English model drops it
+Doctors Without Borders   # English form of the above — keep both, they are typed both ways
+Médecins du Monde         # diacritics
+International Committee of the Red Cross
+Oxfam
+Amnesty International
+Greenpeace
+World Wildlife Fund
+Save the Children
+Habitat for Humanity
+Bill & Melinda Gates Foundation
+Wellcome Trust
+Rotary International
+Salvation Army
+Cancer Research UK
+Comic Relief
+Human Rights Watch
+Transparency International
+Electronic Frontier Foundation
+Islamic Relief
+Mercy Corps
+Caritas
+
+# --- Sports clubs ---
+Manchester United
+Manchester City
+Liverpool FC
+Arsenal
+Tottenham Hotspur
+Real Madrid
+FC Barcelona
+Atlético Madrid
+Bayern Munich
+Borussia Dortmund
+Juventus
+AC Milan
+Inter Milan
+Paris Saint-Germain
+Ajax
+Celtic
+Kaizer Chiefs
+Orlando Pirates
+Mamelodi Sundowns
+Al Ahly
+Los Angeles Lakers
+Golden State Warriors
+Boston Celtics
+Chicago Bulls
+New York Yankees
+Dallas Cowboys
+New England Patriots
+Green Bay Packers
+Mumbai Indians
+Chennai Super Kings
+Red Bull Racing
+McLaren Racing
+
+###############################################################################
+## PRODUCTS
+###############################################################################
+# Format:  Name | class — optional note
+# Classes: plain = safe on sight; gated = real product that is also ordinary English.
+# Any single-word entry below has no everyday meaning (checked one by one; see REJECTED).
+
+# --- Cars (model names) ---
+Toyota Highlander | plain
+Toyota Corolla | plain
+Toyota Hilux | plain
+Toyota Land Cruiser | plain
+Toyota Camry | plain
+Toyota RAV4 | plain
+Toyota Prius | plain
+Toyota Fortuner | plain
+Honda Civic | plain
+Honda Accord | plain
+Honda CR-V | plain
+Mazda CX-5 | plain
+Mazda MX-5 | plain
+Ford Mustang | plain
+Ford Ranger | plain
+Ford F-150 | plain
+Ford Transit | plain
+Volkswagen Golf | plain
+Volkswagen Polo | plain
+Volkswagen Tiguan | plain
+Volkswagen Passat | plain
+BMW 3 Series | plain
+BMW X5 | plain
+BMW M3 | plain
+Mercedes-Benz C-Class | plain
+Mercedes E-Class | plain
+Mercedes G-Wagon | plain
+Audi A3 | plain
+Audi A4 | plain
+Audi Q5 | plain
+Tesla Model 3 | plain
+Tesla Model Y | plain
+Tesla Model S | plain
+Tesla Cybertruck | plain
+Tesla Powerwall | plain
+Tesla Supercharger | plain
+Porsche 911 | plain
+Porsche Cayenne | plain
+Porsche Macan | plain
+Volvo XC60 | plain
+Volvo XC90 | plain
+Subaru Outback | plain
+Subaru Forester | plain
+Kia Sportage | plain
+Hyundai Tucson | plain
+Hyundai Kona | plain
+Nissan Qashqai | plain
+Nissan Leaf | plain
+Nissan Navara | plain
+Jeep Wrangler | plain
+Jeep Grand Cherokee | plain
+Land Rover Defender | plain
+Range Rover Sport | plain
+Range Rover Evoque | plain
+Mini Cooper | plain
+Fiat 500 | plain
+Renault Clio | plain
+Peugeot 208 | plain
+Suzuki Swift | plain
+Suzuki Jimny | plain
+Isuzu D-Max | plain
+Mitsubishi Pajero | plain
+Mitsubishi Outlander | plain
+Chevrolet Silverado | plain
+Chevrolet Corvette | plain
+Dodge Challenger | plain
+Rivian R1T | plain
+Polestar 2 | plain
+Lucid Air | plain
+BYD Seal | plain
+Alfa Romeo Giulia | plain
+Lexus RX | plain
+Jaguar F-Pace | plain
+Maserati Ghibli | plain
+Lamborghini Urus | plain
+Ferrari Roma | plain
+
+# --- Bikes & motorbikes ---
+Trek Domane | plain
+Specialized Tarmac | plain
+Cannondale Synapse | plain
+Canyon Aeroad | plain
+Pinarello Dogma | plain
+Santa Cruz Hightower | plain
+Brompton | plain — single word, no everyday meaning
+Harley-Davidson Sportster | plain
+Ducati Monster | plain
+Ducati Panigale | plain
+Triumph Bonneville | plain
+Royal Enfield Classic 350 | plain
+Vespa Primavera | plain
+Yamaha MT-07 | plain
+Kawasaki Ninja | plain
+BMW R 1250 GS | plain
+Honda Africa Twin | plain
+Wahoo Kickr | plain
+Peloton Bike | plain — "Peloton" alone is also a cycling term; two-word form is safe
+Zwift | plain
+
+# --- Watches & wearables ---
+Rolex | plain
+Rolex Submariner | plain
+Rolex Datejust | plain
+Rolex Daytona | plain
+Omega Speedmaster | plain
+Omega Seamaster | plain
+Tudor Black Bay | plain
+Seiko 5 | plain
+Casio G-Shock | plain
+Casio F-91W | plain
+Apple Watch | plain
+Apple Watch Ultra | plain
+Garmin Fenix | plain
+Garmin Forerunner | plain
+Garmin Edge | plain
+Garmin inReach | plain
+Patek Philippe Nautilus | plain
+Audemars Piguet Royal Oak | plain
+Cartier Santos | plain
+Cartier Tank | plain
+TAG Heuer Carrera | plain
+Tissot PRX | plain
+Breitling Navitimer | plain
+Grand Seiko | plain
+Longines Hydroconquest | plain
+Timex Weekender | plain
+Fitbit Charge | plain
+Oura Ring | plain
+Whoop | plain
+
+# --- Phones, computers, devices ---
+iPhone | plain
+iPhone 15 Pro | plain
+iPhone 16 Pro | plain
+iPhone 17 Pro | plain
+Samsung Galaxy S24 | plain
+Samsung Galaxy S25 | plain
+Galaxy Z Fold | plain
+Google Pixel 9 | plain
+Google Pixel 10 | plain
+OnePlus 12 | plain
+Nothing Phone | plain
+MacBook Pro | plain
+MacBook Air | plain
+iPad Pro | plain
+iPad Air | plain
+iPad Mini | plain
+Mac Mini | plain
+Mac Studio | plain
+Apple Vision Pro | plain
+AirPods Pro | plain
+AirPods Max | plain
+HomePod Mini | plain
+Kindle Paperwhite | plain
+Kindle Scribe | plain
+Dell XPS 13 | plain
+ThinkPad X1 Carbon | plain
+ThinkPad T14 | plain
+Surface Pro | plain
+Surface Laptop | plain
+Framework Laptop | plain
+Razer Blade | plain
+Asus ROG Zephyrus | plain
+Sonos Arc | plain
+Sonos Beam | plain
+Sonos Era | plain
+Bose QuietComfort | plain
+Sony WH-1000XM5 | plain
+Sony WH-1000XM6 | plain
+Sennheiser Momentum | plain
+Bang & Olufsen Beosound | plain
+Marshall Stanmore | plain
+JBL Flip | plain
+Logitech MX Master | plain
+Logitech MX Keys | plain
+Keychron Q1 | plain
+Steam Deck | plain
+Nintendo Switch | plain — "Switch" alone is blocked; two-word form is fine
+Nintendo Switch 2 | plain
+PlayStation 5 | plain
+Xbox Series X | plain
+Meta Quest 3 | plain
+Raspberry Pi | plain
+Arduino Uno | plain
+GoPro Hero | plain
+DJI Mavic | plain
+DJI Mini | plain
+DJI Osmo | plain
+Canon EOS R5 | plain
+Canon EOS R6 | plain
+Sony A7 IV | plain
+Nikon Z6 | plain
+Fujifilm X100V | plain
+Fujifilm X-T5 | plain
+Leica Q3 | plain
+Leica M11 | plain
+Ricoh GR III | plain
+Samsung Frame TV | plain
+LG OLED | plain
+Philips Hue | plain
+Ring Doorbell | plain
+Google Nest | plain
+Amazon Echo | plain
+Echo Dot | plain
+Chromecast | plain
+Apple TV | plain
+Roomba | plain
+Dyson V15 | plain
+Dyson Airwrap | plain
+Dyson Supersonic | plain
+Theragun | plain
+Eight Sleep Pod | plain
+YubiKey | plain
+
+# --- Home, kitchen, furniture ---
+Nespresso Vertuo | plain
+Breville Barista Express | plain
+De'Longhi Magnifica | plain
+La Marzocco Linea Mini | plain
+Rancilio Silvia | plain
+Baratza Encore | plain
+Fellow Stagg | plain
+AeroPress | plain
+Chemex | plain
+Hario V60 | plain
+Moccamaster | plain
+Vitamix | plain
+KitchenAid Stand Mixer | plain
+Le Creuset Dutch Oven | plain
+Staub Cocotte | plain
+Instant Pot | plain
+Ninja Foodi | plain
+Thermomix | plain
+Weber Kettle | plain
+Weber Genesis | plain
+Traeger Pellet Grill | plain
+Big Green Egg | plain
+Kamado Joe | plain
+Ooni Koda | plain
+Smeg | plain
+Miele | plain
+Yeti Tumbler | plain
+Stanley Quencher | plain
+Hydro Flask | plain
+Nalgene | plain
+IKEA Billy | plain
+IKEA Kallax | plain
+IKEA Malm | plain
+IKEA Poäng | plain
+IKEA Ektorp | plain
+IKEA Pax | plain
+IKEA Hemnes | plain
+IKEA Besta | plain
+Herman Miller Aeron | plain
+Herman Miller Embody | plain
+Steelcase Gesture | plain
+Eames Lounge Chair | plain
+Flos Arco | plain
+Anglepoise Type 75 | plain
+Artemide Tolomeo | plain
+Casper Mattress | plain
+Emma Mattress | plain
+Sealy Posturepedic | plain
+Victron MultiPlus | plain
+Sunsynk | plain
+Enphase | plain
+
+# --- Clothing, footwear, bags, eyewear ---
+Nike Air Max | plain
+Nike Air Force 1 | plain
+Nike Pegasus | plain
+Nike Dunk | plain
+Air Jordan 1 | plain
+Adidas Samba | plain
+Adidas Ultraboost | plain
+Adidas Stan Smith | plain
+Adidas Gazelle | plain
+New Balance 990 | plain
+New Balance 574 | plain
+New Balance Fresh Foam | plain
+Asics Gel-Kayano | plain
+Asics Gel-Nimbus | plain
+Hoka Clifton | plain
+Hoka Bondi | plain
+On Cloudmonster | plain
+Brooks Ghost | plain
+Saucony Endorphin | plain
+Salomon Speedcross | plain
+Converse Chuck Taylor | plain
+Vans Old Skool | plain
+Dr. Martens 1460 | plain
+Birkenstock Arizona | plain
+Birkenstock Boston | plain
+Crocs Classic Clog | plain
+Ugg Tasman | plain
+Allbirds Wool Runners | plain
+Common Projects Achilles | plain
+Veja V-10 | plain
+Patagonia Better Sweater | plain
+Patagonia Nano Puff | plain
+The North Face Nuptse | plain
+Arc'teryx Beta | plain
+Canada Goose Expedition Parka | plain
+Moncler Maya | plain
+Barbour Wax Jacket | plain
+Levi's 501 | plain
+Levi's 511 | plain
+Uniqlo Heattech | plain
+Lululemon Align | plain
+Ray-Ban Wayfarer | plain
+Ray-Ban Aviator | plain
+Oakley Holbrook | plain
+Herschel Little America | plain
+Longchamp Le Pliage | plain
+Louis Vuitton Neverfull | plain
+Hermès Birkin | plain
+Chanel Classic Flap | plain
+Gucci Marmont | plain
+Goyard Saint Louis | plain
+Fjällräven Kånken | plain
+Osprey Atmos | plain
+Peak Design Everyday Backpack | plain
+Rimowa Essential | plain
+Tumi Alpha | plain
+Samsonite | plain
+Carhartt Detroit Jacket | plain
+Gymshark | plain
+Rapha Classic Jersey | plain
+
+# --- Music & audio gear ---
+Fender Stratocaster | plain
+Fender Telecaster | plain
+Gibson Les Paul | plain
+Martin D-28 | plain
+Taylor 314ce | plain
+Yamaha P-125 | plain
+Roland Juno | plain
+Moog Minimoog | plain
+Korg Minilogue | plain
+Elektron Digitakt | plain
+Shure SM58 | plain
+Rode NT1 | plain
+Focusrite Scarlett | plain
+Audio-Technica ATH-M50x | plain
+Technics SL-1200 | plain
+Rega Planar 3 | plain
+KEF LS50 | plain
+Ableton Live | plain
+Logic Pro | plain
+Pro Tools | plain
+Final Cut Pro | plain
+DaVinci Resolve | plain
+
+# --- Tools & sports gear ---
+DeWalt Drill | plain
+Makita Impact Driver | plain
+Milwaukee M18 | plain
+Bosch Professional | plain
+Leatherman Wave | plain
+Wilson Pro Staff | plain
+Babolat Pure Drive | plain
+Titleist Pro V1 | plain
+Callaway Rogue | plain
+TaylorMade Stealth | plain
+
+# --- Software: productivity & everyday apps ---
+Microsoft Teams | plain — "Teams" alone is generic
+Microsoft Excel | plain
+Microsoft Word | plain
+Microsoft Outlook | plain
+Microsoft Office | plain
+Microsoft 365 | plain
+Google Workspace | plain
+Google Docs | plain
+Google Sheets | plain
+Google Drive | plain
+Google Maps | plain
+Google Calendar | plain
+Google Translate | plain
+Google Flights | plain
+Gmail | plain
+iCloud | plain
+Apple Music | plain
+Apple Pay | plain
+Google Pay | plain
+Apple Maps | plain
+Obsidian | gated — also a rock/colour; product only in a notes-app sentence
+Notion | gated — "that's a notion"; usually capitalised only as the app
+Evernote | plain
+Todoist | plain
+Trello | plain
+Asana | gated — yoga pose; low risk
+Jira | plain
+Confluence | gated — also a river junction; low risk
+Figma | plain
+Canva | plain
+Miro | plain
+Slack | gated — "cut me some slack"
+Zoom | gated — "zoom in", "zoom call" lowercase
+Dropbox | gated
+WhatsApp | plain
+Telegram | gated — also an old noun
+Instagram | plain
+TikTok | plain
+Snapchat | plain
+Pinterest | plain
+LinkedIn | plain
+Reddit | plain
+Twitch | plain
+Discord | plain
+Substack | plain
+Tinder | plain
+Hinge | gated — door part
+Bumble | gated — verb
+Duolingo | plain
+Grammarly | plain
+DeepL | plain
+Zotero | plain
+Overleaf | plain
+Strava | plain
+MyFitnessPal | plain
+Headspace | plain
+Calm | gated — adjective
+Komoot | plain
+AllTrails | plain
+Citymapper | plain
+Waze | plain
+Trainline | plain
+Skyscanner App | plain
+Booking.com | plain
+Uber Eats | plain
+Just Eat | gated — phrase
+Deliveroo | plain
+M-Pesa | plain
+Cash App | plain
+Venmo | plain
+Zelle | plain
+Revolut Metal | plain
+Robinhood | plain
+Trading 212 | plain
+Ledger Nano | plain
+1Password | plain
+Bitwarden | plain
+LastPass | plain
+Dashlane | plain
+NordVPN | plain
+ExpressVPN | plain
+ProtonMail | plain
+Proton VPN | plain
+Tailscale | plain
+WireGuard | plain
+Adobe Photoshop | plain
+Adobe Illustrator | plain
+Adobe Premiere Pro | plain
+Adobe Lightroom | plain
+Adobe Acrobat | plain
+AutoCAD | plain
+SolidWorks | plain
+Fusion 360 | plain
+Unreal Engine | plain
+Blender | gated — kitchen appliance; product only in a 3D/software sentence
+Steam | gated — vapour; product only as the game store
+Safari | gated — trip; product only as the browser
+Chrome | gated — metal trim; product only as the browser
+Firefox | plain
+
+# --- Software: engineering & data ---
+Visual Studio Code | plain
+VS Code | plain
+IntelliJ IDEA | plain
+PyCharm | plain
+WebStorm | plain
+Xcode | plain
+Android Studio | plain
+Docker | plain
+Kubernetes | plain
+Terraform | plain
+Ansible | plain — brief's frame-sensitivity example
+Jenkins | plain — also a surname
+GitHub Copilot | plain
+ChatGPT | plain
+Claude Code | plain
+Midjourney | plain
+Grafana | plain — vendor "Grafana Labs" is in ORGANIZATIONS
+Prometheus | plain — also mythology; unsure list
+Kafka | plain — also a surname/writer; unsure list
+Redis | plain
+PostgreSQL | plain
+Postgres | plain
+MySQL | plain
+Elasticsearch | plain
+dbt | plain
+Tableau | plain
+Power BI | plain
+Looker | plain
+PagerDuty | plain
+Splunk | plain
+New Relic | plain
+Vercel | plain
+Netlify | plain
+Heroku | plain
+Supabase | plain
+Firebase | plain
+Cloudflare Workers | plain
+AWS Lambda | plain
+Amazon S3 | plain
+Amazon EC2 | plain
+Azure DevOps | plain
+Google Cloud Platform | plain
+BigQuery | plain
+Homebrew | plain — also a beer-making term; unsure list
+Nginx | plain
+Microsoft Dynamics 365 | plain
+SAP HANA | plain
+Oracle Cloud | plain
+Support Plan | gated — "the support plan renewal is due"
+Cold Storage | gated — "move it to cold storage"
+Savings Plan | gated — "we bought a savings plan"
+Reserved Instance | gated — cloud purchase sense only
+Enterprise Agreement | gated — licensing sense only
+Premium Support | gated — "we upgraded to premium support"
+
+# --- Games & streaming ---
+Roblox | plain
+Minecraft | plain
+Fortnite | plain
+Call of Duty | plain
+EA Sports FC | plain
+Mario Kart | plain
+Super Mario | plain
+Animal Crossing | plain
+The Legend of Zelda | plain
+Pokémon Go | plain
+Candy Crush | plain
+Wordle | plain
+Elden Ring | plain
+Baldur's Gate 3 | plain
+Cyberpunk 2077 | plain
+Stardew Valley | plain
+Civilization VI | plain
+Football Manager | plain
+Rocket League | plain
+League of Legends | plain
+World of Warcraft | plain
+Counter-Strike | plain
+Disney Plus | plain
+Prime Video | plain
+Amazon Prime | plain
+HBO Max | plain
+Apple TV Plus | plain
+Paramount Plus | plain
+Hulu | plain
+Crunchyroll | plain
+YouTube Premium | plain
+Spotify Premium | plain
+Audible | plain
+Kindle Unlimited | plain
+DStv Premium | plain
+Showmax | plain
+Sky Sports | plain
+
+# --- Food, drink, spirits ---
+Johnnie Walker Blue Label | plain
+Johnnie Walker Black Label | plain
+Glenfiddich 12 | plain
+Glenlivet | plain
+Macallan 18 | plain
+Lagavulin 16 | plain
+Laphroaig 10 | plain
+Ardbeg | plain
+Talisker | plain
+Jameson Irish Whiskey | plain
+Jack Daniel's | plain
+Jim Beam | plain
+Maker's Mark | plain
+Woodford Reserve | plain
+Buffalo Trace | plain
+Hennessy VS | plain
+Hennessy XO | plain
+Rémy Martin | plain
+Grey Goose | plain
+Belvedere Vodka | plain
+Absolut Vodka | plain
+Smirnoff | plain
+Tanqueray | plain
+Hendrick's Gin | plain
+Bombay Sapphire | plain
+Beefeater | plain
+Aperol | plain
+Campari | plain
+Jägermeister | plain
+Baileys | plain
+Amarula | plain
+Don Julio | plain
+Patrón Silver | plain
+Casamigos | plain
+Havana Club | plain
+Bacardi | plain
+Captain Morgan | plain
+Dom Pérignon | plain
+Moët & Chandon | plain
+Veuve Clicquot | plain
+Guinness | plain
+Corona Extra | plain
+Stella Artois | plain
+Peroni | plain
+Castle Lager | plain
+Windhoek Lager | plain
+Tusker | plain
+Red Bull | plain
+Monster Energy | plain
+Coca-Cola Zero | plain
+Diet Coke | plain
+Dr Pepper | plain
+Nespresso | plain
+Illy | plain
+Lavazza | plain
+Oatly | plain
+Impossible Burger | plain
+Beyond Meat | plain
+Huel | plain
+Pringles | plain
+Doritos | plain
+Oreo | plain
+Kit Kat | plain
+Nutella | plain
+Marmite | plain
+Vegemite | plain
+Cadbury Dairy Milk | plain
+Toblerone | plain
+Haribo | plain
+Ferrero Rocher | plain
+Tim Tam | plain
+
+# --- Pets, kids, health, travel & loyalty ---
+Royal Canin | plain
+Hill's Science Diet | plain
+Purina Pro Plan | plain
+Whiskas | plain
+Orijen | plain
+Acana | plain
+Kong Classic | plain
+LEGO Technic | plain
+LEGO Star Wars | plain
+Playmobil | plain
+Hot Wheels | plain
+Bugaboo Fox | plain
+Stokke Tripp Trapp | plain
+Maxi-Cosi Pebble | plain
+UPPAbaby Vista | plain
+Cybex Sirona | plain
+Ozempic | plain
+Wegovy | plain
+Mounjaro | plain
+Panadol | plain
+Nurofen | plain
+Advil | plain
+Tylenol | plain
+Calpol | plain
+Zyrtec | plain
+Claritin | plain
+Invisalign | plain
+Withings Body | plain
+Eurostar | plain
+Eurail Pass | plain
+Interrail Pass | plain
+Gautrain | plain — see unsure list
+Oyster Card | plain
+Priority Pass | plain
+TSA PreCheck | plain
+Global Entry | plain
+Amex Platinum | plain
+Chase Sapphire Reserve | plain
+Chase Sapphire Preferred | plain
+Delta SkyMiles | plain
+Marriott Bonvoy | plain
+Hilton Honors | plain
+World of Hyatt | plain
+Club Med | plain
+Center Parcs | plain
+Contiki | plain
+Intrepid Travel | plain
+
+###############################################################################
+## CONSIDERED AND REJECTED
+###############################################################################
+
+# --- Products: ordinary nouns / one-word generic (do not add) ---
+Seat                      # generic — already blocked
+Contract                  # generic — already blocked
+Credits                   # generic — already blocked
+Desk                      # generic — ordinary noun
+Shoes                     # generic
+Watch                     # generic
+Flight / Flights          # generic
+Bike                      # generic
+House                     # generic
+Painting                  # generic
+Speakers                  # generic
+Teams                     # generic — "Microsoft Teams" is kept instead
+Pages / Numbers           # generic — Apple apps, but both ordinary words
+Linear                    # generic — adjective, though it is a real tool
+Medium                    # generic — publishing platform, but adjective/noun
+Signal                    # generic — messaging app, but constant ordinary use
+Grab                      # generic — verb (Southeast Asian app; the company is in ORGANIZATIONS as Grab Holdings)
+Cursor                    # generic — editor, but UI noun
+Copilot                   # generic/gated — too many uses; "GitHub Copilot" kept
+Spark                     # generic — verb/noun
+Airflow                   # generic — ordinary noun in HVAC/medical use
+Sentry                    # generic — ordinary noun
+Peacock                   # generic — bird
+Pedigree                  # generic — ordinary noun
+Hay                       # generic — ordinary noun (the design brand)
+Box                       # generic
+Sketch                    # generic — design tool, but verb/noun
+Edge / Brave / Opera      # generic — browsers that are ordinary words
+Echo / Nest / Ring / Hue / Frame / Pixel / Home  # generic standalone; kept only as multi-word forms
+Golf / Polo / Focus / Beetle / Fusion / Escape / Explorer  # car models that are ordinary words; model-name-with-brand only
+Switch                    # generic — already blocked; "Nintendo Switch" kept
+Storage / Plan / Tier / Support / Rack / UPS / SAN / NAS  # already blocked
+
+# --- Products: vendors, not products (belong in ORGANIZATIONS) ---
+Grafana Labs              # vendor; product "Grafana" kept
+Toyota / Nike / Sony / Samsung / Ford  # bare brands — company names
+Airbnb, Spotify, Uber, Netflix  # companies; product forms are "Uber Eats", "Spotify Premium", etc.
+
+# --- Places: not included ---
+Streets, buildings, hotels, airports, stadiums  # per brief
+Austin, Texas             # base city only; normaliser keeps spelled-out state otherwise
+Springfield / Paris, Texas / Birmingham (US/UK)  # ambiguous duplicates; only one form each kept
+USA / UAE / UK            # abbreviations; normaliser does not expand — add as aliases if desired
+Washington, DC            # normaliser strips ", DC"; "Washington" kept (see unsure list)
+
+# --- Organizations: ordinary words (excluded on purpose — decision for you) ---
+Apple                     # ordinary noun ("I ate an apple"); model usually gets this one right
+Amazon                    # also the river/region; model usually gets it right
+Shell                     # ordinary noun
+Target                    # ordinary noun/verb
+Visa                      # ordinary noun in a mobile-heavy "visa came through" world
+Meta                      # prefix/adjective
+Oracle                    # ordinary noun
+Sky                       # ordinary noun
+Next                      # ordinary word
+Gap                       # ordinary noun
+Boots                     # ordinary noun
+Orange                    # colour/fruit
+Discovery                 # ordinary noun
+Liberty                   # ordinary noun
+Square                    # ordinary noun (Block Inc listed instead)
+Wise                      # adjective (Wise Payments listed instead)
+Total                     # ordinary word (TotalEnergies listed instead)
+Notion / Zoom / Slack     # ordinary words (vendors listed with full names where useful)
+IBM / SAP / HSBC / BBC / NASA  # abbreviations: kept only where the abbreviation is what people type (HSBC, BBC, NASA, SAP, KKR, ING, UBS, CERN, ANZ, DBS, OECD, NATO, PwC, KPMG)
+
+###############################################################################
+## UNSURE — your call
+###############################################################################
+
+# --- Ordinary-word organizations that are in the list because the brief asked for them ---
+Snowflake                 # ordinary noun; brief marks it highest value
+Stripe                    # ordinary noun; brief marks it highest value
+Elastic                   # adjective; "Elastic" the company is a vendor name — could be dropped
+Ford                      # surname/river crossing; kept as high value
+
+# --- Places that are also names or other places ---
+Washington                # state, DC, and a surname
+Jordan / Georgia / Chad   # country vs. person name — NOT included; add if you accept the risk
+Victoria                  # not included: Australian state, Canadian city, a name
+San Jose / San Francisco / San Diego / San Antonio / San Salvador / San Juan / San Sebastián  # "san" is in your block list;
+                          # these are multi-word so should be safe if the block applies to a whole entry only — please confirm
+Mecca / Medina           # kept as cities; Mecca is also an ordinary word for a destination
+Soweto / Sandton / Bondi # districts — kept because people say where they are
+Nice / Split / Reading / Bath  # REMOVED from PLACES: real cities but ordinary words ("nice", "split", "reading", "take a bath"); a frequency filter would not suppress them
+York / Newcastle / Cambridge    # kept; each has a well-known namesake (New York / Australia / Massachusetts) — low risk
+Hamilton / Córdoba       # dropped: surname / duplicate city names in two countries
+Faro / Mali / Bahamas    # fine, flagged only for completeness
+
+# --- Products ---
+Alexa                    # not included: a first name; Amazon Alexa would be safe
+Prometheus / Kafka / Jenkins / Homebrew / Asana / Confluence  # plain entries that are also mythology / surnames / ordinary words;
+                          # treat as low risk but check against your data
+Gautrain                 # rail line in Gauteng: product, organisation or both? I filed it as a product
+Ferrari Roma / Ferrari   # kept as a model; bare Ferrari is both an org and a product
+Apple Watch / AirPods / Apple TV  # Apple prefix makes them safe; bare "Watch" is rejected
+Zoom / Slack / Notion    # kept as gated; if your gating cannot distinguish, drop them
+Eurail Pass / Interrail Pass / Oyster Card / Amex Platinum  # product vs. service; filed as products
+iPhone 17 Pro / Pixel 10 / Nintendo Switch 2 / Meta Quest 3  # model numbers current to my knowledge; may be superseded
+Duplicates: "Doctors Without Borders" and "Médecins Sans Frontières" are the same body; both kept because both are typed.

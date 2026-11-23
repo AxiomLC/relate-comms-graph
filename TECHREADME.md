@@ -78,13 +78,15 @@ back; importing the library must not pull in FastAPI.
 |---|---|
 | `schema.py` | Frozen dataclasses: `Message`, `Chat`, `AttachmentRef`, `IngestResult`. |
 | `paths.py` | `spool_dir()`, `real_dir()`, `store_path()`, `profile_dir()`, `ensure_layout()`. |
-| `ingest.py` | The pipeline: `_parser_for()`, `detect_platform()`, `discover()`, `parse_batches()`, `ingest()`, `preview()`, `stage()`, `_drop_spam_threads()`. |
-| `writer.py` | Cypher writer. `write()` (UNWIND 500), `write_correspondents()` + `_reconcile()` + `_contact_ids()`, `thread_display_title()`, `verify_present()`, `handles_from()`. |
+| `ingest.py` | The pipeline: `_parser_for()`, `detect_platform()`, `discover()`, `parse_batches()`, `ingest()`, `preview()`, `stage()`, `_drop_spam_threads()`. Extraction runs at the end of each batch; `delta=True` is the default. |
+| `writer.py` | Cypher writer. `write()` (UNWIND 500), `write_correspondents()` + `_reconcile()` + `_contact_ids()`, `write_entities()`, `thread_display_title()`, `verify_present()`, `handles_from()`, `_ENTITY_WRITE_KINDS`. |
 | `canon.py` | The flattening pipe. `canonical(raw, kind=…)` → `Canonical`; `KINDS`, `NICKNAMES`, `candidates()`, `nickname_form()`, `score()`, `fuzzy_available()`. Knobs `NICKNAME_ENABLED`, `FOLD_ON_NAME`, `FUZZY_REPORT`. |
-| `link.py` | **Cross-connect.** `link(conn)` — union-find fold over phone / email / name, `POSSIBLY` for fuzzy pairs. Runs once at the end of `ingest()`. |
+| `extract.py` | **Entity extraction — proposes spans, decides no merge.** `extract()`, `places()`, `organizations()`, `fragments()`, `_arbitrate()`, `Mention` (with `candidates`), `PLACE_DICTIONARY`, `ORG_DICTIONARY`, `PRODUCT_ENABLED`, `DOCUMENT_CHARS`. |
+| `products.py` | **The product vocabulary.** `INDEX` (92 entries), `GENERIC` block list, `lookup()`, `has_context()`, `decide()` — the four-rule ladder. `canon` folds spellings; this decides whether a spelling is a name. |
+| `link.py` | **Cross-connect.** `link(conn)` — union-find fold over phone / email / name / fuzzy. Runs once at the end of `ingest()`. Owns `merged_by`. |
 | `scrub.py` | `Verdict` (keep/hide/block), `AliasMap` (memory-only), Luhn check. |
 | `identity.py` · `manifest.py` | Who the **Owner** is (with `tz_offsets`) · what has been ingested (sampled fingerprint, a shortcut never the authority). |
-| `tools.py` | **The tool layer.** 12 tools, schema from each signature. `DRAWABLE_NODE_TYPES`, `DRAWABLE_EDGE_TYPES`, `ENTITY_KINDS`, `_NODE_QUERIES`, `_EDGE_QUERIES`, `_SORTS`. |
+| `tools.py` | **The tool layer.** Schema from each signature. `DRAWABLE_NODE_TYPES` / `DRAWABLE_EDGE_TYPES` derive from the write table filtered by `PRODUCT_ENABLED`, never hand-listed. `_NODE_QUERIES`, `_EDGE_QUERIES`, `_SORTS`. |
 | `models.py` · `cli.py` | Ollama model choice (`THINK = False`) · `python -m relate_comms`. |
 | `adapters/` | `parse(export_path, **kw)` + `detect(path)`. Built: `telegram`, `whatsapp`, `whatsapp_html`, `messenger`, `linkedin`, `email_imap`, `outlook_pst`, `sms`. **WhatsApp has two dialects** — native `chat.txt` and the extension's HTML — both reporting `whatsapp`; `_parser_for()` picks per file. |
 
@@ -126,34 +128,30 @@ ingest(...)   preview_ingest(which)   verify_ingest(which)
 truncate_store(...)   prune_spool(older_than_days, ...)
 
 # relate_comms/ingest.py
-ingest(*, root=None, which="real", store=None, since=None, until=None,
-       include_service=True, exclude_spam_groups=False,
-       exclude_silent_groups=False, silent_group_platforms=None,
-       exclude_spam_threads=False, spam_thread_platforms=None,
-       prune=False, prune_keep=None, workers=None, tz_offset_hours=None,
-       self_id=None, extra_results=None) -> Report
-preview(*, root=None, which="real", profile_dir=None) -> dict   # read-only
-stage(paths_in, *, root=None) -> list[Path]      # copies, never moves
-detect_platform(path) -> str | None              # by content shape
-_parser_for(path, platform)                      # WhatsApp's two dialects
+parse_batches(...)   ingest(*, which="real", delta=True, ...) -> Report
+preview(...) -> dict   stage(paths_in) -> list[Path]   detect_platform(path)
+
+# relate_comms/extract.py — proposes spans, merges nothing
+extract(rows) -> list[Mention]        places(body) / organizations(body)
+fragments(body) -> list[Fragment]     # `<br>` split; offsets index the ORIGINAL body
+_arbitrate(text, label, body) -> (kind, candidates)
+
+# relate_comms/products.py — the four-rule ladder, no weights
+products.decide(text, body) -> (bool, reason)
+products.lookup(text) -> ProductEntry | None     products.has_context(body) -> bool
 
 # relate_comms/writer.py
 write(conn, result, *, owner=None) -> dict[str, int]   # UNWIND, BATCH_SIZE = 500
-write_correspondents(conn, result, *, owner=None, owner_forms=None) -> dict
-_reconcile(cur, keys)                                  # derived props, after the rows
-_contact_ids(result, owner_forms) -> dict              # sender_id -> phone/email
-thread_display_title(chat, owner=None) -> str          # never empty
-verify_present(conn, result) -> tuple[bool, dict]
-handles_from(properties) -> dict[str, str]             # flat handle_<p> -> a map
+write_correspondents(...)   write_entities(conn, mentions, *, message_meta, kinds)
+_reconcile(cur, keys)       thread_display_title(chat, owner=None)   verify_present(...)
 
 # relate_comms/canon.py — the flattening pipe
-canonical(raw, *, kind="person", owner=None) -> Canonical   # raises on unknown kind
-candidates(names, *, kind="person", threshold=FUZZY_REPORT) -> list[Candidate]
-nickname_form(raw) -> str      score(a, b) -> float      fuzzy_available() -> bool
+canonical(raw, *, kind="person", owner=None) -> Canonical
+candidates(...)   nickname_form(raw)   score(a, b)   fuzzy_available()
 KINDS = ("person", "organization", "place", "product")
 
 # relate_comms/link.py — cross-connect, once per ingest
-link(conn, *, fold_on_name=None) -> dict   # {folded, merged_by, possibly, groups}
+link(conn, *, fold_on_name=None) -> dict   # {folded, merged_by, groups, entities}
 ```
 
 
@@ -167,11 +165,34 @@ link(conn, *, fold_on_name=None) -> dict   # {folded, merged_by, possibly, group
 (:Correspondent {key, display_name, platform, platforms, platform_label,
                  first_seen_utc, merged_by, email, phone_e164,
                  handle_<platform>, seen_<platform>})
+(:Place         {key, display_name, platform, platforms, platform_label,
+                 first_seen_utc, merged_by, mention_count,
+                 handle_<platform>, seen_<platform>})
+(:Organization  … same shape as Place)
+(:Product       … same shape as Place)
 
 (:Message)-[:IN]->(:Thread)        (:Message)-[:REPLY_TO]->(:Message)
 (:Message)-[:HAS_ATTACHMENT]->(:Attachment)
 (:Thread)-[:WITH]->(:Correspondent)
+(:Message)-[:MENTIONS]->(:Place | :Organization | :Product)
 ```
+
+**Five edge types, and no more.** `REPLY_TO` is declared and written by nothing. There is
+no `POSSIBLY`: a fuzzy spelling pair folds like every other pair, and both endpoints of an
+entity edge are `Message`, so `Thread → Entity` is a projection, not an edge — see below.
+
+**The store holds facts, not summaries.** `(message)-[:MENTIONS]->(entity)` and
+`(message)-[:IN]->(thread)` are what actually happened; "this thread is about Grafana" is
+computed at read time by `tools._EDGE_QUERIES` as a two-hop `MATCH (t:Thread)<-[:IN]-(m)
+-[:MENTIONS]->(e)`. That is the triple model another graph engine would accept — do not
+let `_EDGE_QUERIES` become the schema.
+
+**All three entity kinds share one write path.** `writer._ENTITY_WRITE_KINDS` maps kind to
+store label; the fold, `mention_count`, the `MENTIONS` edge and `_reconcile` are identical.
+`mention_count` is **message-based** (not thread-based) since 2026-11-23.
+
+**`Product` is gated by `extract.PRODUCT_ENABLED`.** Off returns the graph to Place+Org with
+no rebuild: the index stops promoting spans and `DRAWABLE_*` drops `Product`.
 
 **`Correspondent` is keyed `person:<canonical>`.** Two spellings of one name on one
 platform already collapsed via `canon`; dropping the platform prefix means the same
@@ -185,7 +206,7 @@ Placeholders keep their platform prefix (`messenger:placeholder:facebook user`) 
 | `platforms` | every platform, date order. **The filter reads this list.** |
 | `platform_label` | `Telegram-WhatsApp-Fcbk Mssgr`, same order |
 | `first_seen_utc` | earliest message timestamp across platforms |
-| `merged_by` | `phone` / `email` / `nickname` / `exact_name` |
+| `merged_by` | why a fold happened: `fuzzy` / `exact_name` / `nickname` / `phone` / `email`, or `same_name` when two platforms met under one key with **no fold at all**. `link._fold` owns it. |
 | `handle_<p>` · `seen_<p>` | that platform's spelling and first sighting, stored **flat** |
 
 **`primaryPlatform` and `dominance` are query-time, not stored.** `graph_slice`
@@ -213,20 +234,20 @@ statement.** Accumulating in Cypher therefore cannot work — the last row wins.
 row statement writes only per-platform facts; `writer._reconcile()` computes the
 derived properties afterwards.
 
-**Queryable but empty — the queries exist, the rows do not:** `Person`, `Place`,
-`Organization`, `Product` (`tools.ENTITY_KINDS`). Each has a node query, a count
-query, three sort entries and a `MENTIONS_<KIND>` edge query. They return 0 until
-body-entity extraction lands. They are **not** in `DRAWABLE_NODE_TYPES`.
+**Queryable but empty — the queries exist, the rows do not:** `Person`
+(`tools.ENTITY_KINDS`). A person extracted from a body would compete with the
+`Correspondent` already on the thread, so it is documented but never written.
 
 **Designed but unwritten — do not query against these:** `Identity`, `MATCHED_BY`,
 `SENT`, `Draft`.
 
 **Cross-connect is `relate_comms/link.py`, run once at the end of `ingest()`.** It folds
 the nodes whose keys differ — a phone-only contact onto a named one — by union-find over
-phone / email / name, re-pointing every `WITH` and `POSSIBLY` edge before the loser is
-deleted, then `writer._reconcile()` rebuilds `platforms` / `platform_label` / `:Merged`.
-Fuzzy pairs get a `POSSIBLY` edge instead and both nodes stay. `POSSIBLY` is in
-`DRAWABLE_EDGE_TYPES` and drawn dashed.
+phone / email / name / **fuzzy**, re-pointing every `WITH` or `MENTIONS` edge before the
+loser is deleted, then `writer._reconcile()` rebuilds `platforms` / `platform_label` /
+`:Merged`. The fuzzy rung is blocked on the surname's first letter and is **last**, so a
+pair that folds on phone never reports itself as fuzzy. Two places a letter apart stay two
+places — entities use `exact_name` only.
 
 **A named contact's phone or address comes from `sender_id`,** recorded by
 `writer._contact_ids()` — only when the value actually is a phone or an address. Without
@@ -275,7 +296,54 @@ a nickname is resolved into the *key* at write time) and `FOLD_ON_NAME`.
 `canon.KINDS` is the single source; `tools.ENTITY_KINDS` derives from it. An unknown kind
 raises rather than falling through to the `person` branch. `Company` appears nowhere.
 
-## 5. Invariants — break these and things fail silently
+## 5. Body-entity extraction
+
+**Three kinds — Place, Organization, Product — one pipeline.** The order never changes:
+
+```
+extract per message  ->  fold within a platform  ->  match across platforms
+     extract.py              canon.canonical()          link.link()
+```
+
+**The dictionaries ARE the feature.** `en_core_web_sm` has no gazetteer — it is a neural
+net guessing from sentence shape. It labels `Austin` a person, `Grafana` a person,
+`Databricks` a place, and `"Ansible keeps falling over."` as nothing at all while
+`"I've moved everything onto Ansible."` is a `PRODUCT`. It *does* have a `PRODUCT` label;
+it is just frame-sensitive and mostly absent. So three hand-written lists run **before**
+the model and win: `PLACE_DICTIONARY` (97), `ORG_DICTIONARY` (26), `products.INDEX` (92).
+
+**`products.decide()` is four rules, first match, no weights:**
+
+| # | Rule | Outcome |
+|---|---|---|
+| 1 | `GENERIC` (`seat`, `contract`, `credits`, `sla`, `rack`, `switch`…) | **never** a product |
+| 2 | not in `INDEX` | no |
+| 3 | indexed, `requires_context=False` | **yes** |
+| 4 | indexed, `requires_context=True` | yes iff the body has a procurement cue |
+
+**The generic block lives here, not in `canon`.** `canon` folds `Seat` and `seat` to one
+key — correct, it is a spelling function. Only the index can say one is a licence concept
+and the other is furniture. **Hiding cannot replace it:** common nouns get *more* mentions
+than rare products, so a mention floor promotes junk instead of suppressing it.
+
+**`_arbitrate()` may overrule the model, asymmetrically.** `GPE`/`FAC`/`LOC` and
+`PERSON` may become `Product`; `ORG` may **not** — `Grafana Labs` the company contains
+`Grafana` the product, and demoting it would lose a true fact. A `PERSON` span is dropped
+unless the index recognises it, which is how `Grafana` is rescued without making `Dave` a
+product.
+
+**`<br>` fragmentation runs first.** Messenger and WhatsApp exports concatenate turns;
+149 bodies in the sample store do. Parsing them whole let a dictionary name abut a tag and
+mint `organization:abc corp?<br>`. Splitting gives 28 → 33 mentions and zero spans
+containing markup. `fragments()` returns offsets into the **original** body, so a
+`Mention.start` still points at the stored text and no fragment id travels downstream.
+
+**`DOCUMENT_CHARS = 2000`** (4× p99). One 11,719-char marketing newsletter produced every
+junk Organization we ever saw. Reported as a warning, never an error.
+
+**No LLM in this path.** spaCy and rules only. The local model is a chat feature.
+
+## 6. Invariants — break these and things fail silently
 
 | Invariant | Why |
 |---|---|
@@ -303,6 +371,9 @@ raises rather than falling through to the `person` branch. `Company` appears now
 | **A parse-time gate is per platform, never global** | `_kwargs_for()` pops a keyword an adapter does not accept, so adding a platform never means adding a no-op argument. |
 | **Credentials are never readable by a tool** | `.env` is read only by `email_imap._dotenv()`. `tools.py` has no environment access. |
 | **The duplicate stamp is a shortcut, not the authority** | `ingested.json` lets the UI say "already ingested". `verify_present()` still decides pruning. |
+| **A drawable type list is derived, never hand-written** | `DRAWABLE_NODE_TYPES` and `DRAWABLE_EDGE_TYPES` follow `writer._ENTITY_WRITE_KINDS` filtered by `PRODUCT_ENABLED`. An edge is kept only when **both** endpoints are drawn, so a kind missing from the node list silently erases every edge it has — this happened to `Product` and the canvas showed zero. |
+| **A `MENTIONS` edge hangs off the Message** | `Thread → Entity` is a projection in `_EDGE_QUERIES`, not stored. Re-anchoring it means teaching `link._fold` the new source too — it re-points a loser's edges by pattern, and the wrong pattern matches nothing and then `DETACH DELETE` takes everything left. |
+| **Never trust a rebuild through a running server** | Modules cache in the process. A wipe + ingest through a stale server writes a store matching neither the old code nor the new, and reports success. Restart, then rebuild. |
 | **No adapter reads media** | A huge download costs the copy, not the parse — which is why size is a warning, not a refusal. |
 | **A WhatsApp chat downloaded both ways is one thread, not two** | `_chat_id()` hashes the chat *title*; `message_key()` truncates to the **minute**. Measured: 46 of 47 keys identical. |
 | **A failed leg restarts, it does not resume** | Continue re-runs the whole ingest without the failed leg. |
@@ -313,7 +384,7 @@ raises rather than falling through to the `person` branch. `Company` appears now
 | **A recognised directory is one batch, not one per file** | `discover()` offers a folder to `detect_platform()` first and emits it whole if claimed. Messenger and Telegram resolve thread ids from the archive-relative path, so handing them a single `message_1.html` makes each batch parse the *whole* export — measured at 29 batches and 18,330 messages to write 611. |
 | **`detect_platform()` answers for a directory too** | `discover()` needs to know whether to emit a folder or walk into it. Only the adapters that can read a folder are consulted (messenger, linkedin, whatsapp_html, `_detect_whatsapp`). |
 
-## 6. Ingest — the modal and its gates
+## 7. Ingest — the modal and its gates
 
 **Flow:** preview (read-only: size + duplicate per spool file) → decide → ingest. The
 preview deliberately does **not** count messages; that needs the full parse it exists to
@@ -354,7 +425,7 @@ at 200k) — **the store scales fine, search latency is the only thing that degr
 since no adapter reads media, a 4 GB zip with videos parses as fast as a 40 MB one: the
 advice for a monster download is "re-export without media", which loses no messages.
 
-## 7. Commands
+## 8. Commands
 
 ```bash
 python -m app                    # http://127.0.0.1:8100
@@ -401,7 +472,7 @@ diff removes the whole class of bug.
 If a value still does not appear, the user has overridden that key: reset it in the Canvas
 modal, or `localStorage.removeItem("relate.graphStyle.overrides")`.
 
-## 8. Debugging
+## 9. Debugging
 
 | Symptom | Check |
 |---|---|
@@ -409,8 +480,8 @@ modal, or `localStorage.removeItem("relate.graphStyle.overrides")`.
 | Everything renders as squares | A Cytoscape selector matched too broadly. `[key]` tests field **existence**. |
 | Render dies after first paint, or the app goes black | A style value parsed to `null` — `background-image: data(x)` on an empty string, or 8-digit hex. [`UIVISUALS.md`](UIVISUALS.md) §3. |
 | A glow does nothing | `shadow-*` does not exist in 3.35. Use `underlay-*`. [`UIVISUALS.md`](UIVISUALS.md) §1. |
-| **A theme edit does nothing** | The bundle was not rebuilt — `theme.js` is compiled into `app.js`. Run `npm run build` (or keep `npm run watch` on) and hard-refresh. §7. |
-| **One theme value ignores `theme.js`** | The user has overridden that key; only overrides are persisted. Reset it in the Canvas modal. §7. |
+| **A theme edit does nothing** | The bundle was not rebuilt — `theme.js` is compiled into `app.js`. Run `npm run build` (or keep `npm run watch` on) and hard-refresh. §8. |
+| **One theme value ignores `theme.js`** | The user has overridden that key; only overrides are persisted. Reset it in the Canvas modal. §8. |
 | Thread shows 0 messages | The tz offset differs from the one the store was written with. |
 | A route 404s after a rename | The Python server is stale — it loads routes once at startup. Restart it. |
 | Blank page, no console clue | A `const` inside a `useMemo` referenced in its dependency array throws `ReferenceError` every render. |
@@ -419,7 +490,7 @@ modal, or `localStorage.removeItem("relate.graphStyle.overrides")`.
 | Port 8100 "already in use" | `netstat -ano \| findstr :8100`, then `taskkill /PID <pid> /F`. |
 | Ingest reports 0 messages but exits 0 | `verify_ingest` is the check that matters. |
 
-## 9. Relate / Neo4j
+## 10. Relate / Neo4j
 
 - **Relate is embedded.** `relate.connect(path)` takes a **filesystem path**, not a
   `file:` URI. No Bolt, no port, no server.
@@ -438,7 +509,7 @@ Links: [Relate](https://relate.neo4j.com/) · [openCypher](https://opencypher.or
 [fcose](https://github.com/iVis-at-Bilkent/cytoscape.js-fcose) ·
 [Cytoscape.js style](https://js.cytoscape.org/#style)
 
-## 10. Local tools on this machine
+## 11. Local tools on this machine
 
 | Tool | Where | Note |
 |---|---|---|
@@ -449,11 +520,13 @@ Links: [Relate](https://relate.neo4j.com/) · [openCypher](https://opencypher.or
 
 Ports in use: **8000 is taken** by another app — this project uses **8100**.
 
-## 11. Where the rest of the detail lives
+## 12. Where the rest of the detail lives
 
 | Topic | File |
 |---|---|
 | **Settled UI and visual facts** — glows, colour parsing, stylesheet order, the merged-node template | [`UIVISUALS.md`](UIVISUALS.md) |
+| What is still moving in extraction, what was measured, what was declined | [`rework_extraction.md`](rework_extraction.md) |
+| The brief the entity lists are built from — the generic block, the three tiers | [`entity_list_brief.md`](entity_list_brief.md) |
 | Canvas layout working log — what fcose actually honours, and the traps that cost time | [`CytoGravityRecommend.md`](CytoGravityRecommend.md) |
 | The generator spec — every shape the app has a switch for | [`archive_docs/UNDESIRABLES.md`](archive_docs/UNDESIRABLES.md) |
 | Per-platform export shapes and traps | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) |

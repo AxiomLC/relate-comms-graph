@@ -202,7 +202,11 @@ def test_one_name_on_two_platforms_is_one_node_with_both_platforms(store):
     # `platform` is the first by date, so the platform filter keeps working.
     assert node["platform"] == "telegram"
     assert node["platform_label"] == "Telegram-WhatsApp"
-    assert node["merged_by"] == "exact_name"
+    # **`same_name`, not `exact_name`.** Two platforms under one key is not a merge — one
+    # node was created on the first write and `link._fold` never saw it. The field records
+    # that honestly rather than leaving a `Merged` pill with no explanation. A genuine fold
+    # still records its own reason (`fuzzy`, `phone`, `email`), and `coalesce` lets it win.
+    assert node["merged_by"] == "same_name"
 
 
 def test_a_merged_node_carries_the_merged_label(store):

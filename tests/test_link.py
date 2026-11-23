@@ -267,3 +267,47 @@ def test_nickname_resolution_can_be_switched_off(monkeypatch):
     assert canon.canonical("Dave Sartori", kind="person").key == "dave sartori"
     monkeypatch.setattr(canon, "NICKNAME_ENABLED", True)
     assert canon.canonical("Dave Sartori", kind="person").key == "david sartori"
+
+
+def test_a_fuzzy_fold_records_fuzzy_as_the_reason(store):
+    """The bug this fixes: every merged node on the live store said `exact_name`.
+
+    `merged_by` used to be stamped by the *writer* from `canon` evidence at write time, and
+    `link` could only `coalesce` into an already-set property — so a node that entered as
+    `exact_name` kept that value even when the fold that merged it was a typo match. The
+    store said "same canonical name" about two nodes whose canonical names differed.
+
+    `link._fold` owns the field now: it is the only thing that merges, so the only thing
+    that knows why.
+    """
+    telegram = _chat("telegram", "t1", ("Chris Tanaka",))
+    whatsapp = _chat("whatsapp", "w1", ("Chirs Tanaka",))
+    messages = [
+        _message(telegram, 0, "Chris Tanaka"),
+        _message(whatsapp, 0, "Chirs Tanaka"),
+    ]
+
+    _write(store, [telegram, whatsapp], messages)
+
+    row = tools.run_cypher(
+        "MATCH (c:Correspondent) RETURN c.merged_by AS why")["rows"][0]
+    assert row["why"] == "fuzzy"
+
+
+def test_the_reason_is_stamped_by_the_fold_not_the_writer(store):
+    """`merged_by` belongs to `link`, because `link` is the only thing that merges.
+
+    The bug this fixes: every merged Correspondent on the live store said `exact_name`,
+    including the typo pairs. The writer stamped the field from `canon` evidence at write
+    time and `link` could only `coalesce` into an already-set property — so a node that
+    entered as `exact_name` kept that value even when the fold was a typo match.
+
+    This asserts the property of the *code*: `_fold` takes a reason and writes it.
+    """
+    import inspect
+
+    from relate_comms import writer as writer_module
+
+    assert "reason" in inspect.signature(link._fold).parameters
+    # The writer no longer sets it — if this assertion fails, the two sources are back.
+    assert "merged_by" not in writer_module._CORRESPONDENT_CYPHER

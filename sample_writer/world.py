@@ -184,32 +184,106 @@ PUBLIC_ORGS = [o for o in ORGS if o not in TECH_ORGS]
 
 ORG_POOLS = {"tech": TECH_ORGS, "public": PUBLIC_ORGS}
 
-# Products. A body says `the Databricks account`, `Coca-Cola`, `MongoDB` — things bought,
-# used or complained about, never organisations. This pool exists because no body could
-# name a product before it, so `Product` had no data to be tested with.
-PRODUCTS = [
-    # software and platforms
+# Products. A body says `the Databricks account`, `Coca-Cola`, `Mazda CX-5` — things bought,
+# used or complained about, never organisations.
+#
+# **Rebalanced 2026-11-24.** The pool had drifted to ~90% software: enterprise platforms,
+# CLI tools, GPU part numbers. That is not what a real professional's phone looks like — it
+# is what a vendor conference looks like. A person with a job also has a car, a mortgage,
+# shoes and opinions about coffee, and those get mentioned more often than `gguf`.
+#
+# The section a name sits in decides two things downstream, and nothing else:
+#
+#     TECH        fuzz may hyphenate; frames are `still on X` / `the X renewal`
+#     DURABLE     no hyphen fuzz; frames are owns-and-maintains: `the X needs new tyres`
+#     FOOD        no hyphen fuzz; frames are consume-and-restock: `ran out of X`
+#
+# Hardware and software share frames deliberately — `we're still on Jira` and `we shipped
+# the Jetson Orin config` are the same kind of statement: a thing we have and run. Only
+# the consume/own distinction changes the sentence.
+
+# --- tech: software, hardware, models -------------------------------------------
+PRODUCTS_TECH = [
     "Databricks Lakehouse", "Snowflake Cortex", "Tableau", "Power BI", "Looker",
     "Excel", "Sheets", "Notion Calendar", "Slack Connect", "Teams", "Zoom Rooms",
     "Jira", "Confluence", "GitHub Copilot", "VS Code", "Cursor", "Vim", "Emacs",
     "Docker", "Kubernetes", "Terraform", "Ansible", "Prometheus", "Grafana",
     "Kafka", "Spark", "Airflow", "dbt Core", "Temporal", "Pulsar", "Flink",
     "Nginx", "Apache", "Redis Enterprise", "Elasticsearch", "OpenSearch",
-    # hardware and storage
     "MacBook Pro", "ThinkPad", "Surface Pro", "Pixel", "iPhone", "Galaxy",
     "Raspberry Pi", "Jetson Orin", "DGX Station", "Threadripper", "Xeon",
     "EPYC", "Apple Silicon", "Radeon", "GeForce", "RTX", "Ryzen",
-    "NVMe", "SSD", "RAID", "NAS", "SAN", "Tape Library", "Cold Storage",
-    "Router", "Switch", "Patch Panel", "UPS", "PDU", "Rack",
-    # ai models and services
-    "Claude", "GPT-4", "Llama", "Mistral Large", "Gemini", "Whisper", "Stable Diffusion",
-    "Ollama", "vLLM", "gguf", "LoRA", "RAG", "embeddings", "vector store",
-    # consumer and retail
+    "NVMe", "SSD", "RAID", "Router", "Patch Panel", "PDU",
+    "Claude", "GPT-4", "Llama", "Mistral Large", "Gemini", "Whisper",
+    "Stable Diffusion", "Ollama", "vLLM", "LoRA",
+    # Services bought rather than built. `Seat`, `Contract`, `SLA` and `Credits` are
+    # deliberately absent: they are ordinary nouns, the app's index blocks them, and
+    # carrying them here would generate product mentions the extractor refuses to read.
+    "Support Plan", "Enterprise Licence", "Free Tier", "Training Day",
+    "Onboarding Pack", "Migration Kit",
+]
+
+# --- durable goods: owned, maintained, replaced ----------------------------------
+# Pricier things a person mentions more than once and across months: the car in for a
+# service, the new sofa, the watch on a wishlist. Model names over bare brands, because
+# `Toyota` alone is a company and would exercise the Organisation leg, not this one.
+PRODUCTS_DURABLE = [
+    # cars — model names, which are unambiguous
+    "Toyota Highlander", "Honda Civic", "Ford Escape", "Mazda CX-5", "Tesla Model 3",
+    "BMW 3 Series", "Volkswagen Golf", "Audi A4", "Subaru Outback", "Jeep Wrangler",
+    "Range Rover Sport", "Volvo XC90", "Hyundai Tucson", "Kia Sportage",
+    "Mercedes C-Class", "Porsche 911", "Mini Cooper", "Land Cruiser", "Ford Ranger",
+    # bikes, boats, vehicles
+    "Specialized Roubaix", "Trek Domane", "Brompton", "Vespa Primavera",
+    "Yamaha MT-07", "Sea-Doo",
+    # watches and jewellery
+    "Rolex Submariner", "Omega Seamaster", "Tag Heuer Carrera", "Apple Watch Ultra",
+    "Garmin Fenix", "Cartier Santos", "Tiffany necklace",
+    # shoes and clothing
+    "Nike Air Max", "Nike Jordans", "Adidas Samba", "New Balance 990",
+    "Doc Martens", "Barbour jacket", "Patagonia fleece", "North Face jacket",
+    "Levi 501", "Ray-Ban Wayfarer", "Hermes scarf", "Uniqlo down jacket",
+    # furniture and home
+    "Ikea Billy", "Ikea Kallax", "Herman Miller Aeron", "Vitra Eames chair",
+    "Le Creuset pan", "Dyson vacuum", "Nespresso machine", "KitchenAid mixer",
+    "Sub-Zero fridge", "Tempur mattress", "Benjamin Moore paint", "Farrow and Ball paint",
+    "Persian rug", "Weber kettle", "Big Green Egg",
+    # electronics and photography
+    "Sony PlayStation", "Xbox Series X", "Nintendo Switch", "Sonos speaker",
+    "Bose headphones", "LG OLED", "4k television", "Nikon D850", "Canon EOS R5",
+    "Fujifilm X100", "GoPro Hero", "DJI Mavic", "Kindle Paperwhite", "iPad Pro",
+    "Peloton bike", "Ring doorbell", "Philips Hue",
+    # property and big-ticket
+    "NYC condo", "Brooklyn brownstone", "colonial mansion", "beach house",
+    "Honda generator", "DeWalt drill", "Makita saw",
+    # other expensive interests
+    "Glock 19", "Browning shotgun", "Gibson Les Paul", "Fender Stratocaster",
+    "Yamaha piano", "Steinway grand",
+]
+
+# --- food and drink -------------------------------------------------------------
+PRODUCTS_FOOD = [
     "Coca-Cola", "Diet Coke", "Sprite", "Fanta", "Powerade", "Monster Energy",
-    "Weetabix", "Marmite", "Irn-Bru", "Yorkshire Tea",
-    # services bought rather than built
-    "Support Plan", "Enterprise Licence", "Seat", "Credits", "Free Tier",
-    "Contract", "SLA", "Training Day", "Onboarding Pack", "Migration Kit",]
+    "Weetabix", "Marmite", "Irn-Bru", "Yorkshire Tea", "Bovril", "Lucozade",
+    "Cadbury Dairy Milk", "Walkers crisps", "Heinz beans", "Nando's sauce",
+    "Toblerone", "Green and Black's", "Peroni", "Guinness",
+]
+
+PRODUCTS = [*PRODUCTS_TECH, *PRODUCTS_DURABLE, *PRODUCTS_FOOD]
+
+# Which section a name belongs to. A `frozenset` rather than a prefix test because the
+# distinction is a judgement about the real world: `Sprite` is a drink and `Spark` is a
+# data engine, and only a human can say which.
+PRODUCT_SECTION: dict[str, str] = {
+    **{name: "tech" for name in PRODUCTS_TECH},
+    **{name: "durable" for name in PRODUCTS_DURABLE},
+    **{name: "food" for name in PRODUCTS_FOOD},
+}
+
+
+def product_section(name: str) -> str:
+    """`tech` | `durable` | `food`. Unknown names get the tech frames, which are safest."""
+    return PRODUCT_SECTION.get(name, "tech")
 
 # Places. Bodies say `N Dakota` on one platform and `North Dakota` on another, and
 # that is the point: the pool holds the abbreviated forms real people type.
@@ -585,7 +659,6 @@ class World:
 
         for kind, pool in pools.items():
             table: dict[str, EntityPlan] = {}
-            variants = config.FUZZ_VARIANTS[kind]
             for name in pool:
                 # Axis B: how many platforms, and which. `randint(2, len(platforms))`
                 # rather than a fixed (2, 7), so the dice cannot claim a platform the
@@ -605,6 +678,16 @@ class World:
 
                 # Axis A: the spelling, uniform over the kind's list. Retried until one
                 # applies, so a fuzzy item is genuinely fuzzy.
+                #
+                # A product draws from its **section's** list, not the kind's: physical
+                # goods never hyphenate (see `config.FUZZ_VARIANTS`). The key falls back
+                # to `product`, so a section added without a list still works.
+                variant_key = kind
+                if kind == "product":
+                    section = product_section(name)
+                    if f"product_{section}" in config.FUZZ_VARIANTS:
+                        variant_key = f"product_{section}"
+                variants = config.FUZZ_VARIANTS[variant_key]
                 variant = variant_name = None
                 if self.rng.random() < config.BODY_FUZZY:
                     variant, variant_name = fuzz.pick_variant(name, self.rng, variants)
