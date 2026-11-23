@@ -1,4 +1,4 @@
-"""Cross-connect: folding nodes whose keys differ, and drawing `POSSIBLY` where they might.
+"""Cross-connect: folding nodes whose keys differ.
 
 Edit 1 folds identical canonical names at write time, so the only thing left for
 `link.py` is the case it exists for:
@@ -172,8 +172,13 @@ def test_an_address_folds_two_spellings(store):
 # ---------------------------------------------------------------------- fuzzy
 
 
-def test_a_mistyped_name_draws_possibly_and_folds_nothing(store):
-    """Two spellings that are *probably* one person: a line, never a fold."""
+def test_a_mistyped_name_folds_into_one_node(store):
+    """Two spellings of one person: a fold, not a drawn guess.
+
+    The `POSSIBLY` edge was removed 2026-11-23. A typo'd surname has no second reading
+    — it is the same human — and the edge was never acted on, so the person appeared
+    twice in the graph with a line nobody clicked.
+    """
     telegram = _chat("telegram", "t1", ("Chris Tanaka",))
     whatsapp = _chat("whatsapp", "w1", ("Chirs Tanaka",))
     messages = [
@@ -183,14 +188,20 @@ def test_a_mistyped_name_draws_possibly_and_folds_nothing(store):
 
     report = _write(store, [telegram, whatsapp], messages)
 
-    assert report["folded"] == 0
-    assert report["possibly"] == 1
-    assert _keys() == {"person:chris tanaka", "person:chirs tanaka"}
-    edges = tools.run_cypher(
-        "MATCH (a:Correspondent)-[:POSSIBLY]->(b:Correspondent) "
-        "RETURN a.key AS a, b.key AS b")["rows"]
-    assert {(row["a"], row["b"]) for row in edges} == {
-        ("person:chris tanaka", "person:chirs tanaka")}
+    assert report["folded"] == 1
+    assert report["merged_by"] == {"fuzzy": 1}
+    # One node, and the survivor carries both platforms.
+    assert _keys() == {"person:chirs tanaka"}
+    row = tools.run_cypher(
+        "MATCH (c:Correspondent) RETURN c.platforms AS p, c.merged_by AS why"
+    )["rows"][0]
+    assert sorted(row["p"]) == ["telegram", "whatsapp"]
+    # **Not `fuzzy`.** The stored `merged_by` is set by the *writer* from `canon`
+    # evidence, and `link` can only fill it with `coalesce` — so a node that entered the
+    # store as `exact_name` keeps that value even when a later fold was fuzzy. The
+    # link-time reason is in `report["merged_by"]`, asserted above. Recording this
+    # rather than quietly asserting `exact_name`: it is a real mismatch between the two
+    # sources, and `rework_extraction.md` §0a notes it.
 
 
 def test_a_different_surname_is_not_a_candidate(store):
@@ -204,7 +215,8 @@ def test_a_different_surname_is_not_a_candidate(store):
 
     report = _write(store, [telegram, whatsapp], messages)
 
-    assert report["possibly"] == 0
+    assert report["folded"] == 0
+    assert len(_keys()) == 2
 
 
 # ------------------------------------------------------------------ guard rails

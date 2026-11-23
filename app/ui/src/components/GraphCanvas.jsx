@@ -916,18 +916,6 @@ function buildStylesheet(theme) {
       },
     },
     {
-      // A fuzzy identity guess, never a fact. Dashed and thin so it reads as a
-      // question beside a solid `WITH` line — the same distinction the store makes
-      // between a fold and an edge (direction.md §5).
-      selector: 'edge[type = "POSSIBLY"]',
-      style: {
-        "line-style": "dashed",
-        "line-dash-pattern": [6, 6],
-        width: 1,
-        opacity: 0.55,
-      },
-    },
-    {
       selector: ".reveal-hidden",
       style: { opacity: 0 },
     },

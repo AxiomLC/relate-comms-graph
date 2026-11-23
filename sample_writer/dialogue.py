@@ -38,14 +38,22 @@ RESULTS = [
 
 # Bodies that name an organisation, split from the place ones: a template is filled
 # with exactly one of them, so sharing a list would leave the other slot empty.
+#
+# **`at` is correct here and must stay.** `I'm at AMD all week` means the office; it is not
+# a mislabelled place. An earlier note used `I'm at Grafana Labs all week` as an example of
+# a GPE false positive, and that was my error, not the template's — the sentence really is
+# about premises. What was odd was the phrasing with a firm nobody works for, so the frame
+# now says what a professional would actually say (`onsite at`, `in the {org} office`).
 ORG_LINES = [
     "{org} finally came back to me.",
     "did you ever hear from {org}?",
     "{org} pushed their deadline again.",
-    "I'm at {org} all week.",
+    "I'm onsite at {org} all week.",
     "{org} want the numbers by Friday.",
     "the {org} call is still on?",
     "nothing new from {org}.",
+    "{org} are reviewing the contract now.",
+    "someone from {org} is joining the standup.",
 ]
 PLACE_LINES = [
     "{place} is worse than I remembered.",
@@ -58,15 +66,66 @@ PLACE_LINES = [
 # Bodies that name a PRODUCT — something bought, used or complained about, never a company.
 # These exist because no body could mention a product before, so the app's `Product` kind had
 # no generated data behind it at all.
-PRODUCT_LINES = [
+#
+# **Two frame sets, not one.** A professional's product talk splits sharply by what the
+# thing IS, and a single template list misrepresents half the pool:
+#
+#   INDUSTRIAL_FRAMES   installed, licensed, deployed, upgraded — software AND hardware,
+#                       because `we're still on Jira` and `we shipped the Jetson Orin`
+#                       are the same kind of statement: a thing we have and run.
+#   CONSUMER_FRAMES     bought, drunk, eaten, restocked — a concrete item in a kitchen
+#                       or a fridge. `the Powerade renewal is due` is nonsense, and so
+#                       is `we're still on a Fanta licence`.
+#
+# The split is a *dialogue* concern only. Nothing in the extraction pipeline may branch on
+# it: the app sees a body and must decide what a name is from the sentence, and a frame
+# set that hinted at the answer would make the corpus easier than the real thing.
+INDUSTRIAL_FRAMES = [
     "we're still on {product}.",
     "did the {product} quote come through?",
     "{product} keeps falling over.",
     "can you get me a {product} seat?",
     "the {product} renewal is due.",
-    "they shipped {product} last week.",
     "I've moved everything onto {product}.",
+    "we're migrating off {product} in Q2.",
+    "our {product} licence is up for renewal.",
+    "{product} is still the bottleneck.",
+    "they shipped the {product} config last week.",
+    "we're piloting {product} on one team.",
+    "who owns the {product} account?",
+    "{product} went down again this morning.",
 ]
+
+CONSUMER_FRAMES = [
+    "we're still on {product}.",
+    "we ran out of {product} again.",
+    "get some {product} on the way home?",
+    "there's {product} in the fridge.",
+    "who drank all the {product}?",
+    "the {product} bill came for Alison's birthday.",
+    "I don't touch {product} any more.",
+    "they've stopped doing {product} at the shop.",
+    "{product} is on offer this week.",
+    "we're out of {product} stock.",
+]
+
+# Which frame set a given product takes. **Consumer names are listed explicitly** rather
+# than inferred from a suffix or a pool position, because the distinction is a judgement
+# about the real world: `Sprite` is a drink and `Spark` is a data engine, and only a human
+# can say which is which.
+CONSUMER_PRODUCTS = frozenset({
+    "Coca-Cola", "Diet Coke", "Sprite", "Fanta", "Powerade", "Monster Energy",
+    "Weetabix", "Marmite", "Irn-Bru", "Yorkshire Tea",
+})
+
+
+def product_frames(name: str) -> list[str]:
+    """The sentence frames this product may appear in. Never consult this in extraction."""
+    return (CONSUMER_FRAMES if name in CONSUMER_PRODUCTS
+            else INDUSTRIAL_FRAMES)
+
+
+PRODUCT_LINES = INDUSTRIAL_FRAMES  # kept: the default a caller gets with no catalogue
 
 # Bodies that name a colleague. `{person}` uses that person's body-entity spelling, so
 # `Bob Mercer` on one platform is `Robert Mercer` on another.
@@ -194,6 +253,11 @@ def entity_line(world: World, platform: str, rng: random.Random,
 
     kind, names, lines = rng.choice(pools)
     canonical = rng.choice(names)
+    # **Products pick their frames from the product, not the kind.** `the Fanta renewal is
+    # due` reads as a bug; `the Fanta bill` does not. Org and place frames are uniform
+    # because a company and a city both take the same sentences.
+    if kind == "product":
+        lines = product_frames(canonical)
     spelling = world.body_entity(canonical, platform, kind)
     return rng.choice(lines).format(**{kind: spelling})
 

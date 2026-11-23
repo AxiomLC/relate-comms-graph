@@ -30,6 +30,7 @@ _SCHEMA = (
     # connect time and an entity written unindexed is a silent per-ingest scan.
     "CREATE INDEX place_key IF NOT EXISTS FOR (p:Place) ON (p.key)",
     "CREATE INDEX organization_key IF NOT EXISTS FOR (o:Organization) ON (o.key)",
+    "CREATE INDEX product_key IF NOT EXISTS FOR (p:Product) ON (p.key)",
     # The delta watermark: `max(ts_utc)` for one platform. Without this index that
     # query is a full scan of every message, which defeats the point of a delta run —
     # measured at 63 ms for 910 messages, i.e. linear and growing with the store.
@@ -70,8 +71,8 @@ _ATTACH_CYPHER = (
 BATCH_SIZE = 500
 
 # Confidence at or above this is treated as a fact, and written as MATCHED_BY.
-# Below it, the edge is POSSIBLY. §3.1: two edge types, never one — a wrong guess
-# must look different from a known identity at a glance.
+# Everything below it folds on a weaker rung in `link`, never on a drawn edge — the
+# `POSSIBLY` edge was removed 2026-11-23 (see `link.py`'s header).
 MATCH_THRESHOLD = 0.95
 
 # One `Correspondent` per canonical name, **not** per (platform, name). The key is
@@ -775,15 +776,24 @@ def counts_by_kind(conn: Any, platform: str) -> dict[str, int]:
 # or `MERGE`), so the writer builds the statement once per kind at import time; the
 # kind set is `canon.KINDS`, which is the same source `tools.ENTITY_KINDS` reads.
 #
-# The split is the Correspondent split and for the same reason: `handle_<p>` /
-# `seen_<p>` are flat per-platform facts, and everything derived (`platforms`,
-# `platform_label`, `:Merged`) is recomputed by `_reconcile` afterwards, because an
-# The entity kinds this writer can land. Each maps to its store label, its key prefix,
-# and the `canon` kind used to fold spellings. `person` is deliberately absent: it
-# competes with `Correspondent` and stays last, per the extraction design.
+# The split is the Correspondent split and for the same reason: `handle_<p>` / `seen_<p>`
+# are flat per-platform facts, and everything derived (`platforms`, `platform_label`,
+# `:Merged`) is recomputed by `_reconcile` afterwards, because an incremental ingest only
+# ever sees part of the picture.
+#
+# The entity kinds this writer can land. Each maps to its store label; the key prefix and
+# the `canon` kind are the dict key itself. `person` is deliberately absent — it competes
+# with `Correspondent` and stays last, per the extraction design.
+#
+# **Adding a kind is a table entry, not an implementation.** The fold, the `mention_count`
+# accumulation, the `MENTIONS` edge and `_reconcile` are identical for every entity kind;
+# only the label differs. `product` is listed here ahead of its extractor existing, which
+# is deliberate: it is the store's capability, and `extract.PRODUCT_ENABLED` is what
+# decides whether anything claims it.
 _ENTITY_WRITE_KINDS: dict[str, str] = {
     "place": "Place",
     "organization": "Organization",
+    "product": "Product",
 }
 
 # Cypher cannot parameterise a label, so the statement is built once per kind rather
@@ -801,14 +811,20 @@ def _entity_cypher(label: str) -> str:
         "SET e.mention_count = CASE WHEN e.mention_count IS NULL OR row.mentions > e.mention_count "
         "    THEN row.mentions ELSE e.mention_count END "
         "WITH e, row "
-        "MATCH (t:Thread {key: row.thread_key}) "
-        "MERGE (t)-[:MENTIONS]->(e)"
+        "MATCH (m:Message {key: row.message_key}) "
+        "MERGE (m)-[:MENTIONS]->(e)"
     )
 #
-# **`mention_count` is accumulated, not set.** Two ingests of the same export both see
-# an entity, and the second must not double it. It is therefore computed here from the
-# distinct message keys this run holds (`row.mentions`), then the node keeps the
-# larger of the two — an entity seen in three messages stays three when re-ingested.
+# **`mention_count` accumulates over MESSAGES, and the edge hangs off the Message.**
+#
+# The anchor was a `Thread` until 2026-11-23, which made `(thread)-[:MENTIONS]->(entity)`
+# a denormalisation: true and useful, but not a fact about the world, and not portable to
+# another graph engine. `(message)-[:MENTIONS]->(entity)` is the fact; "this conversation
+# is about X" is a projection over it (`tools._EDGE_QUERIES`).
+#
+# Two ingests of the same export both see an entity, and the second must not double the
+# count, so the node keeps the larger of the two — an entity seen in three messages stays
+# three when re-ingested.
 #
 # This replaced a fixed `_PLACE_CYPHER`; the statement is generated per label because
 # Relate cannot parameterise a label, and two hand-written copies would drift.
@@ -903,14 +919,14 @@ def _write_one_kind(
 
     # task (key, platform) -> the facts a single `MERGE` row needs.
     facts: dict[tuple[str, str], dict[str, Any]] = {}
-    thread_rows: list[dict[str, Any]] = []
+    mention_rows: list[dict[str, Any]] = []
     seen_messages: dict[str, set[str]] = defaultdict(set)
 
     for mention in mentions:
         meta = message_meta.get(mention.message_key)
         if meta is None:
             continue
-        thread_key, ts_utc = meta
+        _thread_key, ts_utc = meta
         platform = mention.platform or ""
         record = canonical(mention.text, kind=kind)
         if not record.key:
@@ -931,21 +947,24 @@ def _write_one_kind(
         elif ts_utc and (fact["first_seen_utc"] is None
                          or ts_utc < fact["first_seen_utc"]):
             fact["first_seen_utc"] = ts_utc
-        thread_rows.append({**fact, "thread_key": thread_key})
+        # The edge hangs off the **message**, not the thread. The same message naming
+        # the same entity twice is one edge, which is why this is a list of rows later
+        # deduped on `(message_key, key)` rather than appended blindly.
+        mention_rows.append({**fact, "message_key": mention.message_key})
 
     if not facts:
         return (0, 0)
 
-    # One row per (thread, place, platform); `mentions` carries the count for the whole
+    # One row per (message, entity, platform); `mentions` carries the count for the whole
     # key so every row agrees on it — the same order-independence the Correspondent
     # statement relies on.
     rows: list[dict[str, Any]] = []
-    seen_threads: set[tuple[str, str]] = set()
-    for row in thread_rows:
-        dedupe = (row["thread_key"], row["key"])
-        if dedupe in seen_threads:
+    seen_pairs: set[tuple[str, str]] = set()
+    for row in mention_rows:
+        dedupe = (row["message_key"], row["key"])
+        if dedupe in seen_pairs:
             continue
-        seen_threads.add(dedupe)
+        seen_pairs.add(dedupe)
         rows.append({**row, "mentions": len(seen_messages[row["key"]])})
 
     cur = conn.cursor()

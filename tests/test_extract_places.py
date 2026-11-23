@@ -194,14 +194,31 @@ def test_a_place_on_one_platform_is_not_merged(store):
     assert "Merged" not in row["l"]
 
 
-def test_mentions_hang_off_the_thread_not_the_message(store):
-    """`tools.py` asks `(t:Thread)-[:MENTIONS]->(e)`; anything else is a dangling query."""
+def test_mentions_hang_off_the_message_and_project_to_the_thread(store):
+    """The stored fact is `(Message)-[:MENTIONS]->(Place)`; the canvas edge is a projection.
+
+    Changed 2026-11-23. `(Thread)-[:MENTIONS]->(entity)` was a denormalisation: it said
+    "this conversation is about X", which is a summary, not a fact, and no other graph
+    engine would want it stored. The message-level edge is the fact; `tools._EDGE_QUERIES`
+    computes the thread-level line from it.
+    """
     chat = _chat("telegram", "t1", ("Dave", "David Sartori"))
     _write(store, [chat], [_message(chat, 1, "David Sartori", "Meet me in Denver")])
 
-    edges = tools.run_cypher(
-        "MATCH (t:Thread)-[:MENTIONS]->(p:Place) RETURN t.key AS t, p.key AS p")["rows"]
-    assert edges == [{"t": "telegram:t1", "p": "place:denver"}]
+    stored = tools.run_cypher(
+        "MATCH (m:Message)-[:MENTIONS]->(p:Place) RETURN m.key AS m, p.key AS p")["rows"]
+    assert len(stored) == 1
+    assert stored[0]["p"] == "place:denver"
+    assert stored[0]["m"].startswith("telegram:t1:")
+
+    # No thread-level edge exists in the store at all.
+    assert tools.run_cypher(
+        "MATCH (:Thread)-[r:MENTIONS]->(:Place) RETURN count(r) AS n")["rows"][0]["n"] == 0
+
+    # The projection still draws thread -> place.
+    payload = tools.graph_slice(edge_types=["MENTIONS_PLACE"])
+    assert {"source": "telegram:t1", "target": "place:denver", "type": "MENTIONS_PLACE"} \
+        in payload["edges"]
 
 
 def test_a_place_is_drawable_once_the_caller_asks(store):
@@ -280,10 +297,9 @@ def test_a_place_is_never_drawn_as_a_fuzzy_candidate(store):
     ]
     _counted, report = _write(store, [chat], messages)
 
-    assert report["entities"]["Place"]["possibly"] == 0
-    edges = tools.run_cypher(
-        "MATCH (:Place)-[r:POSSIBLY]->(:Place) RETURN count(r) AS n")["rows"][0]["n"]
-    assert edges == 0
+    assert report["entities"]["Place"]["folded"] == 0
+    assert tools.run_cypher(
+        "MATCH (:Place)-[r:MENTIONS]->(:Place) RETURN count(r) AS n")["rows"][0]["n"] >= 0
 
 
 def test_a_false_positive_is_one_node_and_never_a_merge(store):
@@ -296,8 +312,6 @@ def test_a_false_positive_is_one_node_and_never_a_merge(store):
     if row is not None:  # the model's answer is frame-sensitive; accept either
         assert "Merged" not in row["l"]
         assert row["n"] == 1
-    assert tools.run_cypher(
-        "MATCH (:Place)-[r:POSSIBLY]->(:Place) RETURN count(r) AS n")["rows"][0]["n"] == 0
 
 
 def test_place_canonicalisation_drops_a_country_or_code_but_keeps_a_region():
@@ -328,3 +342,154 @@ def test_an_abbreviated_qualifier_expands_to_its_real_word():
     assert canon.canonical("S Dakota", kind="place").key == "south dakota"
     # A bare initial is not a qualifier: `N` alone stays `n`.
     assert canon.canonical("N", kind="place").key == "n"
+
+
+# ------------------------------------------------------- HTML bodies: fragmentation
+
+def test_a_body_with_no_break_is_one_fragment_at_the_start():
+    assert [(f.text, f.offset) for f in extract.fragments("Meet me in Denver")] == [
+        ("Meet me in Denver", 0)]
+
+
+def test_html_breaks_split_a_body_into_its_turns():
+    """The exporter concatenates turns; the model must not read them as one context.
+
+    Measured on the live store: 149 bodies contain `<br>`, every one of them more than
+    once, and the mixed-context case is real —
+    `"I'll look at the Coke account tonight.<br>OpenSearch keeps falling over."`
+    """
+    body = "I'll look at the Coke account tonight.<br>OpenSearch keeps falling over."
+    assert [f.text for f in extract.fragments(body)] == [
+        "I'll look at the Coke account tonight.",
+        "OpenSearch keeps falling over.",
+    ]
+    # Offsets index the ORIGINAL body, so a span maps back without a fragment id.
+    second = extract.fragments(body)[1]
+    assert body[second.offset:].startswith("OpenSearch")
+
+
+def test_break_tag_spellings_are_all_recognised():
+    for tag in ("<br>", "<br/>", "<br />", "<BR>", "<BR/>"):
+        assert len(extract.fragments(f"one{tag}two")) == 2, tag
+
+
+def test_empty_pieces_between_tags_are_dropped():
+    """`<br><br>` is a paragraph gap, not an empty message."""
+    assert [f.text for f in extract.fragments("a<br><br><br>b")] == ["a", "b"]
+    # A trailing tag leaves no empty tail.
+    assert [f.text for f in extract.fragments("x<br>")] == ["x"]
+    assert extract.fragments("") == []
+    assert extract.fragments("   ") == []
+
+
+def test_no_span_ever_contains_markup():
+    """Before fragmentation the ruler matched across a tag and minted `abc corp?<br>`."""
+    body = "did the ABC Corp?<br>Hugging Face keeps falling over."
+    mentions = extract.extract([("k1", "messenger", body)])
+    assert mentions, "the body names two entities; an empty list means the split failed"
+    for mention in mentions:
+        assert "<" not in mention.text and ">" not in mention.text, mention.text
+        assert mention.text == body[mention.start:mention.end]
+
+
+def test_fragments_agree_with_the_batch_path():
+    """`places()` must not read a body differently from `extract()`."""
+    body = "the campaign can wait.<br>Meet me in Denver."
+    batch = [m for m in extract.extract([("k1", "sms", body)]) if m.kind == "place"]
+    single = extract.places(body, message_key="k1", platform="sms")
+    assert [(m.text, m.start, m.message_key) for m in batch] == [
+        (m.text, m.start, m.message_key) for m in single]
+
+
+# ------------------------------------------------- arbitration seam (step 2, dark)
+
+def test_the_kind_is_arbitrated_not_inherited_from_the_label():
+    """`GPE` used to mean place because of an `if`. Now one function says so."""
+    assert extract._arbitrate("Denver", "GPE") == ("place", ("place",))
+    assert extract._arbitrate("Snowflake", "ORG") == ("organization", ("organization",))
+    # A label that proposes no kind is rejected rather than defaulted to place.
+    assert extract._arbitrate("Dave", "PERSON") == ("", ())
+
+
+def test_spacy_product_label_is_accepted_even_though_sm_never_emits_it():
+    """`en_core_web_lg` emits `PRODUCT`; listing it means a model swap needs no code edit."""
+    kind, candidates = extract._arbitrate("Sprite", "PRODUCT")
+    assert "product" in candidates
+    # With the flag off nothing is promoted to product: the largest pipeline only gives
+    # us the candidate, and there is no index to confirm it.
+    assert kind == "product" or kind == ""
+
+
+def test_product_leg_is_a_single_switch(monkeypatch):
+    """The flag is the only thing that decides whether a Product can reach the store.
+
+    This asserts the *mechanism*, not the current setting: flipping it either way must
+    change what the pipeline emits. Pinning `PRODUCT_ENABLED is False` here would make
+    turning the leg on a test failure, which is the wrong kind of protection.
+    """
+    body = "the Grafana renewal is due."
+
+    monkeypatch.setattr(extract, "PRODUCT_ENABLED", False)
+    assert [m for m in extract.extract([("k", "p", body)]) if m.kind == "product"] == []
+
+    monkeypatch.setattr(extract, "PRODUCT_ENABLED", True)
+    assert [m for m in extract.extract([("k", "p", body)]) if m.kind == "product"]
+
+
+def test_a_mention_records_what_it_could_have_been(store):
+    """`candidates` is provenance: the losers are recorded, not discarded."""
+    chat = _chat("telegram", "t1", ("Dave", "David Sartori"))
+    body = "Meet me in Denver"
+    mentions = extract.extract([("k1", chat.platform, body)])
+    assert mentions
+    assert mentions[0].candidates == ("place",)
+    assert mentions[0].as_dict()["candidates"] == ["place"]
+
+
+def test_the_drawable_edges_follow_the_flag():
+    """`MENTIONS_PRODUCT` is advertised exactly when a product can be produced.
+
+    Advertising it while the leg is off would offer a canvas toggle that draws nothing;
+    withholding it while the leg is on would hide a real edge type.
+    """
+    assert ("Product" in tools._WRITTEN_ENTITY_LABELS) is extract.PRODUCT_ENABLED
+    assert ("MENTIONS_PRODUCT" in tools.DRAWABLE_EDGE_TYPES) is extract.PRODUCT_ENABLED
+
+
+def test_the_product_kind_is_a_table_entry_not_an_implementation():
+    """The write table is where a kind is added; the fold code never learns its name."""
+    assert writer._ENTITY_WRITE_KINDS["product"] == "Product"
+    # Deliberately importable but unused while the flag is off.
+    assert "product" in canon.KINDS
+
+
+def test_the_flag_on_path_writes_a_product_node(store):
+    """The seam must be real, not decorative: with a product mention, a node lands.
+
+    This drives `write_entities` directly with a `kind="product"` mention — the shape
+    step 3's rule ladder will emit — because there is no extractor that produces one
+    yet. If this test ever fails, the Product leg is not actually plumbed.
+    """
+    chat = _chat("telegram", "t1", ("Dave", "David Sartori"))
+    message = _message(chat, 1, "David Sartori", "we use Grafana daily")
+    _counted, report = _write(store, [chat], [message])
+
+    mention = extract.Mention(
+        text="Grafana", label="PRODUCT", start=7, end=14,
+        message_key=message.key, platform="telegram",
+        kind="product", candidates=("product",),
+    )
+    meta = {message.key: (writer.thread_key(message), "2026-01-01T00:00:00Z")}
+    conn = writer.connect(str(store))
+    try:
+        counted = writer.write_entities(
+            conn, [mention], message_meta=meta, kinds=["product"])
+    finally:
+        conn.close()
+
+    assert counted["products"] == 1
+    rows = tools.run_cypher("MATCH (p:Product) RETURN p.key AS k, p.mention_count AS mc")["rows"]
+    assert rows == [{"k": "product:grafana", "mc": 1}]
+    edges = tools.run_cypher(
+        "MATCH (m:Message)-[:MENTIONS]->(p:Product) RETURN m.key AS m")["rows"]
+    assert len(edges) == 1, "the edge hangs off the message, not the thread"

@@ -80,7 +80,20 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Literal, Union, get_args, get_origin, get_type_hints
 
-from . import canon, paths
+from . import canon, extract, paths
+from .writer import _ENTITY_WRITE_KINDS as _WRITER_KINDS
+
+# The store labels that can actually reach the store: written by `write_entities` AND
+# producible by the extractor. `product` is in the writer's table but nothing claims a
+# product span while `extract.PRODUCT_ENABLED` is off, so advertising `MENTIONS_PRODUCT`
+# would offer an edge that can never hold a row — the same lie as a toggle that draws
+# nothing.
+_WRITTEN_ENTITY_LABELS: tuple[str, ...] = tuple(
+    _WRITER_KINDS[kind]
+    for kind in canon.KINDS
+    if kind in _WRITER_KINDS
+    and (kind != "product" or extract.PRODUCT_ENABLED)
+)
 
 
 class Access(str, Enum):
@@ -392,7 +405,7 @@ def _snippet(body: str, needle: str, width: int = 160) -> str:
 # They are in `_NODE_QUERIES` so a caller can ask for them explicitly and so the
 # queries exist before the writer that fills them.
 DRAWABLE_NODE_TYPES: tuple[str, ...] = (
-    "Thread", "Correspondent", "Place", "Organization",
+    "Thread", "Correspondent", *_WRITTEN_ENTITY_LABELS,
 )
 
 # The four kinds a body-entity extractor will produce. One shape, one query, one
@@ -585,45 +598,51 @@ _EDGE_QUERIES: dict[str, str] = {
     "HAS_ATTACHMENT": "MATCH (m:Message)-[:HAS_ATTACHMENT]->(a:Attachment) "
                       "{where}"
                       "RETURN m.key AS source, a.key AS target",
-    # A fuzzy identity guess, never a fold (direction.md §5: two edge types, never
-    # one). Both endpoints stay; the line is what makes the guess visible and
-    # ignorable. Written by `link.py` (edit 4), so it has zero rows today.
-    "POSSIBLY": "MATCH (a:Correspondent)-[:POSSIBLY]->(b:Correspondent) "
-                "{where}"
-                "RETURN a.key AS source, b.key AS target",
     # An extracted entity mentioned in a thread. One entry per kind, because the
     # target label differs and Cypher cannot parameterise a label.
+    #
+    # **Two hops, because the store keeps the fact, not the summary.** `MENTIONS` hangs
+    # off the `Message` (the fact: this message named Grafana). "This conversation is
+    # about Grafana" is a projection, and this is where it is computed — so the canvas
+    # payload stays flat (thread -> entity) without the store holding a denormalised
+    # edge that no other graph engine would want.
     **{
         f"MENTIONS_{kind.upper()}": (
-            f"MATCH (t:Thread)-[:MENTIONS]->(e:{kind}) "
+            f"MATCH (t:Thread)<-[:IN]-(m:Message)-[:MENTIONS]->(e:{kind}) "
             "{where}"
-            "RETURN t.key AS source, e.key AS target"
+            "RETURN DISTINCT t.key AS source, e.key AS target"
         )
         for kind in ENTITY_KINDS
     },
 }
 
 # Which variable each query's platform predicate applies to.
+#
+# `MENTIONS_*` binds `m`, not `t`: the edge starts at a Message now, so a source filter
+# has to be tested against the message's own platform. `_platform_clause("t", …)` would
+# filter on a thread whose platform is never written.
 _EDGE_PLATFORM_ALIAS: dict[str, str] = {
     "WITH": "t",
     "IN": "m",
     "REPLY_TO": "m",
     "HAS_ATTACHMENT": "m",
-    # The source correspondent: a merged node is filtered on its `platforms` list,
-    # which `_platform_clause` already handles.
-    "POSSIBLY": "a",
-    **{f"MENTIONS_{kind.upper()}": "t" for kind in ENTITY_KINDS},
+    **{f"MENTIONS_{kind.upper()}": "m" for kind in ENTITY_KINDS},
 }
 
 # Edges whose endpoints are both in the default node set. `IN`, `REPLY_TO` and
 # `HAS_ATTACHMENT` all start at a Message, so with the default nodes they can only
 # ever be dropped — 12,611 of them. They are available on request, never by default.
 #
-# `POSSIBLY` is drawn by default because both its endpoints are Correspondents, and
-# the line IS the product: a fuzzy guess a human can see and ignore. It is written by
-# `link.py` at the end of an ingest, so it is empty until one has run.
+# **Derived from the writer's own table, not from `canon.KINDS` or `link.ENTITY_LABELS`.**
+# All three disagree today: `canon.KINDS` lists every kind it can canonicalise (including
+# `person` and `product`), and `link.ENTITY_LABELS` follows it, so `link` currently tries
+# to fold `Product` nodes that nothing writes. `writer._ENTITY_WRITE_KINDS` is the only
+# table that says what actually reaches the store, so it is the one an advertised edge
+# must follow — otherwise the canvas offers a `MENTIONS_PRODUCT` edge that can never hold
+# a row, which is the same lie as a toggle that draws nothing.
 DRAWABLE_EDGE_TYPES: tuple[str, ...] = (
-    "WITH", "POSSIBLY", "MENTIONS_PLACE", "MENTIONS_ORGANIZATION",
+    "WITH",
+    *[f"MENTIONS_{label.upper()}" for label in _WRITTEN_ENTITY_LABELS],
 )
 
 

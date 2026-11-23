@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from relate_comms import tools, writer
+from relate_comms import extract, tools, writer
 from relate_comms.schema import Chat, IngestResult, Message, make_key
 
 _BASE = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
@@ -134,14 +134,19 @@ def test_unimplemented_tools_are_not_registered():
 def test_graph_slice_draws_threads_and_correspondents_by_default(store):
     slice_ = tools.graph_slice()
     # `Place` and `Organization` join the default set now that they have rows.
-    # `Person` and `Product` stay out until their extractors land.
-    assert slice_["node_types"] == ["Thread", "Correspondent", "Place", "Organization"]
-    # `POSSIBLY` is drawn by default too: both endpoints are Correspondents and the
-    # line is the product. It holds no rows until `link.py` has run.
+    # `Person` never joins (it competes with `Correspondent`); `Product` follows its flag.
+    expected_nodes = ["Thread", "Correspondent", "Organization", "Place"]
+    if extract.PRODUCT_ENABLED:
+        expected_nodes.append("Product")
+    assert slice_["node_types"] == expected_nodes
     # `MENTIONS_*` rides along with its kind: an edge is only kept when BOTH its
     # endpoints are drawn, so the thread side has to be in the set — it is, by default.
-    assert slice_["edge_types"] == [
-        "WITH", "POSSIBLY", "MENTIONS_PLACE", "MENTIONS_ORGANIZATION"]
+    # There is no `POSSIBLY`: a fuzzy pair now folds instead of being drawn (2026-11-23).
+    # `MENTIONS_PRODUCT` appears only when the Product leg is switched on.
+    expected = ["WITH", "MENTIONS_ORGANIZATION", "MENTIONS_PLACE"]
+    if extract.PRODUCT_ENABLED:
+        expected.append("MENTIONS_PRODUCT")
+    assert slice_["edge_types"] == expected
     assert slice_["counts"]["nodes"] > 0
     types = {node["type"] for node in slice_["nodes"]}
     assert types <= {"Thread", "Correspondent", "Place", "Organization"}
@@ -198,10 +203,12 @@ def test_the_extracted_kinds_are_queryable_but_empty(store):
         assert slice_["nodes"] == []
         assert slice_["total"] == 0
     assert set(tools.ENTITY_KINDS) == {"Person", "Place", "Organization", "Product"}
-    # `Place` and `Organization` are the extracted kinds drawn today. `Person` and
-    # `Product` remain queryable only until their extractors land.
-    assert set(tools.ENTITY_KINDS) & set(tools.DRAWABLE_NODE_TYPES) == {
-        "Place", "Organization"}
+    # A kind is drawn by default exactly when something can write it. `Person` never is
+    # (it competes with `Correspondent`); `Product` follows `extract.PRODUCT_ENABLED`.
+    expected = {"Place", "Organization"}
+    if extract.PRODUCT_ENABLED:
+        expected.add("Product")
+    assert set(tools.ENTITY_KINDS) & set(tools.DRAWABLE_NODE_TYPES) == expected
 
 
 def test_company_is_not_a_kind(store):

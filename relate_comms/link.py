@@ -1,4 +1,4 @@
-"""Cross-connect — fold the nodes whose keys differ, and draw a line where they might.
+"""Cross-connect — fold the nodes whose keys differ.
 
 WHY THIS FILE EXISTS
 --------------------
@@ -13,13 +13,14 @@ Those never share a key, so they stay apart until something looks at the evidenc
 across them. That is this module. It runs **once, at the end of an ingest**, after
 every batch is written — per batch it would only ever see one platform.
 
-TWO OUTCOMES, NEVER ONE
------------------------
-`archive_docs/direction.md` §5: a fold is unrecoverable without a re-ingest, an edge
-is a line you can look at and ignore. So:
-
-  exact evidence   MERGE + DELETE + edge re-point   (`merged_by` records why)
-  fuzzy evidence   `(:Correspondent)-[:POSSIBLY]->(:Correspondent)`, both stay
+ONE OUTCOME: THE FOLD
+---------------------
+An earlier version also drew `(:Correspondent)-[:POSSIBLY]->(:Correspondent)` for fuzzy
+pairs on the theory that a visible guess beats a silent fold. It was removed 2026-11-23.
+The six edges it ever produced were all typo pairs (`vikrm ross`/`vikram ross`) that a
+user wants as ONE node, the edge carried no score the UI could rank, and a near-miss of
+two genuinely different people is not something this store can tell apart from a
+typo. So: a pair folds, or it does not match. There is no third state.
 
 The fold is a **re-point, not a property set**. `WITH` edges hang off the node being
 deleted, and `DETACH DELETE` would take them with it — the graph would silently lose
@@ -32,6 +33,9 @@ WHAT COUNTS AS EXACT
     email       same lowercased address
     exact_name  same canonical name
     nickname    same canonical name after nickname resolution
+    fuzzy       same name within `FUZZY_THRESHOLD`, decided by the same `canon.score`
+                a human review would use. Last in the chain, so a pair that folds on
+                `phone` never reports itself as a fuzzy fold.
 
 Phone and email are the strong ones: a name is a claim, an address is an identifier.
 Name folds are normally a no-op because edit 1 already collapsed identical canonical
@@ -56,7 +60,11 @@ from . import canon
 # The evidence classes, strongest first. `merged_by` on the surviving node is the
 # weakest link in the chain that produced it — a phone fold that also matched on a
 # name is still a phone fold, and the audit query should say so.
-EVIDENCE_ORDER: tuple[str, ...] = ("phone", "email", "exact_name", "nickname")
+#
+# `fuzzy` is last by construction: it is the weakest claim, and it is only reached for a
+# pair nothing stronger explained. Keeping it in the same chain is what makes the fold
+# deterministic — there is no second pass that could fold a pair the first one skipped.
+EVIDENCE_ORDER: tuple[str, ...] = ("phone", "email", "exact_name", "nickname", "fuzzy")
 
 # The entity labels `link()` folds after the Correspondent pass. `Place` is the only
 # member in v1; `canon.KINDS`-derived so a second kind joins by existing in `canon`.
@@ -72,27 +80,31 @@ ENTITY_LABELS: tuple[str, ...] = tuple(
 # have, so it is done as well as it can be.
 ENTITY_EVIDENCE_ORDER: tuple[str, ...] = ("exact_name",)
 
-# Below this a fuzzy pair is noise. Same knob the report uses, so a candidate that
-# `canon.candidates()` would print is a candidate this draws.
+# Below this two names are not the same person. The knob is `canon`'s, so the fold and
+# any report that quotes it cannot disagree.
+#
+# **Why a threshold and not an exact match.** A typo'd surname (`esposio`/`esposito`) is
+# one human, and the old design drew a `POSSIBLY` line instead of folding on the theory
+# that a wrong fold is unrecoverable. In practice the lines were never acted on and the
+# graph showed one person twice. A wrong fold is recoverable the same way anything else
+# in this store is: delete the derived node and re-ingest.
 FUZZY_THRESHOLD = canon.FUZZY_REPORT
 
 
 def link(conn: Any, *, fold_on_name: bool | None = None) -> dict[str, Any]:
-    """Fold exact matches, draw `POSSIBLY` for fuzzy ones. Idempotent.
+    """Fold matching nodes. Idempotent.
 
     Returns a report the ingest panel can show:
 
         folded      how many nodes were deleted into another
-        merged_by   {phone: n, email: n, exact_name: n, nickname: n}
-        possibly    how many `POSSIBLY` edges were written
+        merged_by   {phone: n, email: n, exact_name: n, nickname: n, fuzzy: n}
         groups      the fold groups, as `[[survivor, loser, …], …]`, for the log
 
     `entities` carries the Place pass, in the same shape but counting `place`:
 
-        entities    {Place: {folded, merged_by, groups, possibly}}
+        entities    {Place: {folded, merged_by, groups}}
 
-    Running it twice changes nothing: the second run finds one node per group, and
-    `MERGE` on the `POSSIBLY` edge is a no-op.
+    Running it twice changes nothing: the second run finds one node per group.
     """
     if fold_on_name is None:
         fold_on_name = canon.FOLD_ON_NAME
@@ -109,10 +121,10 @@ def _link_correspondents(conn: Any, *, fold_on_name: bool) -> dict[str, Any]:
     """
     nodes = _load(conn)
     if len(nodes) < 2:
-        return {"folded": 0, "merged_by": {}, "possibly": 0, "groups": []}
+        return {"folded": 0, "merged_by": {}, "groups": []}
 
-    # The per-platform spellings are needed by BOTH passes: a name fold reads them to
-    # find a phone-keyed node's name, and the fuzzy pass reads them to score a pair.
+    # The per-platform spellings are the evidence a fold reads: a name fold needs them
+    # to find a phone-keyed node's name, and the fuzzy pass scores the same forms.
     handles = _handles(conn, [node["key"] for node in nodes])
     for node in nodes:
         node["handles"] = handles.get(node["key"], {})
@@ -138,19 +150,11 @@ def _link_correspondents(conn: Any, *, fold_on_name: bool) -> dict[str, Any]:
         _reconcile(conn.cursor(), [group[0] for group in report_groups])
         conn.commit()
 
-    # Re-read: a fold changes which nodes exist, and a fuzzy pair must never be
-    # drawn between two nodes that are now one.
-    remaining = _load(conn) if folded else nodes
-    if folded:
-        handles = _handles(conn, [node["key"] for node in remaining])
-        for node in remaining:
-            node["handles"] = handles.get(node["key"], {})
-    possibly = _draw_possibly(conn, remaining)
-
+    # `_fold_groups` already includes the fuzzy class, so there is no second pass below:
+    # a pair that is not in `groups` is not the same person, and nothing is drawn.
     return {
         "folded": folded,
         "merged_by": dict(by_reason),
-        "possibly": possibly,
         "groups": report_groups,
     }
 
@@ -162,9 +166,11 @@ def _load(conn: Any, label: str = "Correspondent") -> list[dict[str, Any]]:
     """Every Correspondent, with the facts a fold decision needs.
 
     `label` generalises it to an entity kind (`Place`). The two differ in exactly one
-    way that matters: a Correspondent's weight is its `WITH` threads, a Place's is its
-    `MENTIONS` threads. Everything the fold itself reads — `key`, per-platform
-    `handle_<p>` / `seen_<p>` — is identical, which is why the fold can be shared.
+    way that matters: a Correspondent's weight is its `WITH` threads, a Place's is the
+    threads that `MENTIONS` it — which needs two hops, because the edge hangs off the
+    `Message` (see `writer._write_one_kind`). Everything the fold itself reads — `key`,
+    per-platform `handle_<p>` / `seen_<p>` — is identical, which is why the fold can be
+    shared.
 
     Placeholders are excluded: `messenger:placeholder:facebook user` and
     `linkedin:placeholder:linkedin member` are two different accounts that happen to
@@ -181,9 +187,13 @@ def _load(conn: Any, label: str = "Correspondent") -> list[dict[str, Any]]:
             "       c.email AS email, count(DISTINCT t) AS threads "
         )
     else:
+        # Two hops, matching the write: `MENTIONS` hangs off the Message, so a `Thread`
+        # count has to go through `IN`. Counting distinct threads is what the survivor
+        # ranking wants — a person's weight is the conversations they appear in, not
+        # the raw message count.
         cypher = (
             f"MATCH (e:{label}) "
-            "OPTIONAL MATCH (t:Thread)-[:MENTIONS]->(e) "
+            "OPTIONAL MATCH (t:Thread)<-[:IN]-(m:Message)-[:MENTIONS]->(e) "
             "RETURN e.key AS key, e.platform AS platform, "
             "       coalesce(e.platforms, [e.platform]) AS platforms, "
             "       e.display_name AS display_name, null AS phone, "
@@ -263,9 +273,17 @@ def _fold_groups(
             return
         parent[rb] = ra
         # Keep the strongest evidence for the group: a phone match outranks a name.
+        #
+        # **Both roots' reasons are considered.** `rb` may already carry a reason from
+        # an earlier union, and dropping it silently downgraded a whole group — the
+        # fuzzy rung exposed it: two pairs unioned in sequence kept only the first
+        # root's reason and the group reported `exact_name` for a fuzzy fold.
+        previous = reason_of.pop(rb, None)
         current = reason_of.get(ra)
-        if current is None or evidence.index(reason) < evidence.index(current):
-            reason_of[ra] = reason
+        candidates = [r for r in (current, previous, reason) if r is not None]
+        best = min(candidates, key=evidence.index)
+        if current != best:
+            reason_of[ra] = best
 
     # --- phone and email: the identifiers ------------------------------------
     for field, reason in (("phone", "phone"), ("email", "email")):
@@ -290,6 +308,33 @@ def _fold_groups(
             reason = "nickname" if form.startswith("~") else "exact_name"
             for other in members[1:]:
                 union(members[0], other, reason)
+
+    # --- fuzzy: the last rung, and only for a pair nothing stronger explained --
+    #
+    # This replaced the `POSSIBLY` edge (removed 2026-11-23). It is deliberately the
+    # weakest rung: `union()` keeps the strongest reason for a group, so a pair that
+    # already folded on phone or an exact name never reports itself as `fuzzy`.
+    #
+    # **Blocked on the surname's first letter, the same cheap block the old edge used.**
+    # Comparing every node to every node is quadratic; on a 123-node store that matters
+    # and on a real one it would not finish inside an ingest. A surname is a stable
+    # anchor — a typo in the first letter of a surname is rare enough that missing it
+    # costs a fold, not a wrong one.
+    if fold_on_name and "fuzzy" in evidence and canon.fuzzy_available():
+        named = [
+            (position, _readable_name(node)) for position, node in enumerate(nodes)
+        ]
+        blocks: dict[str, list[tuple[int, str]]] = defaultdict(list)
+        for position, name in named:
+            if not name:
+                continue
+            parts = name.split()
+            blocks[parts[-1][:1] if len(parts) > 1 else name[:1]].append((position, name))
+        for members in blocks.values():
+            for index, (left_position, left) in enumerate(members):
+                for right_position, right in members[index + 1:]:
+                    if canon.score(left, right) >= FUZZY_THRESHOLD:
+                        union(left_position, right_position, "fuzzy")
 
     grouped: dict[int, list[int]] = defaultdict(list)
     for position in range(len(nodes)):
@@ -318,6 +363,19 @@ def _is_identifier_key(key: str) -> bool:
     """True when the key's tail is a phone or an address rather than a name."""
     tail = str(key).split(":", 1)[-1]
     return canon.is_phone(tail) or canon.is_email(tail)
+
+
+def _readable_name(node: dict[str, Any]) -> str:
+    """The name a human would read, for scoring two nodes against each other.
+
+    A phone-keyed node uses its handle, because its key is digits and scores against
+    nothing. Returns `""` when the node has no name at all — a node that is only ever a
+    number must not block on `""`, or every unnamed node would land in one bucket and
+    score against every other.
+    """
+    forms = sorted(_name_forms(node))
+    plain = [form for form in forms if not form.startswith("~")]
+    return plain[0] if plain else ""
 
 
 def _name_forms(node: dict[str, Any]) -> set[str]:
@@ -354,21 +412,21 @@ def _fold(
     Each edge type is re-pointed explicitly, and a duplicate (both nodes already
     attached to the same thread) is removed rather than merged into a self-edge.
 
-    `label` / `edge` generalise it to an entity kind. `POSSIBLY` is only re-pointed
-    for Correspondents: a Place is never drawn as a fuzzy candidate, because its only
-    evidence is its spelling and a typo there is a different place, not a guess.
+    `label` / `edge` generalise it to an entity kind. The **source** differs by kind:
+    a Correspondent hangs off a `Thread` via `WITH`, an entity hangs off a `Message` via
+    `MENTIONS` (since 2026-11-23). Re-pointing the wrong source silently deletes every
+    edge the node had, because `DETACH DELETE` takes whatever is left.
     """
+    source = "m:Message" if edge == "MENTIONS" else "t:Thread"
     cur = conn.cursor()
     for loser in losers:
         cur.execute(
-            f"MATCH (t:Thread)-[r:{edge}]->(l:{label} {{key: $loser}}) "
+            f"MATCH ({source})-[r:{edge}]->(l:{label} {{key: $loser}}) "
             f"MATCH (s:{label} {{key: $survivor}}) "
-            f"MERGE (t)-[:{edge}]->(s) "
+            f"MERGE ({source.split(':')[0]})-[:{edge}]->(s) "
             "DELETE r",
             {"loser": loser["key"], "survivor": survivor["key"]},
         )
-        if edge == "WITH":
-            _repoint_possibly(cur, survivor["key"], loser["key"], label)
         # The loser's per-platform facts are copied onto the survivor *before* the
         # delete, so `_reconcile` can rebuild `platforms` / `platform_label` from the
         # union rather than from the survivor alone.
@@ -378,33 +436,6 @@ def _fold(
             {"loser": loser["key"]},
         )
     conn.commit()
-
-
-def _repoint_possibly(cur: Any, survivor_key: str, loser_key: str,
-                      label: str) -> None:
-    """Re-point both directions of `POSSIBLY`, dropping the pair that became one node.
-
-    `POSSIBLY` is symmetric in meaning, so an edge in either direction has to move. An
-    edge between the survivor and the loser would become a self-edge and is dropped
-    instead.
-    """
-    params = {"loser": loser_key, "survivor": survivor_key}
-    cur.execute(
-        f"MATCH (a:{label})-[r:POSSIBLY]->(l:{label} {{key: $loser}}) "
-        f"MATCH (s:{label} {{key: $survivor}}) "
-        "FOREACH (_ IN CASE WHEN a.key = $survivor THEN [] ELSE [1] END | "
-        "  MERGE (a)-[:POSSIBLY]->(s)) "
-        "DELETE r",
-        params,
-    )
-    cur.execute(
-        f"MATCH (l:{label} {{key: $loser}})-[r:POSSIBLY]->(b:{label}) "
-        f"MATCH (s:{label} {{key: $survivor}}) "
-        "FOREACH (_ IN CASE WHEN b.key = $survivor THEN [] ELSE [1] END | "
-        "  MERGE (s)-[:POSSIBLY]->(b)) "
-        "DELETE r",
-        params,
-    )
 
 
 def _inherit(cur: Any, survivor_key: str, loser_key: str,
@@ -466,55 +497,6 @@ def _inherit(cur: Any, survivor_key: str, loser_key: str,
 # ------------------------------------------------------------------------ fuzzy
 
 
-def _draw_possibly(conn: Any, nodes: list[dict[str, Any]]) -> int:
-    """`POSSIBLY` between pairs that score high enough to be worth a look.
-
-    Nothing is folded. The edge is the whole product: it says "these two might be one
-    person" in a way a human can see and ignore, which a fold cannot.
-
-    Blocked on the surname's first letter, the same cheap block `canon.candidates()`
-    uses — comparing every node to every node is quadratic and this store is small
-    enough that the block is the only thing keeping the run instant.
-    """
-    if canon.fuzzy_available() is False:  # pragma: no cover - declared dependency
-        return 0
-
-    # One representative key per node: the name a human would read. A phone-keyed
-    # node uses its handle, because its key is digits and scores against nothing.
-    named: list[tuple[str, str]] = []
-    for node in nodes:
-        forms = sorted(_name_forms(node))
-        plain = [form for form in forms if not form.startswith("~")]
-        if plain:
-            named.append((node["key"], plain[0]))
-
-    blocks: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    for key, name in named:
-        parts = name.split()
-        block = parts[-1][:1] if len(parts) > 1 else name[:1]
-        blocks[block].append((key, name))
-
-    pairs: list[tuple[str, str]] = []
-    for members in blocks.values():
-        for i, (left_key, left) in enumerate(members):
-            for right_key, right in members[i + 1:]:
-                if canon.score(left, right) >= FUZZY_THRESHOLD:
-                    pairs.append((left_key, right_key))
-
-    if not pairs:
-        return 0
-    cur = conn.cursor()
-    cur.execute(
-        "UNWIND $pairs AS pair "
-        "MATCH (a:Correspondent {key: pair[0]}) "
-        "MATCH (b:Correspondent {key: pair[1]}) "
-        "MERGE (a)-[:POSSIBLY]->(b)",
-        {"pairs": [list(pair) for pair in pairs]},
-    )
-    conn.commit()
-    return len(pairs)
-
-
 # ----------------------------------------------------------------- entities
 
 
@@ -528,14 +510,17 @@ def _link_entity(conn: Any, label: str) -> dict[str, Any]:
     offer, and it is weaker than the Correspondent case; `:Merged` carries the same
     label, so the UI must say "same spelling" rather than "same place".
 
-    `POSSIBLY` is **not** drawn between entities. A fuzzy pair is a line saying two
-    spellings might be one person, and a human can adjudicate it from a name. Two
-    places one letter apart are two places (a `Fargo`/`Largo` typo is not a merge
-    candidate, it is a different town), and there is no second signal to weigh.
+    Places fold on their canonical name only; **no fuzzy rung**.
+
+    `ENTITY_EVIDENCE_ORDER` deliberately omits `fuzzy` while a Correspondent uses it.
+    A name is enough evidence to say two Correspondent nodes are one human — a typo'd
+    surname has no other reading. A Place has no second signal to weigh: `Fargo` and
+    `Largo` are two towns, and folding them on a score would be the graph inventing a
+    place. The same rule holds for Organization and Product.
     """
     nodes = _load(conn, label)
     if len(nodes) < 2:
-        return {"folded": 0, "merged_by": {}, "groups": [], "possibly": 0}
+        return {"folded": 0, "merged_by": {}, "groups": []}
 
     handles = _handles(conn, [node["key"] for node in nodes], label=label)
     for node in nodes:

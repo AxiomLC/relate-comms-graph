@@ -199,6 +199,9 @@ class BatchOutcome:
     correspondents: int = 0
     places: int = 0
     organizations: int = 0
+    # Zero until `extract.PRODUCT_ENABLED` is on. Always reported, so the report shape
+    # does not change when the leg goes live and a reader can see the kind exists.
+    products: int = 0
     mentions: int = 0
     non_english: int = 0
     documents: int = 0
@@ -258,7 +261,7 @@ class Report:
     # The profile this run wrote to. Needed by the prune policy, which reads the
     # manifest — and the manifest follows a redirected store.
     profile_dir: str = ""
-    # What `link.py` did: nodes folded, `POSSIBLY` edges drawn. Empty when the run
+    # What `link.py` did: nodes folded, and why (`merged_by`). Empty when the run
     # wrote nothing, or when the fold failed (then it holds `error`).
     link: dict[str, Any] = field(default_factory=dict)
     # Run-level notes that belong to no single batch — currently the extractor being
@@ -1024,11 +1027,21 @@ def ingest(
                             m.key: (writer.thread_key(m), to_utc_string(m.ts_utc))
                             for m in result.messages
                         }
+                        # **Which kinds to write is the extractor's call, not ours.**
+                        # `product` is in the writer's table but nothing produces a
+                        # product mention while `extract.PRODUCT_ENABLED` is off, so
+                        # asking for it writes zero rows and reports `products: 0` —
+                        # the kind is visible in the report without pretending it
+                        # found anything.
+                        kinds = ["place", "organization"]
+                        if extract.PRODUCT_ENABLED:
+                            kinds.append("product")
                         counted = writer.write_entities(
-                            conn, found, message_meta=meta,
+                            conn, found, message_meta=meta, kinds=kinds,
                         )
                         outcome.places = counted["places"]
                         outcome.organizations = counted["organizations"]
+                        outcome.products = counted.get("products", 0)
                         outcome.mentions = counted["mentions"]
                 except Exception as exc:  # noqa: BLE001 - never fail the batch over this
                     outcome.warnings.append(
