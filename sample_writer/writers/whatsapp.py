@@ -52,8 +52,12 @@ def _rows(thread: Thread, world: World, rng: Random) -> list[tuple[datetime, str
     if thread.mark == "zero_message":
         # §6: system rows only. The adapter emits no Chat and counts it skipped.
         out.append((moment, None, "Messages and calls are end-to-end encrypted."))
-        out.append((moment, None, f"{thread.participants[0].name} added "
-                                  f"{thread.participants[1].name}"))
+        # `.label()` not `.name`: a system row still spells a person the way this export
+        # spells them. Using the canonical name here meant a decided sender variant could
+        # be assigned and then never written — measured on `Xavier Kay`, whose only
+        # WhatsApp thread carried one Owner line, so his `Xavire` label appeared nowhere.
+        out.append((moment, None, f"{thread.participants[0].label('whatsapp')} added "
+                                  f"{thread.participants[1].label('whatsapp')}"))
         return out
 
     out.append((moment, None, "Messages and calls are end-to-end encrypted. "
@@ -64,10 +68,11 @@ def _rows(thread: Thread, world: World, rng: Random) -> list[tuple[datetime, str
         # §1: the membership row that makes an Owner-silent group classifiable at all.
         template = rng.choice(MEMBERSHIP_ROWS)
         out.append((moment, None, template.format(
-            title=thread.title, name=thread.participants[-1].name)))
+            title=thread.title, name=thread.participants[-1].label("whatsapp"))))
         if thread.mark == "service_rows":
-            out.append((moment, None, f"{thread.participants[0].name} changed the "
-                                      f"subject to \"{thread.title}\""))
+            out.append((moment, None,
+                        f"{thread.participants[0].label('whatsapp')} changed the "
+                        f"subject to \"{thread.title}\""))
 
     if thread.silent:
         return out

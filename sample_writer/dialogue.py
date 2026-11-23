@@ -55,6 +55,19 @@ PLACE_LINES = [
     "{place} was a nightmare to get to.",
 ]
 
+# Bodies that name a PRODUCT — something bought, used or complained about, never a company.
+# These exist because no body could mention a product before, so the app's `Product` kind had
+# no generated data behind it at all.
+PRODUCT_LINES = [
+    "we're still on {product}.",
+    "did the {product} quote come through?",
+    "{product} keeps falling over.",
+    "can you get me a {product} seat?",
+    "the {product} renewal is due.",
+    "they shipped {product} last week.",
+    "I've moved everything onto {product}.",
+]
+
 # Bodies that name a colleague. `{person}` uses that person's body-entity spelling, so
 # `Bob Mercer` on one platform is `Robert Mercer` on another.
 PERSON_LINES = [
@@ -168,6 +181,8 @@ def entity_line(world: World, platform: str, rng: random.Random,
         pools.append(("org", sorted(world.body_orgs), ORG_LINES))
     if world.body_places:
         pools.append(("place", sorted(world.body_places), PLACE_LINES))
+    if world.body_products:
+        pools.append(("product", sorted(world.body_products), PRODUCT_LINES))
     if world.body_persons:
         pools.append(("person", sorted(world.body_persons), PERSON_LINES))
     if not pools:
@@ -175,6 +190,7 @@ def entity_line(world: World, platform: str, rng: random.Random,
 
     def has_variant(kind: str, canonical: str) -> bool:
         table = {"org": world.body_orgs, "place": world.body_places,
+                 "product": world.body_products,
                  "person": world.body_persons}[kind]
         return platform in table.get(canonical, {})
 
@@ -195,6 +211,8 @@ def entity_line(world: World, platform: str, rng: random.Random,
         return rng.choice(lines).format(org=world.body_entity(canonical, platform))
     if kind == "place":
         return rng.choice(lines).format(place=world.body_entity(canonical, platform))
+    if kind == "product":
+        return rng.choice(lines).format(product=world.body_entity(canonical, platform))
     return rng.choice(lines).format(person=world.body_entity(canonical, platform))
 
 

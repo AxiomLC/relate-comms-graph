@@ -19,7 +19,7 @@ nobody anticipated still gets varied:
 
 The one thing no rule reaches is a nickname (`Chris` -> `Christopher`): that is a
 lexical fact about English, not a transformation of the letters. `NICKNAMES` is the
-single explicit table, and it only maps between names already drawn from `GIVEN`.
+single explicit table, and it only maps between names already drawn from `FIRST_NAME`.
 
 Nothing here reads config or the world; the caller decides how often to call it. That
 keeps it unit-testable on its own and keeps the seeded randomness in one visible place.

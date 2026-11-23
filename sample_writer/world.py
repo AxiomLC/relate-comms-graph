@@ -35,7 +35,7 @@ PEOPLE_ROLES = [
     ("recruiter", "Talent Partners"),
     ("landlord", None),
     ("contractor", None),
-    # Roles that carry an organisation, so the expanded COMPANIES is actually used.
+    # Roles that carry an organisation, so the expanded ORGS is actually used.
     ("engineer", "tech"),
     ("analyst", "tech"),
     ("vendor contact", "tech"),
@@ -45,52 +45,172 @@ PEOPLE_ROLES = [
     ("consultant", "tech"),
 ]
 
-GIVEN = [
+FIRST_NAME = [
     "Mary", "Brandon", "Alexandra", "Lida", "Fred", "Sergio", "Kenny", "Morgan", "Anna",
     "Dimitri", "Priya", "Owen", "Ines", "Tomas", "Hannah", "Rahul", "Clare", "Nadia",
     "Ivo", "Beth", "Marco", "Sofia", "Jonas", "Amara", "Peter", "Yuki", "Fatima",
     "Callum", "Rosa", "Ahmed",
-    # +50%: people names beside the tech/AI/database cast, not vendor names.
     "Ada", "Grace", "Alan", "Vint", "Niklaus", "Linus", "Barbara", "Margaret",
     "Katherine", "Radia", "Frances", "Anita", "Shafi", "Judea", "Ptolemy",
-    # Given names with a nickname pair in `fuzz.NICKNAMES`. Without these the
-    # cross-platform sender fuzz has almost no candidate to work with: a random cast
-    # of tech-adjacent names otherwise holds one nickname-able first name in forty.
+    # Given names with a nickname pair in `fuzz.NICKNAMES`.
     "Chris", "Christopher", "Bob", "Robert", "Dave", "David", "Jim", "James",
     "Bill", "William", "Liz", "Elizabeth", "Tom", "Thomas", "Dan", "Daniel",
     "Nick", "Nicholas", "Alexander",
-]
-SURNAMES = [
+    # --- expansion -----------------------------------------------------------
+    # Breadth matters more than novelty: a wider cast means body Persons and
+    # Correspondents collide less, and the name pool stops reading as one office.
+    "Aisha", "Amir", "Anika", "Aoife", "Arjun", "Astrid", "Beatriz", "Bjorn",
+    "Camila", "Chidi", "Ciara", "Dara", "Dmitri", "Elena", "Emeka", "Esme",
+    "Esther", "Farah", "Fiona", "Gabriel", "Gemma", "Gustavo", "Halima", "Hugo",
+    "Ibrahim", "Imogen", "Isabel", "Jakub", "Jamil", "Jasmine", "Joel", "Josef",
+    "Kaito", "Karim", "Katya", "Keiran", "Lars", "Leila", "Leon", "Lucia",
+    "Magnus", "Mairead", "Malik", "Marta", "Mateo", "Mei", "Miriam", "Nadia",
+    "Naveen", "Niamh", "Olga", "Omar", "Orla", "Pablo", "Padma", "Quentin",
+    "Rafael", "Ravi", "Rebecca", "Rhys", "Ruth", "Salma", "Sanjay", "Saskia",
+    "Sean", "Sebastian", "Shreya", "Sian", "Simone", "Stefan", "Suki", "Tariq",
+    "Tessa", "Thabo", "Theo", "Ulla", "Uma", "Valentina", "Vikram", "Wanda",
+    "Xavier", "Yara", "Yusuf", "Zara", "Zoe",
+    # ASCII only, deliberately: a non-ASCII name has to survive the whole write chain
+    # (JSON, zip, SMS XML) and one mangled byte fails a test for a case the app does
+    # not need. `canon` folds diacritics if they arrive; the generator no longer
+    # manufactures them.
+    "Rene",
+    "Zoe",]
+LAST_NAME = [
     "Olver", "Steinhart", "Lonon", "Geller", "Aaen", "Habegger", "Settens", "Davin",
     "Kowalski", "Petrov", "Nair", "Blythe", "Costa", "Novak", "Whitfield", "Iyer",
     "Mercer", "Haddad", "Ellis", "Ferreira", "Bauer", "Ricci", "Lindqvist", "Okafor",
     "Vance", "Tanaka", "Hassan", "Ross", "Marsh", "Zaman",
-    # +50%: surnames a tech-adjacent cast plausibly carries.
     "Lovelace", "Hopper", "Turing", "Cerf", "Wirth", "Torvalds", "Nakamoto",
     "Kernighan", "Ritchie", "Thompson", "Kay", "Perlman", "Lamarr", "Berners",
     "Fowley",
-]
+    # --- expansion -----------------------------------------------------------
+    "Adeyemi", "Almeida", "Andersen", "Aritonang", "Bakshi", "Baranov", "Beaumont",
+    "Bellini", "Bhattacharya", "Boateng", "Brennan", "Cardoso", "Castellano",
+    "Chatterjee", "Chowdhury", "Dalgaard", "Deshmukh", "Diop", "Doyle", "Dubois",
+    "Duarte", "Eriksen", "Esposito", "Fennell", "Fernandes", "Fitzgerald", "Fontaine",
+    "Gallagher", "Ghosh", "Giordano", "Grimaldi",
+    "Halloran", "Ibrahim", "Iversen", "Janssen", "Kaur", "Kelleher",
+    "Kholodov", "Koval", "Krebs", "Kumar", "Lehtinen", "Lombardi",
+    "MacLeod", "Mahmoud", "Mbatha", "McAllister", "Menon", "Montoya", "Morales",
+    "Nakamura", "Ndlovu", "Nguyen", "Nilsson", "O'Connell", "Okonkwo",
+    "Olsen", "Ortiz", "Pashkov", "Patel", "Pereira", "Pham", "Quinn", "Ramirez",
+    "Reddy", "Reid", "Riordan", "Rose", "Roux", "Saito", "Salgado",
+    "Schulz", "Sharma", "Sullivan", "Suzuki", "Takahashi", "Thibault",
+    "Tokarev", "Tremblay", "Varga", "Vasquez", "Walsh", "Weber", "Wolff",
+    "Yamamoto", "Yilmaz", "Zielinski", "Zimmermann",]
 
 # Organisations quoted in bodies and subjects, and drawn by `PEOPLE_ROLES`.
 # The first five are the original cast's employers and must stay: `ABC Corp` and
 # `Northwind Supplies` are written into the fixed cast's `org` below.
-COMPANIES = [
+#
+# **An explicit list, not a slice.** These were `ORGS[5:24]` and `[24:]`, which
+# silently broke whenever an entry was added or moved. An org belongs to a pool because
+# it is listed there, not because of where it happens to sit in the array.
+ORGS = [
     "ABC Corp", "Northwind Supplies", "Talent Partners", "Coca-Cola", "Sox Tickets",
-    # data / infra
-    "Databricks", "Celestica", "Snowflake", "Confluent", "HashiCorp", "Datadog",
-    "Cloudflare", "Elastic", "MongoDB", "Neo4j",
-    # ai
-    "Anthropic", "OpenAI", "Hugging Face", "Weights & Biases", "Scale AI",
-    # platforms and tools, spelled the way they are said in a conversation
-    "n8n.io", "Hermes", "3D Force Graph", "Claude Code", "Zed", "Retool",
-    # government / public sector
-    "North Dakota DOT", "GSA", "National Archives", "NIST",
-]
-TECH_ORGS = COMPANIES[5:24]
-PUBLIC_ORGS = COMPANIES[24:]
+    # --- data and infrastructure ---------------------------------------------
+    "Databricks", "Snowflake", "Confluent", "HashiCorp", "Datadog", "Cloudflare",
+    "Elastic", "MongoDB", "Neo4j", "Cloudera", "Teradata", "Informatica", "Fivetran",
+    "dbt Labs", "Airbyte", "Denodo", "Starburst", "SingleStore", "CockroachDB",
+    "Timescale", "InfluxData", "Redis", "Cassandra", "Postgres", "ClickHouse",
+    "DuckDB", "Supabase", "PlanetScale", "Neon", "Crunchy Data", "Oracle", "SAP",
+    "IBM", "Microsoft", "Amazon Web Services", "Google Cloud", "Alibaba Cloud",
+    "DigitalOcean", "Hetzner", "OVH", "Akamai", "Fastly", "Vercel", "Netlify",
+    "Render", "Railway", "Fly.io", "Heroku",
+    # --- ai, ml and the current cast ------------------------------------------
+    "Anthropic", "OpenAI", "Hugging Face", "Weights & Biases", "Scale AI", "Mistral",
+    "Cohere", "DeepMind", "Stability AI", "Pinecone", "Weaviate", "Qdrant", "Chroma",
+    "LangChain", "LlamaIndex", "Modal Labs", "Together AI", "Groq", "Cerebras",
+    "SambaNova", "Graphcore", "Perplexity", "Midjourney", "Runway", "ElevenLabs",
+    # --- robotics and hardware ------------------------------------------------
+    "Boston Dynamics", "ABB", "KUKA", "Fanuc", "Universal Robots", "iRobot",
+    "Agility Robotics", "Figure AI", "1X Technologies", "Unitree", "Clearpath Robotics",
+    "NVIDIA", "AMD", "Intel", "Qualcomm", "Arm", "Broadcom", "TSMC", "ASML",
+    "Mellanox", "Cisco", "Juniper", "Arista", "Dell", "HP", "Lenovo", "Supermicro",
+    "Western Digital", "Seagate", "Toshiba Storage", "Micron", "Kingston", "NetApp",
+    "Pure Storage", "Netgear", "Synology", "QNAP", "Ubiquiti",
+    # --- software and services ------------------------------------------------
+    "Celestica", "Retool", "n8n.io", "Hermes", "Zed", "Atlassian", "GitLab", "GitHub",
+    "JetBrains", "Slack", "Zoom", "Notion", "Figma", "Asana", "Monday.com", "Airtable",
+    "Salesforce", "HubSpot", "Zendesk", "Freshworks", "ServiceNow", "Workday",
+    "Splunk", "Grafana Labs", "Sentry", "PagerDuty", "Twilio", "SendGrid", "Stripe",
+    "Adyen", "PayPal", "Square", "Wise", "Plaid", "Okta", "Auth0", "1Password",
+    "Cloudflare Workers", "Postman", "Insomnia",
+    # --- banking, finance and insurance ---------------------------------------
+    "HSBC", "Barclays", "Lloyds Bank", "NatWest", "Santander", "Deutsche Bank",
+    "BNP Paribas", "ING", "Swedbank", "Danske Bank", "Nordea", "UBS", "Credit Suisse",
+    "Citi", "Goldman Sachs", "Morgan Stanley", "JPMorgan", "BlackRock", "Vanguard",
+    "Fidelity", "Aviva", "Prudential", "Allianz", "AXA", "Zurich Insurance",
+    # --- government, public bodies, NGOs --------------------------------------
+    "North Dakota DOT", "GSA", "National Archives", "NIST", "NSW Health",
+    "Department of Transport", "Home Office", "HMRC", "Environment Agency",
+    "Public Health England", "NHS Digital", "Government Digital Service",
+    "UK Research and Innovation", "European Commission", "UNICEF", "Red Cross",
+    "Oxfam", "Greenpeace", "Amnesty International",
+    "Brotherhood of St Laurence", "Rotary Club", "Unite the Union", "City of Austin",
+    "Illawarra City Council", "Parish Council", "Housing Association",
+    # --- scholastic and research ---------------------------------------------
+    "University of Sydney", "University of Cambridge", "University of Oxford",
+    "MIT", "Stanford University", "ETH Zurich", "KAIST", "Tsinghua University",
+    "Indian Institute of Science", "University of Cape Town", "Trinity College Dublin",
+    "Max Planck Institute", "CERN", "Alan Turing Institute",
+    # --- online and community groups -----------------------------------------
+    "r/3d graphs", "r/dataisbeautiful", "Hacker News", "Lobsters", "Stack Overflow",
+    "Kaggle", "Anthropic Developer Discord", "Neo4j Community Forum",
+    "Bay Area Robotics Meetup", "North Dakota Dev Group", "Bismarck Chamber",]
 
-# Org pools `PEOPLE_ROLES` draws from when its second field is a key, not a name.
+# Org pools `PEOPLE_ROLES` draws an employer from. Membership is by LIST, not by slice.
+# `public` is anything state-funded or non-profit; `tech` is the commercial remainder.
+TECH_ORGS = [
+    o for o in ORGS
+    if o not in {
+        "North Dakota DOT", "GSA", "National Archives", "NIST", "NSW Health",
+        "Department of Transport", "Home Office", "HMRC", "Environment Agency",
+        "Public Health England", "NHS Digital", "Government Digital Service",
+        "UK Research and Innovation", "European Commission", "UNICEF", "Red Cross",
+        "Oxfam", "Greenpeace", "Amnesty International", "Médecins Sans Frontières",
+        "Brotherhood of St Laurence", "Rotary Club", "Unite the Union", "City of Austin",
+        "Illawarra City Council", "Parish Council", "Housing Association",
+        "University of Sydney", "University of Cambridge", "University of Oxford",
+        "MIT", "Stanford University", "ETH Zurich", "KAIST", "Tsinghua University",
+        "Indian Institute of Science", "University of Cape Town", "Trinity College Dublin",
+        "Max Planck Institute", "CERN", "Alan Turing Institute",
+        "r/3d graphs", "r/dataisbeautiful", "Hacker News", "Lobsters", "Stack Overflow",
+        "Kaggle", "Anthropic Developer Discord", "Neo4j Community Forum",
+        "Bay Area Robotics Meetup", "North Dakota Dev Group", "Bismarck Chamber",
+    }
+]
+PUBLIC_ORGS = [o for o in ORGS if o not in TECH_ORGS]
+
 ORG_POOLS = {"tech": TECH_ORGS, "public": PUBLIC_ORGS}
+
+# Products. A body says `the Databricks account`, `Coca-Cola`, `MongoDB` — things bought,
+# used or complained about, never organisations. This pool exists because no body could
+# name a product before it, so `Product` had no data to be tested with.
+PRODUCTS = [
+    # software and platforms
+    "Databricks Lakehouse", "Snowflake Cortex", "Tableau", "Power BI", "Looker",
+    "Excel", "Sheets", "Notion Calendar", "Slack Connect", "Teams", "Zoom Rooms",
+    "Jira", "Confluence", "GitHub Copilot", "VS Code", "Cursor", "Vim", "Emacs",
+    "Docker", "Kubernetes", "Terraform", "Ansible", "Prometheus", "Grafana",
+    "Kafka", "Spark", "Airflow", "dbt Core", "Temporal", "Pulsar", "Flink",
+    "Nginx", "Apache", "Redis Enterprise", "Elasticsearch", "OpenSearch",
+    # hardware and storage
+    "MacBook Pro", "ThinkPad", "Surface Pro", "Pixel", "iPhone", "Galaxy",
+    "Raspberry Pi", "Jetson Orin", "DGX Station", "Threadripper", "Xeon",
+    "EPYC", "Apple Silicon", "Radeon", "GeForce", "RTX", "Ryzen",
+    "NVMe", "SSD", "RAID", "NAS", "SAN", "Tape Library", "Cold Storage",
+    "Router", "Switch", "Patch Panel", "UPS", "PDU", "Rack",
+    # ai models and services
+    "Claude", "GPT-4", "Llama", "Mistral Large", "Gemini", "Whisper", "Stable Diffusion",
+    "Ollama", "vLLM", "gguf", "LoRA", "RAG", "embeddings", "vector store",
+    # consumer and retail
+    "Coca-Cola", "Diet Coke", "Sprite", "Fanta", "Powerade", "Monster Energy",
+    "Weetabix", "Marmite", "Irn-Bru", "Yorkshire Tea",
+    # services bought rather than built
+    "Support Plan", "Enterprise Licence", "Seat", "Credits", "Free Tier",
+    "Contract", "SLA", "Training Day", "Onboarding Pack", "Migration Kit",]
 
 # Places. Bodies say `N Dakota` on one platform and `North Dakota` on another, and
 # that is the point: the pool holds the abbreviated forms real people type.
@@ -98,7 +218,49 @@ PLACES = [
     "North Dakota", "N Dakota", "ND", "Fargo", "Bismarck",
     "Austin, TX", "Austin", "Denver", "Seattle", "Berlin", "Lisbon", "Toronto",
     "Cambridge, MA", "the Bay Area", "Chicago",
-]
+    # --- US --------------------------------------------------------------------
+    "New York", "Brooklyn", "Queens", "Boston", "Philadelphia", "Pittsburgh",
+    "Atlanta", "Miami", "Orlando", "Nashville", "Memphis", "New Orleans",
+    "Houston", "Dallas", "San Antonio", "Phoenix", "Tucson", "Las Vegas",
+    "Portland", "San Francisco", "San Jose", "Oakland", "Sacramento", "Los Angeles",
+    "San Diego", "Salt Lake City", "Boise", "Minneapolis", "St Paul", "Milwaukee",
+    "Detroit", "Cleveland", "Columbus", "Cincinnati", "St Louis", "Kansas City",
+    "Oklahoma City", "Omaha", "Des Moines", "Anchorage", "Honolulu", "Baltimore",
+    "Richmond", "Charlotte", "Raleigh", "Charleston", "Birmingham", "Louisville",
+    "North Carolina", "South Carolina", "West Virginia", "New Mexico", "Montana",
+    "Wyoming", "Vermont", "Maine", "Idaho", "Nebraska", "Iowa", "Arkansas",
+    # --- UK and Ireland --------------------------------------------------------
+    "London", "Manchester", "Birmingham UK", "Leeds", "Sheffield", "Bristol",
+    "Liverpool", "Newcastle", "Nottingham", "Leicester", "Coventry", "Southampton",
+    "Brighton", "Oxford", "Cambridge UK", "Norwich", "York", "Bath", "Cardiff",
+    "Swansea", "Edinburgh", "Glasgow", "Aberdeen", "Dundee", "Inverness",
+    "Belfast", "Derry", "Cork", "Dublin", "Galway", "Limerick",
+    # --- Europe ------------------------------------------------------------------
+    "Paris", "Lyon", "Marseille", "Bordeaux", "Madrid", "Barcelona", "Valencia",
+    "Seville", "Porto", "Rome", "Milan", "Naples", "Turin",
+    "Amsterdam", "Rotterdam", "Utrecht", "Brussels", "Antwerp", "Cologne",
+    "Munich", "Hamburg", "Frankfurt", "Stuttgart", "Dresden", "Leipzig",
+    "Vienna", "Zurich", "Geneva", "Basel", "Bern", "Copenhagen", "Aarhus",
+    "Stockholm", "Gothenburg", "Oslo", "Bergen", "Helsinki", "Tampere",
+    "Warsaw", "Krakow", "Wroclaw", "Prague", "Brno", "Bratislava", "Budapest",
+    "Ljubljana", "Zagreb", "Belgrade", "Sofia", "Bucharest", "Athens",
+    "Thessaloniki", "Istanbul", "Ankara", "Kyiv", "Lviv", "Tallinn", "Riga",
+    "Vilnius", "Reykjavik", "Luxembourg", "Valletta",
+    # --- rest of world ---------------------------------------------------------
+    "Vancouver", "Montreal", "Ottawa", "Calgary", "Edmonton", "Winnipeg",
+    "Halifax", "Mexico City", "Guadalajara", "Monterrey", "Bogota", "Medellin",
+    "Lima", "Santiago", "Buenos Aires", "Sao Paulo", "Rio de Janeiro", "Brasilia",
+    "Cairo", "Alexandria", "Lagos", "Abuja", "Accra", "Nairobi", "Kampala",
+    "Dar es Salaam", "Johannesburg", "Cape Town", "Durban", "Pretoria", "Casablanca",
+    "Tunis", "Algiers", "Addis Ababa", "Tel Aviv", "Amman", "Beirut", "Dubai",
+    "Abu Dhabi", "Doha", "Riyadh", "Kuwait City", "Tehran", "Karachi", "Lahore",
+    "Islamabad", "Delhi", "Mumbai", "Bangalore", "Hyderabad", "Chennai", "Pune",
+    "Kolkata", "Dhaka", "Colombo", "Kathmandu", "Singapore", "Kuala Lumpur",
+    "Jakarta", "Bangkok", "Hanoi", "Ho Chi Minh City", "Manila", "Taipei",
+    "Hong Kong", "Shanghai", "Beijing", "Shenzhen", "Guangzhou", "Chengdu",
+    "Seoul", "Busan", "Tokyo", "Osaka", "Kyoto", "Yokohama", "Sydney",
+    "Melbourne", "Brisbane", "Perth", "Adelaide", "Canberra", "Hobart",
+    "Auckland", "Wellington", "Christchurch",]
 
 # How a body refers to an organisation: `Celestica`, `celestica`, `Celstica`, or
 # `Celestica's`. The flattener has to survive all four; the writer picks per message.
@@ -176,6 +338,7 @@ class World:
     # once at build time, like `Person.labels`.
     body_orgs: dict[str, dict[str, str]] = field(default_factory=dict)
     body_places: dict[str, dict[str, str]] = field(default_factory=dict)
+    body_products: dict[str, dict[str, str]] = field(default_factory=dict)
     body_persons: dict[str, dict[str, str]] = field(default_factory=dict)
 
     # --- construction ------------------------------------------------------------
@@ -218,7 +381,7 @@ class World:
 
         used = {p.name for p in self.people}
         while len(self.people) < target:
-            name = f"{self.rng.choice(GIVEN)} {self.rng.choice(SURNAMES)}"
+            name = f"{self.rng.choice(FIRST_NAME)} {self.rng.choice(LAST_NAME)}"
             if name in used:
                 continue
             used.add(name)
@@ -454,6 +617,13 @@ class World:
             nicknamed = [p.name for p in self.people
                          if not p.is_fixed and fuzz.nicknamed(p.name)]
             sources.append((self.body_persons, nicknamed, ("nickname",)))
+        if "product" in kinds:
+            # Products had no body table at all before this, so `Product` could never be
+            # mentioned in a message and the app's Product kind had no data to test with.
+            # `hyphen` is product-only: `Coca Cola` / `Coca-Cola` is one product, and
+            # `canon` flattens the hyphen for products and keeps it for people.
+            sources.append((self.body_products, list(PRODUCTS),
+                            ("lower", "drop_letter", "swap")))
 
         def variant(canonical: str, modes: tuple[str, ...]) -> str | None:
             if modes == ("nickname",):
@@ -497,7 +667,8 @@ class World:
         Falls back to the canonical spelling when the entity was not chosen for fuzz,
         or when this platform has no variant for it.
         """
-        for table in (self.body_orgs, self.body_places, self.body_persons):
+        for table in (self.body_orgs, self.body_places, self.body_products,
+                      self.body_persons):
             variants = table.get(canonical)
             if variants and platform in variants:
                 return variants[platform]

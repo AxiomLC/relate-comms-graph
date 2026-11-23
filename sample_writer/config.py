@@ -146,7 +146,7 @@ FUZZ_BODIES_INTRA_PLATFORMS = 4
 FUZZ_BODIES_CROSS = 6
 
 # Which entity kinds may vary in a body. `Thing` is deliberately excluded.
-FUZZ_BODY_KINDS = ("org", "place", "person")
+FUZZ_BODY_KINDS = ("org", "place", "product", "person")
 
 # Abbreviation is places-only: `North Dakota` -> `N Dakota` reads well, while
 # `North Dakota DOT` -> `N Dakota DOT` would collide with the un-abbreviated form.
@@ -180,6 +180,7 @@ def fuzz_lines(world, summary: dict[str, int]) -> list[str]:
     """
     orgs = sum(len(v) for v in world.body_orgs.values())
     places = sum(len(v) for v in world.body_places.values())
+    products = sum(len(v) for v in world.body_products.values())
     persons = sum(len(v) for v in world.body_persons.values())
     return [
         # `intra` is per platform, so the denominator is the platform count times the
@@ -189,7 +190,7 @@ def fuzz_lines(world, summary: dict[str, int]) -> list[str]:
         f"intra={summary['intra']}/"
         f"{FUZZ_SENDERS_INTRA * len(FUZZ_SENDERS_INTRA_PLATFORMS)} "
         f"on {', '.join(FUZZ_SENDERS_INTRA_PLATFORMS)}",
-        f"fuzz: bodies org={orgs} place={places} person={persons} "
+        f"fuzz: bodies org={orgs} place={places} product={products} person={persons} "
         f"(kinds={','.join(FUZZ_BODY_KINDS)})",
         "fuzz: outlook is a copied .pst, so its bodies cannot be fuzzed",
     ]
