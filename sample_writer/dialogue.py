@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import random
 
-from .world import ORG_FORMS, PLACES, TOPIC_WORDS, Person, World
+from .world import ORG_FORMS, PLACES, Person, World
 
 # ---------------------------------------------------------------- subject subjects
 #
@@ -164,56 +164,38 @@ def _fill(template: str, topics: list[str], rng: random.Random,
 
 
 def entity_line(world: World, platform: str, rng: random.Random,
-                *, require_own: bool = False) -> str | None:
-    """A body sentence naming an org, place or person — or None if none is available.
+                *, avoid: set[str] | None = None) -> str | None:
+    """A body sentence naming an org, place or product — or None if none is available.
 
-    The entity is spelled as `platform` spells it (`world.body_entity`). Entities that
-    actually carry a variant for `platform` are preferred, because drawing uniformly
-    from every entity made a variant land on its own platform rarely enough that the
-    knob's output could not be observed — measured at 0 of 6 variants before this.
+    The choice is **sampled**, not allocated. `world.body_entities` says which items
+    *may* be named on `platform` and how many times they are allowed to be; this picks
+    one at random. An item therefore may never be named at all — that is the
+    `mention_count: 1` tail by design, and it is why nothing here has to promise
+    exactly-once delivery.
 
-    `require_own=True` returns only an entity with a spelling of its own on this
-    platform, and None if there is none. A caller that needs the guarantee (the first
-    body of a thread) uses that so a decided variant is never left unwritten.
+    `avoid` keeps an item out of a body that already names it, so a "single" item can
+    still land twice by accident without the duplicate looking like a bug in the writer.
     """
+    avoid = avoid or set()
     pools: list[tuple[str, list[str], list[str]]] = []
-    if world.body_orgs:
-        pools.append(("org", sorted(world.body_orgs), ORG_LINES))
-    if world.body_places:
-        pools.append(("place", sorted(world.body_places), PLACE_LINES))
-    if world.body_products:
-        pools.append(("product", sorted(world.body_products), PRODUCT_LINES))
-    if world.body_persons:
-        pools.append(("person", sorted(world.body_persons), PERSON_LINES))
+    for kind, lines in (("org", ORG_LINES), ("place", PLACE_LINES),
+                        ("product", PRODUCT_LINES)):
+        table = world.body_entities.get(kind)
+        if not table:
+            continue
+        names = [name for name, plan in table.items()
+                 if platform in plan.platforms and name not in avoid]
+        if names:
+            pools.append((kind, names, lines))
+    # `person` is documented-but-unwired (`writer_major_edit.md` §8), so there is no
+    # table to read. Left out rather than half-supported.
     if not pools:
         return None
 
-    def has_variant(kind: str, canonical: str) -> bool:
-        table = {"org": world.body_orgs, "place": world.body_places,
-                 "product": world.body_products,
-                 "person": world.body_persons}[kind]
-        return platform in table.get(canonical, {})
-
-    # Prefer an entity that has a spelling of its own on this platform.
-    preferred = [(kind, canonical, lines) for kind, canon, lines in pools
-                 for canonical in canon if has_variant(kind, canonical)]
-    if require_own:
-        if not preferred:
-            return None
-        kind, canonical, lines = rng.choice(preferred)
-    elif preferred and rng.random() < 0.75:
-        kind, canonical, lines = rng.choice(preferred)
-    else:
-        kind, canon, lines = rng.choice(pools)
-        canonical = rng.choice(canon)
-
-    if kind == "org":
-        return rng.choice(lines).format(org=world.body_entity(canonical, platform))
-    if kind == "place":
-        return rng.choice(lines).format(place=world.body_entity(canonical, platform))
-    if kind == "product":
-        return rng.choice(lines).format(product=world.body_entity(canonical, platform))
-    return rng.choice(lines).format(person=world.body_entity(canonical, platform))
+    kind, names, lines = rng.choice(pools)
+    canonical = rng.choice(names)
+    spelling = world.body_entity(canonical, platform, kind)
+    return rng.choice(lines).format(**{kind: spelling})
 
 
 def _is_question(text: str) -> bool:
@@ -255,15 +237,13 @@ def turn_pairs(world: World, person: Person, count: int, rng: random.Random,
         out.append((owner_turn, _fill(rng.choice(OPENERS), topics, rng)))
         owner_turn = not owner_turn
 
-    # The opening rows of every thread carry entities that have a spelling of their
-    # own on this platform, until none are left. Without this guarantee a decided
-    # variant could go unwritten, which made the fuzz knob unobservable on a platform
-    # (`Tom Ross` was chosen for linkedin and never appeared). Rows 2-4 rather than 1:
-    # at the higher quotas there are more entities per platform than one row can hold.
+    # The opening rows of every thread carry an entity, so a thread always has one
+    # before the random mixing starts. Rows 2-4 rather than 1: a thread of two messages
+    # should not be entirely entity names.
     for _ in range(3):
         if len(out) >= count:
             break
-        forced = entity_line(world, platform, rng, require_own=True)
+        forced = entity_line(world, platform, rng)
         if not forced:
             break
         out.append((owner_turn, forced))
@@ -396,11 +376,10 @@ def org_mention(org: str, rng: random.Random) -> str:
         return org.lower()
     if form == "possessive":
         return f"{org}'s"
-    if form == "drop_letter":
+    if form == "drop_letter" and len(org) > 5:
         # Drop one interior letter, never the first or last: `Celestica` -> `Celstica`.
-        if len(org) > 5:
-            cut = rng.randint(2, len(org) - 3)
-            return org[:cut] + org[cut + 1:]
+        cut = rng.randint(2, len(org) - 3)
+        return org[:cut] + org[cut + 1:]
     return org
 
 

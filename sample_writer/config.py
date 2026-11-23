@@ -37,9 +37,6 @@ START = "2024-01-01"
 END = "2026-11-01"
 
 CORRESPONDENTS = (60, 120)       # (min, max) random cast size
-CROSS_PLATFORM_MIN = 0.05        # 8-12% of the random cast appears on >1 platform
-CROSS_PLATFORM_MAX = 0.08
-BODY_OVERLAP_MAX = 0.05          # body mentions stay rare and never make edges
 
 # --------------------------------------------------------------- message volume
 
@@ -116,45 +113,44 @@ VARIANTS = {
     "outlook": ("copy",),
 }
 
-# ----------------------------------------------------------- body & label fuzz knobs
+# ------------------------------------------------------------------- fuzz knobs
 #
-# Real downloads name the same organisation, place and person differently, on
-# different platforms and even inside one export. These knobs say how many of those
-# mismatches the build must contain. 0 disables a shape; the contract check reports a
-# disabled shape rather than silently dropping it.
-#
-# **The Owner is never fuzzed.** The owner is the app's user and every writer emits
-# their one exact spelling. Only the correspondent label and message bodies vary.
+# Each percentage is a share of the WHOLE population of that kind, rolled
+# independently. "Fuzzy or otherwise", "multi-platform or not" — a roll never
+# conditions on an earlier one. `writer_major_edit.md` §2-§5 has the reasoning;
+# **The Owner is never fuzzed.**
 
-# --- sender fields: the correspondent label
-# One person, two spellings of their name. `FUZZ_SENDERS_INTRA` is how many such
-# people appear with two spellings *inside one export*; the platforms it uses are
-# pinned below so the build is predictable, and `FUZZ_SENDER_INTRA_RATE` is the
-# fallback when you would rather let the seed choose (roughly 15-20% of platforms).
+# Correspondents: sender display names.
+CORR_FUZZY = 0.07            # share spelled one alternate way (uniform per variant)
+CORR_MULTI_PLATFORM = 0.08   # share on 2+ platforms; bounds from PLATFORMS
+
+# Bodies: Place, Organization, Product.
+BODY_FUZZY = 0.15            # raised from .07: only ~1/3 of items reach a body
+BODY_MULTI_MENTION = 0.08    # named 2+ times on ONE platform
+BODY_MULTI_PLATFORM = 0.04   # on 2+ platforms; mention count independent of this
+MENTIONS_MULTI = (2, 4)      # (min, max) mentions for a multi-mention item
+
+# Upstream spelling mismatches. `FUZZ_SENDERS_INTRA` is a shape of its own — one
+# sender, two spellings inside ONE export — and is not implied by the axes above.
 FUZZ_SENDERS_INTRA = 4
 FUZZ_SENDERS_INTRA_PLATFORMS = ("whatsapp", "telegram", "messenger")
-FUZZ_SENDER_INTRA_RATE = 0.15
-# One person, two spellings across two different platforms (`Chris` / `Christopher`).
-FUZZ_SENDERS_CROSS = 4
 
-# --- message bodies: organisation, place and person names
-# Inside one platform's export. `FUZZ_BODIES_INTRA_PLATFORMS` is roughly half the
-# written platforms at the default 7.
-FUZZ_BODIES_INTRA = 8
-FUZZ_BODIES_INTRA_PLATFORMS = 4
-# The same entity spelled differently across two platforms (`N Dakota` / `North Dakota`).
-FUZZ_BODIES_CROSS = 6
-
-# Which entity kinds may vary in a body. `Thing` is deliberately excluded.
+# Which entity kinds a body may name. `person` stays on the list but is documented,
+# NOT wired: a person drawn from a body competes with the Correspondent already on
+# the thread (`writer_major_edit.md` §8).
 FUZZ_BODY_KINDS = ("org", "place", "product", "person")
 
-# Abbreviation is places-only: `North Dakota` -> `N Dakota` reads well, while
-# `North Dakota DOT` -> `N Dakota DOT` would collide with the un-abbreviated form.
-FUZZ_ORG_ABBREV = False
-
-# Sentence count per generated body. A thread mixes 1-sentence acknowledgements with
-# 3-sentence paragraphs, which is what real exports look like.
-BODY_SENTENCES = (1, 3)
+# The fuzzy variants per kind. Uniform: each is 1/len(list), so the row is 100% by
+# construction and there is no weight table to keep in sync (§5).
+FUZZ_VARIANTS = {
+    # `acronym` and `legal_suffix` are meaningless for a person's name.
+    "corr": ["lower", "upper", "drop_letter", "swap", "nickname", "credentials"],
+    "org": ["lower", "upper", "drop_letter", "swap", "legal_suffix", "acronym"],
+    "place": ["lower", "upper", "drop_letter", "swap", "abbrev", "postal_code",
+              "region_tail"],
+    # Narrowest list: no acronym, no postal code, no credentials.
+    "product": ["lower", "upper", "drop_letter", "swap", "hyphen"],
+}
 
 # --------------------------------------------------------------- thread timing
 #
@@ -172,28 +168,34 @@ TIMING_SPAN_DAYS = 730        # how far after `start` the last burst may land (~
 BODY_SENTENCES_WEIGHTS = {1: 55, 2: 30, 3: 15}
 
 
-def fuzz_lines(world, summary: dict[str, int]) -> list[str]:
-    """The build log's one-line report of what the fuzz knobs produced.
+def fuzz_lines(world, summary: dict[str, object]) -> list[str]:
+    """The build log's report of what the fuzz knobs produced.
 
     Printed rather than silent so a knob set to 0, or one the cast was too small to
     satisfy, is visible in the run output instead of being discovered from the data.
+    Each line gives the share **requested** beside the count **achieved**, because at
+    these defaults only about a third of the items flagged ever reach a body.
     """
-    orgs = sum(len(v) for v in world.body_orgs.values())
-    places = sum(len(v) for v in world.body_places.values())
-    products = sum(len(v) for v in world.body_products.values())
-    persons = sum(len(v) for v in world.body_persons.values())
-    return [
-        # `intra` is per platform, so the denominator is the platform count times the
-        # per-platform quota. Printed that way rather than as `4/2`, which read as an
-        # over-run when it was exactly on target.
-        f"fuzz: senders cross={summary['cross']}/{FUZZ_SENDERS_CROSS} "
-        f"intra={summary['intra']}/"
-        f"{FUZZ_SENDERS_INTRA * len(FUZZ_SENDERS_INTRA_PLATFORMS)} "
-        f"on {', '.join(FUZZ_SENDERS_INTRA_PLATFORMS)}",
-        f"fuzz: bodies org={orgs} place={places} product={products} person={persons} "
-        f"(kinds={','.join(FUZZ_BODY_KINDS)})",
-        "fuzz: outlook is a copied .pst, so its bodies cannot be fuzzed",
+    total = summary.get("corr_total") or 1
+    lines = [
+        (f"fuzz: corr fuzzy={summary.get('corr_fuzzy', 0)}/{CORR_FUZZY:.0%} "
+         f"multi-platform={summary.get('corr_multi_platform', 0)}/"
+         f"{CORR_MULTI_PLATFORM:.0%} of {total}"),
+        (f"fuzz: senders intra={summary.get('intra', 0)}/"
+         f"{FUZZ_SENDERS_INTRA * len(FUZZ_SENDERS_INTRA_PLATFORMS)} "
+         f"on {', '.join(FUZZ_SENDERS_INTRA_PLATFORMS)}"),
     ]
+    for kind in ("org", "place", "product", "person"):
+        stats = summary.get(kind)
+        if not isinstance(stats, dict):
+            continue
+        lines.append(
+            f"fuzz: bodies {kind:<8} items={stats['items']} "
+            f"fuzzy={stats['fuzzy']}/{BODY_FUZZY:.0%} "
+            f"mention={stats['multi_mention']}/{BODY_MULTI_MENTION:.0%} "
+            f"platform={stats['multi_platform']}/{BODY_MULTI_PLATFORM:.0%}")
+    lines.append("fuzz: outlook is a copied .pst, so its bodies cannot be fuzzed")
+    return lines
 
 # ------------------------------------------------------------------ flavour toggles
 

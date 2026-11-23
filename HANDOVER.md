@@ -10,7 +10,7 @@ Durable facts: [`TECHREADME.md`](TECHREADME.md). UI and visual facts:
 
 ## Where it stands
 
-`pytest tests -q` → **434 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
+`pytest tests -q` → **441 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
 
 **Live store: rebuilt 2026-11-22** (after a truncate, then an ingest of the whole spool).
 **2,085 messages · 177 threads · 98 correspondents · 21 `Place` nodes (8 `:Merged`).**
@@ -56,6 +56,30 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 ---
 
 ## Next
+
+### 0. `sample_writer` now generates Product mentions the app cannot read
+
+**2026-11-23, raised while building the fuzz model.** The generator emits `Product`
+mentions in message bodies and follows all three distribution knobs per kind. The app's
+extraction does **not** produce them, in two independent places:
+
+1. **`extract.py` emits no `product` mention at all** — there is no `PRODUCT_LABELS`,
+   no product dictionary, nothing in `extract()`. A body naming `Coca-Cola` yields a
+   `GPE` or `ORG` span, or nothing (`Enrichment` §2's accepted false-positive note).
+2. **`writer._ENTITY_WRITE_KINDS` is `{place, organization}`** — even a mention that
+existed would be filtered out by `write_entities()`.
+
+So the generator is ahead of the pipeline, which is the right order, but **Product-node
+testing cannot start** until both are addressed. Rough shape of the work: a
+`PRODUCT_LABELS`/`PRODUCT_DICTIONARY` pair alongside the org ones, `product` added to
+`_ENTITY_WRITE_KINDS`, and a decision on whether `canon(kind="product")` suffices to
+fold `Coca-Cola`/`Coca Cola` against the extractor's output. Sized for a half day, not a
+phase.
+
+**Watch for:** ~10 of the 100 `PRODUCTS` are common nouns (`Contract`, `Seat`, `Credits`,
+`SLA`, `Rack`, `embeddings`). spaCy will not propose them as product spans and `canon`
+cannot know they are generic, so they are decoration rather than population — their
+absence from the store is not a bug.
 
 ### 1. The graph as a portable module
 
@@ -417,6 +441,21 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
 
 ## Done — one line each
 
+- **2026-11-23** — **`sample_writer` fuzz rebuilt on three independent axes.** Spelling /
+  platforms / mentions now roll separately per item, so all four body combinations exist
+  (`single×1`, `single×N`, `multi×1`, `multi×N`). Knobs are **shares, not counts**:
+  `CORR_FUZZY` 7%, `CORR_MULTI_PLATFORM` 8%, `BODY_FUZZY` 15%, `BODY_MULTI_MENTION` 8%,
+  `BODY_MULTI_PLATFORM` 4%, `MENTIONS_MULTI` (2,4). `FUZZ_VARIANTS` is a uniform per-kind
+  list — no weight table, `1/len(list)` by construction. New variants: `legal_suffix`,
+  `postal_code`, `region_tail`, `hyphen`, `credentials`, `acronym`. One generic
+  `World.body_entities[kind][name] -> EntityPlan` replaces the four per-kind tables.
+  **Shares are not promises:** ~1 body in 12 names an entity, so a flagged item may never
+  be written — that is the `mention_count: 1` tail, and it is why `BODY_FUZZY` is 15%.
+  Two bugs fixed on the way: `abbrev` abbreviated `St`/`Port`/`Saint`, which `canon`
+  expands to `south`/`north` and so minted **different places** (`St Paul` → `south paul`);
+  and `_assign_labels()` kept its own hardcoded platform list, ignoring `config.PLATFORMS`.
+  Suite **441 passed, 2 skipped**. Design record: `sample_writer/writer_major_edit.md`
+  (superseded); what the generator does now: `sample_writer/README.md`.
 - **2026-11-22** — **Organization extraction built** (`canon` article fix, `ORG_LABELS`,
   `ORG_DICTIONARY` 26 names, `TRUNCATION_TAILS`, kind-aware `writer.write_entities`,
   `Organization` in `DRAWABLE_NODE_TYPES`/`EDGE_TYPES`/`nodeTypes`/`nodeLabels`). **The

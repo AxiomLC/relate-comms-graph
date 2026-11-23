@@ -182,12 +182,28 @@ output.
 
 Fixed cast, always present: `Mark Jones` (Owner, on every platform), `Mary Jones`,
 `Mary Olver`, `Brandon Steinhart`, `ABC Corp`. The rest are generated names, and only
-**8–12%** of them appear on more than one platform — deliberately sparse, so the graph
-stays honestly disconnected until cross-platform resolution is wired.
+`CORR_MULTI_PLATFORM` (**8%**) of them appear on more than one platform — deliberately
+sparse, so the graph stays honestly disconnected until cross-platform resolution is
+wired.
 
 Bodies are templated, not LLM-written: `dialogue.py` holds topic pools (dog, baseball,
 Coca-Cola, Mary Jones, the ABC Corp contract, invoices) plus a Subject→Predicate→Result
 sentence builder and a sign-off pool. Offline, deterministic, milliseconds.
+
+### Who a body may name
+
+Four pools, in `world.py`, all large on purpose — a wide pool is what gives the app a
+realistic `mention_count` distribution without an extra knob.
+
+| Pool | Size | Named in a body by |
+|---|---|---|
+| `ORGS` | 232 | `ORG_LINES` |
+| `PLACES` | 254 | `PLACE_LINES` |
+| `PRODUCTS` | 100 | `PRODUCT_LINES` |
+| `FIRST_NAME` / `LAST_NAME` | 151 / 133 | the Correspondent cast |
+
+`PRODUCTS` exists so `Product` has generated data to be tested with; a body says
+`we're still on {product}` or `the {product} renewal is due`, never a company.
 
 ---
 
@@ -195,35 +211,101 @@ sentence builder and a sign-off pool. Offline, deterministic, milliseconds.
 
 Real downloads disagree with each other about how a name is spelled, and a flatten pass
 that has never seen a disagreement cannot be trusted. The build therefore manufactures
-them, under knobs in `config.py`:
+them.
 
-| Knob | What it produces |
+### The model: three independent dice
+
+Every item rolls three dice that **do not condition on each other**. The percentage
+applies to the *whole population of that kind* — "fuzzy or otherwise", "multi-mention or
+not" — so every combination below can occur.
+
+```
+axis A  SPELLING    normal | fuzzy (one variant, uniform)
+axis B  PLATFORMS   1 | 2..len(PLATFORMS)
+axis C  MENTIONS    1 | 2-4, on ONE platform only   [body kinds]
+```
+
+| Kind | Knob | Default | What one item does |
+|---|---|---|---|
+| Correspondent | `CORR_FUZZY` | 7% | spelled one alternate way, uniform over 6 variants |
+| Correspondent | `CORR_MULTI_PLATFORM` | 8% | appears on 2+ platforms |
+| Place / Org / Product | `BODY_FUZZY` | 15% | one alternate spelling, uniform over its 7 / 6 / 5 variants |
+| Place / Org / Product | `BODY_MULTI_MENTION` | 8% | named 2-4x on **one** platform |
+| Place / Org / Product | `BODY_MULTI_PLATFORM` | 4% | on 2+ platforms, whatever its mention count |
+
+Independence means all four body combinations exist, roughly:
+
+| Combination | Share |
 |---|---|
-| `FUZZ_SENDERS_CROSS` | one person, two platform spellings — `Chris Fowley` on WhatsApp, `Christopher Fowley` on Telegram |
-| `FUZZ_SENDERS_INTRA` | two spellings of one person inside a single export |
-| `FUZZ_BODIES_CROSS` | an entity spelled differently on two platforms — `North Dakota` / `N Dakota` |
-| `FUZZ_BODIES_INTRA` | several spellings inside one export — `Celestica` / `celestica` / `Celstica` |
-| `FUZZ_BODY_KINDS` | which kinds may vary: `org`, `place`, `person` (never `thing`) |
+| single mention, single platform | 84% |
+| multi-mention only (one platform) | 7% |
+| single mention, multi-platform | 4% |
+| multi-mention and multi-platform | 0.3% |
+
+**Multi-mention picks exactly one platform.** A second platform with mentions is what
+*multi-platform* means, so letting each platform draw its own count would collapse the
+two axes into one.
+
+### Shares, not promises
+
+A body names an entity in only about **1 in 12 messages** — roughly 202 slots in a
+2,500-message world, against 586 items in the pools. An item that never lands in a body
+writes nothing.
+
+That is deliberate, and it is where the `mention_count: 1` tail comes from. It is also
+why `BODY_FUZZY` is **15% and not 7%**: only about a third of the items a share flags
+are ever written, so 15% yields roughly 30 fuzzy spellings actually reaching the corpus.
+No allocation pass exists, and none is wanted — `entity_line()` samples freely, and an
+accidental repeat mention merely adds to `mention_count`.
+
+### Variants — uniform, no weight table
+
+Each kind declares a list; the dice picks uniformly, so each variant is `1/len(list)`
+and the row is 100% by construction. There is no weight dict that can fail to sum.
+
+| Kind | Variants |
+|---|---|
+| `corr` | `lower`, `upper`, `drop_letter`, `swap`, `nickname`, `credentials` |
+| `org` | `lower`, `upper`, `drop_letter`, `swap`, `legal_suffix`, `acronym` |
+| `place` | `lower`, `upper`, `drop_letter`, `swap`, `abbrev`, `postal_code`, `region_tail` |
+| `product` | `lower`, `upper`, `drop_letter`, `swap`, `hyphen` |
+
+A variant that cannot apply does not consume the item's share: `fuzz.pick_variant()`
+walks a shuffled copy and takes the first that changes something, reporting only if the
+whole list fails.
+
+**Two variants are not folds, by design.** `acronym` (`IBM` ≠ `International Business
+Machines`) and `drop_letter`/`swap` (`Northwnd` ≠ `Northwind`) deliberately produce a
+*second* key — the first because an initialism is not always the same identity, the
+second because a mistyping is what RapidFuzz candidate lines are for. Every other
+variant converges in `canon` and is asserted to.
 
 **The Owner is never fuzzed.** `Mark Jones` is emitted byte-identically by every writer;
 a fuzzed owner would break the one invariant the app's ingestion depends on.
 
-How it is produced matters: almost none of it is a list of variants. `fuzz.py` derives
-each spelling from the string plus a seeded index — case, possessive, a dropped letter,
-a transposition, an abbreviation (`North Dakota` → `N Dakota`). The one genuine table is
-`NICKNAMES` (`Chris`↔`Christopher`, `Bob`↔`Robert`), because a nickname is a fact about
-English rather than a transformation of the letters. `abbrev` is places-only.
+**`Person` is not generated.** A person extracted from a body competes with the
+Correspondent already on the thread, so the kind is listed in `FUZZ_BODY_KINDS` but has
+no table and no variants — it is documented, not wired.
+
+**`abbrev` only touches compass words.** `North Dakota` → `N Dakota` folds; `St Paul` →
+`S Paul` does not, because `canon` expands a leading `n`/`s`/`e`/`w` to
+`north`/`south`/`east`/`west` and nothing else — so abbreviating `St` would silently
+produce a *different place*.
 
 The result is reported every run, so a knob that produces nothing is visible rather than
 silent:
 
 ```
-fuzz: senders cross=2/2 intra=4/4 on whatsapp, telegram
-fuzz: bodies org=13 place=2 person=8 (kinds=org,place,person)
-fuzz: outlook is a copied .pst, so its bodies cannot be fuzzed
+fuzz: corr fuzzy=17/7% multi-platform=6/8% of 71
+fuzz: senders intra=17/12 on whatsapp, telegram, messenger
+fuzz: bodies org      items=232 fuzzy=35/15% mention=11/8% platform=13/4%
+fuzz: bodies place    items=254 fuzzy=43/15% mention=23/8% platform=10/4%
+fuzz: bodies product  items=100 fuzzy=17/15% mention=8/8% platform=6/4%
 ```
 
-Outlook is the one platform outside the fuzz: a `.pst` cannot be synthesised (see above).
+Outlook is the one platform outside the fuzz: a `.pst` cannot be synthesised (see above),
+so `World.cast_platforms()` excludes it rather than spending a dice on a platform that
+can never carry the result.
 
 ---
 

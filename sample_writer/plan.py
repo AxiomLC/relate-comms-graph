@@ -529,23 +529,29 @@ def assert_contract(plans: list[Plan], *, huge: bool = False,
 
     # Fuzz knobs. A knob that says 2 and silently produces 0 is the failure this
     # generator exists to prevent, so each is checked against what the world holds.
+    # The shares are dice, so the tolerance is wide — what is asserted is that the shape
+    # is genuinely exercised, not that it hit its percentage exactly.
     if world is not None:
         summary = world.fuzz_summary()
-        if config.FUZZ_SENDERS_CROSS and summary["cross"] < config.FUZZ_SENDERS_CROSS:
+        if config.CORR_FUZZY and not summary["corr_fuzzy"]:
+            problems.append(f"fuzz: no fuzzy correspondent spellings (CORR_FUZZY={config.CORR_FUZZY})")
+        if config.CORR_MULTI_PLATFORM and not summary["corr_multi_platform"]:
             problems.append(
-                f"fuzz: {summary['cross']} cross-platform sender pairs, "
-                f"FUZZ_SENDERS_CROSS={config.FUZZ_SENDERS_CROSS}")
-        if config.FUZZ_SENDERS_INTRA and summary["intra"] < config.FUZZ_SENDERS_INTRA:
+                f"fuzz: no multi-platform correspondents "
+                f"(CORR_MULTI_PLATFORM={config.CORR_MULTI_PLATFORM})")
+        if config.FUZZ_SENDERS_INTRA and not summary["intra"]:
             problems.append(
-                f"fuzz: {summary['intra']} intra-platform sender spellings, "
-                f"FUZZ_SENDERS_INTRA={config.FUZZ_SENDERS_INTRA}")
-        for label, table, knob in (
-                ("org", world.body_orgs, config.FUZZ_BODIES_INTRA),
-                ("place", world.body_places, config.FUZZ_BODIES_INTRA),
-                ("person", world.body_persons, config.FUZZ_BODIES_INTRA)):
-            if knob and not table:
-                problems.append(f"fuzz: no {label} body variants (FUZZ_BODY_KINDS)")
+                f"fuzz: no intra-platform sender spellings "
+                f"(FUZZ_SENDERS_INTRA={config.FUZZ_SENDERS_INTRA})")
+        for kind in ("org", "place", "product"):
+            stats = summary.get(kind)
+            if not isinstance(stats, dict):
+                problems.append(f"fuzz: no {kind} body items at all (FUZZ_BODY_KINDS)")
+                continue
+            if config.BODY_FUZZY and not stats["fuzzy"]:
+                problems.append(f"fuzz: no fuzzy {kind} names (BODY_FUZZY={config.BODY_FUZZY})")
         notes.extend(config.fuzz_lines(world, summary))
+        notes.extend(world.fuzz_misses)
 
     if problems:
         raise AssertionError("UNDESIRABLES §12 not satisfied:\n  " + "\n  ".join(problems))

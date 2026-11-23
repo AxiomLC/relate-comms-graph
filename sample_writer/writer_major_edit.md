@@ -1,11 +1,22 @@
 # sample_writer — major edit
 
-**Status: part one is built.** The static lists and the `PRODUCTS` wiring are done and
-green (§9). The distribution model — the `BODY_*` knobs and `FUZZ_VARIANTS` (§2–§6) — is
-still **spec only**: `config.py` keeps the old `FUZZ_BODIES_*` knobs.
+> ## ⚠ SUPERSEDED — 2026-11-23
+>
+> **This document is history. It is not a plan and not a description of the code.**
+> The whole edit landed: the three independent axes, `FUZZ_VARIANTS`, the expanded
+> static lists, `Product` bodies, and the generic `body_entities` table. The suite is
+> **441 passed, 2 skipped**. For what the generator does now, read
+> [`README.md`](README.md) — it is the description of the code, not of an intention.
+>
+> Kept only because §2 (why the two dice cannot live in one function) and §5 (why
+> uniform, not weighted) record reasoning that took measurement to reach, and because
+> the `canon`-coverage table in §1 is the list of what this corpus does and does not
+> exercise.
 
-That split is deliberate. Landing the lists first means the remaining work changes
-behaviour, not data, and `git revert` on the knob change cannot cost the corpus.
+**Status: BUILT, 2026-11-23.** Everything below describes work that is now in the
+code, including the distribution model — `BODY_FUZZY`, `BODY_MULTI_MENTION`,
+`BODY_MULTI_PLATFORM`, `CORR_FUZZY`, `CORR_MULTI_PLATFORM`, `MENTIONS_MULTI` and
+`FUZZ_VARIANTS` are all live in `config.py`.
 
 This is the design for one coherent change to `sample_writer/`, in service of a single
 question:
@@ -28,11 +39,39 @@ gap.
 | App stage | Function | What the generator must supply | Status |
 |---|---|---|---|
 | **Detect** | `ingest.detect_platform()`, `discover()`, `peel()` | a dropped folder that is itself an export, or holds exports | ✅ built (Telegram `DataExport` / `ChatExport` / `Telegram Desktop`) |
-| **Extract** | `extract.extract()`, `org.Labels`, `ORG_LABELS`, `PLACE_LABELS`, `ORG_DICTIONARY`, `TRUNCATION_TAILS`, `looks_like_document()` | bodies naming real orgs, places, products | ✅ 232 orgs / 254 places / 100 products, all mentionable |
+| **Extract** | `extract.extract()`, `org.Labels`, `ORG_LABELS`, `PLACE_LABELS`, `ORG_DICTIONARY`, `TRUNCATION_TAILS`, `looks_like_document()` | bodies naming real orgs, places, products | ⚠️ 232 orgs / 254 places / 100 products, but only **22 orgs and 92 places** are in the extractor's own dictionaries — the rest depend on `en_core_web_sm`, which HANDOVER §2 documents as unreliable for exactly these names (`Snowflake`, `Retool`) |
 | **Flatten** | `canon.canonical(kind=…)` — **13 rules** | one body form per rule | ❌ **5 of 13 rules never generated** |
 | **Write** | `writer.write_entities()` → `_write_one_kind()`, `_entity_cypher()`, `_reconcile()` | single-, multi- and cross-platform entities of every kind | ⚠️ products exist now; the distribution is still uncontrolled |
 | **Merge** | `link._link_entity()`, `ENTITY_LABELS` | the same entity on 2–7 platforms | ⚠️ emergent, not controlled |
-| **Serve/view** | `tools.graph_slice()`, `GraphCanvas`'s `hideSingleMentions` | a believable long tail at `mention_count: 1` | ⚠️ a long tail now exists from pool size; not yet *controlled* |
+| **Serve/view** | `tools.graph_slice()`, `GraphCanvas`'s `hideSingleMentions` | a believable long tail at `mention_count: 1` | ⚠️ a long tail exists from pool size; not yet *controlled* |
+
+### Slot supply — measured, not assumed
+
+A body names an entity in roughly **202 of 2,547 messages** (1:1 bodies × 7%, plus
+group rows × 33%), against **586 body items** in the pools. So only about a third of
+any pool ever reaches a message.
+
+**That is the model, not a bug.** Mentions are not promised one-per-item; an item
+that never lands in a body simply yields no node. This is what produces a believable
+`mention_count: 1` tail for free, and it is why the edit needs no allocation
+bookkeeping: `entity_line()` keeps sampling at random and any accidental repeat
+mention merely adds to `mention_count`.
+
+Verified at the default seed:
+
+| Platform | Threads | Messages |
+|---|---|---|
+| email | 27 | 172 |
+| telegram | 32 | 892 |
+| whatsapp | 30 | 183 |
+| messenger | 34 | 874 |
+| linkedin | 29 | 140 |
+| sms | 29 | 150 |
+| outlook | 28 | 136 |
+| **total** | **209** | **2,547** |
+
+`outlook` is excluded from the fuzz (`.pst` is copy-only), so its 136 messages are
+entity slots that can never carry a variant.
 
 ### The finding that motivates the whole edit
 
@@ -130,12 +169,35 @@ The mention decision is *made* in the world (so it is deterministic and inspecta
 `fuzz_summary()` can report it) and *honoured* in the dialogue layer, which consumes the
 plan rather than re-rolling.
 
+### The three rolls, precisely
+
+The denominator for **every** roll is the whole population of that kind — "fuzzy or
+otherwise", "multi-mention or not". A roll never conditions on a previous one, which is
+what makes the four combinations below independent.
+
+| Roll | Dice | Notes |
+|---|---|---|
+| fuzzy | uniform over `FUZZ_VARIANTS[kind]` | §6's retry loop; one variant per item |
+| multi-mention | `MENTIONS_MULTI = (2, 4)` times | on **exactly one** platform, drawn equal-weight from the ingested set |
+| multi-platform | `randint(2, len(PLATFORMS))` platforms | each platform then gets the item's mention count |
+
+**Multi-mention picks ONE platform, never several.** A second platform with mentions is
+what *multi-platform* means, so allowing it here would double-count the shape. The two
+rolls are separate for exactly this reason.
+
+**Mentions are not promised.** An item's mentions are *available* to `entity_line()`,
+not reserved. If the dice give an item three mentions on Telegram but no Telegram body
+names it, nothing is written and the item yields no node. This is deliberate: it is what
+produces a `mention_count: 1` tail without an allocation pass, and it is why the
+percentage knobs need only produce *some* instances rather than exact counts.
+
 Per-entity shape stored by the world:
 
 ```python
 body_entities[kind][name] = {
-    "platforms": (...),        # 1 or 2..len(PLATFORMS)
+    "platforms": (...),        # 1, or 2..len(PLATFORMS)
     "mention": "single" | "multi",
+    "mention_n": int,          # 1, or 2..4 when multi
     "variant": str | None,     # the fuzzy spelling, or None
 }
 ```
@@ -167,8 +229,9 @@ explicit weights (`.20, .10, .35, .15, .15`). Three reasons it went:
    Place, `nickname` for an Org, so each row would need its own weights anyway.
 3. Uniform gives 100% **by construction**: `1/len(variants)`, nothing to keep in sync.
 
-The percentages are therefore **derived, never configured** — 8 Corr variants is 12.5%
-each, 6 Product variants is 16.66%. The config file holds the list and nothing else.
+The percentages are therefore **derived, never configured** — 6 Corr variants is 16.66%
+each, 7 Place is 14.29%, 6 Org is 16.66%, 5 Product is 20%. The config file holds the
+list and nothing else.
 
 `CORR_FUZZY` / `BODY_FUZZY` are new: no such knob existed, because fuzziness was implied by
 the cross/intra shape rather than being its own share.
@@ -181,13 +244,33 @@ others. That is the simplification: three numbers per group, no nesting, no inte
 ```python
 # Correspondents (sender display names).
 CORR_FUZZY          = 0.07   # share whose spelling is fuzzy (one variant, uniform)
-CORR_MULTI_PLATFORM = 0.12   # share appearing on 2+ platforms; bounds from PLATFORMS
+CORR_MULTI_PLATFORM = 0.08   # share appearing on 2+ platforms; bounds from PLATFORMS
 
 # Bodies: Place, Organization, Product. Same three numbers, same math.
-BODY_FUZZY          = 0.07
-BODY_MULTI_MENTION  = 0.13   # named 2+ times within a platform they land on
-BODY_MULTI_PLATFORM = 0.06   # on 2+ platforms; mention count independent of this
+BODY_FUZZY          = 0.15   # raised from .07: only ~1/3 of items reach a body
+BODY_MULTI_MENTION  = 0.08   # named 2+ times on ONE platform
+BODY_MULTI_PLATFORM = 0.04   # on 2+ platforms; mention count independent of this
+MENTIONS_MULTI      = (2, 4) # dice for how many times a multi-mention lands
 ```
+
+**Why `BODY_FUZZY` is 0.15 and not 0.07.** At 586 items with ~202 slots, only ~34% of
+items reach a message. The share of *written* variants is therefore roughly
+`BODY_FUZZY × 0.34`:
+
+| `BODY_FUZZY` | fuzzy items | variants actually written |
+|---|---|---|
+| 0.07 | 41 | ~14 |
+| **0.15** | **88** | **~30** |
+| 0.20 | 117 | ~40 |
+
+`0.15` is the smallest setting that clears ~30 written variants, which is enough for the
+app to be exercised on real mismatches. The other four knobs are safe at their reduced
+values because they need only *some* instances, not coverage of every variant.
+
+**The numbers are shares, not promises.** They are dice over the whole
+population. An item that never lands in a body writes nothing — that is the intended
+long tail, not a shortfall. `fuzz_lines()` reports both the share requested and the
+count actually written, so the two are never confused.
 
 **No separate platform-bounds knob.** The dice upper bound is `len(config.PLATFORMS)` —
 whatever this world actually writes. A hardcoded `(2, 7)` would break the moment a platform
@@ -280,6 +363,8 @@ created and wired, `ORG_FORMS` kept (still used), and the WhatsApp system-row la
 | `FUZZ_BODY_KINDS` | keep; `product` already added, `person` stays on the list | ✅ done |
 | new `FUZZ_VARIANTS` | add, per §5 | pending |
 | `fuzz_lines()` | report each kind's achieved share beside the requested one | ✅ reports product; shares pending |
+| `BODY_OVERLAP_MAX`, `FUZZ_SENDER_INTRA_RATE`, `FUZZ_ORG_ABBREV`, `BODY_SENTENCES` | **delete** — declared, never read | pending |
+| new `MENTIONS_MULTI = (2, 4)` | add, per §2 | pending |
 
 **Comment style:** inline, right-of-line. The long prose blocks above each knob move into
 this document; `config.py` keeps one line per knob.
@@ -314,17 +399,22 @@ this document; `config.py` keeps one line per knob.
 | `PRODUCT_LINES` | add and wire into `entity_line()` | ✅ done |
 | `SINGLE_BODY_RATE` | **delete** | ✅ never added |
 | `_take_single()` | **delete** | ✅ never added |
-| `entity_line()` | drop probability sampling; entity choice comes from `world`'s plan | pending |
+| `entity_line()` | drop probability sampling and `require_own`; entity choice comes from `world`'s plan, mention count honoured not enforced | pending |
 
 ### `sample_writer/README.md`
 Update the fuzz section: the two axes, the uniform variant lists, the coverage table from
 §1, and the before/after knob names. State plainly that `Person` is documented-not-wired.
 
 ### `tests/test_sample_writer.py`
-Add assertions for: each kind reaches its `BODY_*` shares within tolerance; every variant in
-every list has at least one generated instance; no entity is both "single mention" and
-"multi mention"; the Owner is never fuzzed. The suite currently does **434 passed, 2
-skipped** and must stay green.
+Add assertions for: each kind reaches its `BODY_*` shares within tolerance; **at least ~20 fuzzy variants are written** (not "every variant", which the slot supply cannot promise); no entity is both "single mention" and "multi mention"; the Owner is never fuzzed. The suite currently does **434 passed, 2 skipped** and must stay green.
+
+### Template ceiling
+
+The sentence templates are `ORG_LINES` (7), `PLACE_LINES` (5), `PRODUCT_LINES` (7).
+With ~202 entity slots per world, each template is reused ~10×. That reads fine — they
+are generic — but the bodies do repeat. More templates are cheap and welcome; none are
+required. **No sentence generator, no LLM, no new dependency**: the templated lottery is
+the design, and adding a library would trade a repeat for a runtime.
 
 ## 8. What this is NOT
 
@@ -419,7 +509,17 @@ Then ingest both into an empty store and confirm:
 | all four distribution cases exist | single/1, single/N, multi×1/1, multi×1/N all present in the store |
 | dedup works on re-ingest | ingesting seed 4 twice adds zero nodes |
 | a new world adds nodes | `add --seed 5` then ingest adds new entities, and does not duplicate seed 4's |
-| `Product` has no rows | confirms the kind is genuinely unwired, not half-built |
+| `Product` has rows | confirms the kind is wired — and that no `Organization` name also lands as a `Product` |
+
+> **`writer._ENTITY_WRITE_KINDS` must gain `product`** (it holds only `place` and
+> `organization` today). Without it, product mentions are extracted and then silently
+> dropped by `write_entities()`'s filter, so the generator would appear wired while the
+> store showed nothing.
+
+> **~10 of the 100 `PRODUCTS` are common nouns** (`Contract`, `Seat`, `Credits`, `SLA`,
+> `Rack`, `embeddings`). `canon` cannot know they are generic and spaCy will not propose
+> them as product spans, so they are decoration rather than population. Harmless; listed
+> so nobody reads their absence as a bug.
 
 The last row is the point of doing this now: **Product-node testing needs a corpus that
 can name products.** Today's cannot — no body ever mentions one.

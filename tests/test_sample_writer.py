@@ -53,12 +53,13 @@ def world():
 # --------------------------------------------------------------------------- world
 
 
-def test_cross_platform_share_is_in_band(world):
+def test_cross_platform_share_matches_the_knob(world):
+    """`CORR_MULTI_PLATFORM` is a share of the random cast, not a band to be guessed at."""
     share = world.multi_platform_share()
-    assert config.CROSS_PLATFORM_MIN <= share <= config.CROSS_PLATFORM_MAX, (
-        f"cross-platform share {share:.3f} outside "
-        f"{config.CROSS_PLATFORM_MIN}-{config.CROSS_PLATFORM_MAX}"
-    )
+    assert share <= config.CORR_MULTI_PLATFORM + 0.10, (
+        f"cross-platform share {share:.3f} far above "
+        f"CORR_MULTI_PLATFORM={config.CORR_MULTI_PLATFORM}")
+    assert share > 0, "no correspondent spans two platforms"
 
 
 def test_owner_is_on_every_platform(world):
@@ -463,13 +464,70 @@ def test_every_artifact_is_either_detected_or_documented(generated):
 # The Owner is never fuzzed — that is the one invariant every writer depends on.
 
 
-def test_fuzz_quotas_are_met(world):
-    """A knob that says 2 and produces 0 is the failure this generator prevents."""
+def test_fuzz_shares_are_achieved(world):
+    """A knob that says 15% and produces 0 is the failure this generator prevents.
+
+    Each share is dice over the whole population, so the assertion is one-sided: the
+    count must be within a few points of the knob, never zero. Exact equality would
+    fail on cast size rather than on a bug.
+    """
     summary = world.fuzz_summary()
-    assert summary["cross"] >= config.FUZZ_SENDERS_CROSS
-    assert summary["intra"] >= config.FUZZ_SENDERS_INTRA
-    assert config.FUZZ_BODIES_INTRA <= (
-        len(world.body_orgs) + len(world.body_places) + len(world.body_persons))
+    assert summary["corr_fuzzy"], "no fuzzy correspondent spellings (CORR_FUZZY)"
+    assert summary["corr_multi_platform"], "no multi-platform correspondents"
+    assert summary["intra"], "no intra-platform sender spellings"
+    for kind in ("org", "place", "product"):
+        stats = summary[kind]
+        assert stats["items"], f"no {kind} body items"
+        assert stats["fuzzy"], f"no fuzzy {kind} names (BODY_FUZZY)"
+        assert stats["multi_mention"], f"no multi-mention {kind} names"
+        assert stats["multi_platform"], f"no multi-platform {kind} names"
+        share = stats["fuzzy"] / stats["items"]
+        assert abs(share - config.BODY_FUZZY) < 0.05, (
+            f"{kind}: fuzzy share {share:.2f} vs BODY_FUZZY={config.BODY_FUZZY}")
+
+
+def test_no_entity_is_both_single_and_multi_mention(world):
+    """The shape is one or the other; a `mention_n` over 1 with `single` is a bug."""
+    for kind, table in world.body_entities.items():
+        for name, plan in table.items():
+            if plan.multi_mention:
+                assert plan.mention_n >= 2, f"{kind} {name}: multi with {plan.mention_n}"
+                assert plan.mention_n <= config.MENTIONS_MULTI[1]
+            else:
+                assert plan.mention_n == 1, f"{kind} {name}: single with {plan.mention_n}"
+
+
+def test_all_four_distribution_cases_exist():
+    """single/1, single/N, multi/1, multi/N must all be reachable at these defaults.
+
+    Independence is the point of the model, so a corpus that only ever holds two of
+    the four cases has collapsed the axes into one. At 8% x 4% the multi×multi cell is
+    ~0.3% of 586 items — about two — so this is checked over several seeds rather than
+    relying on one seed's luck.
+    """
+    seen = set()
+    for seed in range(1, 9):
+        one = world_module.build(seed)
+        for table in one.body_entities.values():
+            for plan in table.values():
+                seen.add((plan.mention, plan.multi_platform))
+        if len(seen) == 4:
+            break
+    assert seen == {("single", False), ("single", True),
+                    ("multi", False), ("multi", True)}, (
+        f"across 8 seeds only these combinations occurred: {sorted(seen)}")
+
+
+def test_multi_platform_stays_within_the_ingested_platforms(world):
+    """No item may claim a platform the world does not write, or a copy-only `.pst`."""
+    allowed = set(world.cast_platforms())
+    assert "outlook" not in allowed, "outlook is a copied .pst and cannot carry fuzz"
+    for kind, table in world.body_entities.items():
+        for name, plan in table.items():
+            assert plan.platforms, f"{kind} {name} is on no platform"
+            assert set(plan.platforms) <= allowed, (
+                f"{kind} {name} claims {set(plan.platforms) - allowed}")
+            assert len(plan.platforms) <= len(config.PLATFORMS)
 
 
 def test_owner_is_never_fuzzed(world):
@@ -487,8 +545,74 @@ def test_fuzz_is_deterministic():
     b = world_module.build(config.SEED)
     assert a.fuzz_summary() == b.fuzz_summary()
     assert [(p.name, p.labels) for p in a.people] == [(p.name, p.labels) for p in b.people]
-    assert a.body_orgs == b.body_orgs
-    assert a.body_places == b.body_places
+    assert a.body_entities == b.body_entities
+
+
+def test_every_variant_list_is_non_empty_and_uniform():
+    """Uniform dice mean the row is 100% by construction — no weight table to drift."""
+    for kind, variants in config.FUZZ_VARIANTS.items():
+        assert variants, f"{kind} has no variants"
+        assert len(set(variants)) == len(variants), f"{kind} repeats a variant"
+    assert "acronym" not in config.FUZZ_VARIANTS["place"]
+    assert "postal_code" not in config.FUZZ_VARIANTS["org"]
+    assert "legal_suffix" not in config.FUZZ_VARIANTS["corr"], (
+        "a person's name does not carry a legal form")
+
+
+def test_fuzzy_variants_fold_through_canon(world):
+    """Every variant a body can print must converge in the app's own flattener.
+
+    Two deliberate exceptions, both stated in `writer_major_edit.md` §5:
+
+    * `acronym` — `IBM` and `International Business Machines` are two keys on purpose.
+    * `drop_letter` / `swap` — a mistyping is not a fold. `canon` cannot know
+      `Northwnd` was meant to be `Northwind`; that is what RapidFuzz candidate lines
+      are for. The generator prints them so the *candidate* path has input, not the
+      flatten path.
+    """
+    from relate_comms import canon
+
+    not_folds = {"acronym", "drop_letter", "swap"}
+    canon_kind = {"org": "organization", "place": "place", "product": "product"}
+    checked = 0
+    for kind, table in world.body_entities.items():
+        if kind not in canon_kind:
+            continue
+        for name, plan in table.items():
+            if not plan.variant or plan.variant_name in not_folds:
+                continue
+            assert canon.canonical(plan.variant, kind=canon_kind[kind]).key == \
+                canon.canonical(name, kind=canon_kind[kind]).key, (
+                    f"{kind} {name!r} -> {plan.variant!r} ({plan.variant_name}) is not a fold")
+            checked += 1
+    assert checked, "no folding body variants were produced at all"
+
+
+def test_mistyped_variants_differ_but_are_candidates(world):
+    """`drop_letter`/`swap` must NOT fold — they are the RapidFuzz path's input."""
+    from relate_comms import canon
+
+    canon_kind = {"org": "organization", "place": "place", "product": "product"}
+    typos = [(kind, name, plan) for kind, table in world.body_entities.items()
+             if kind in canon_kind
+             for name, plan in table.items()
+             if plan.variant and plan.variant_name in {"drop_letter", "swap"}]
+    for kind, name, plan in typos:
+        assert canon.canonical(plan.variant, kind=canon_kind[kind]).key != \
+            canon.canonical(name, kind=canon_kind[kind]).key, (
+                f"{kind} {name!r}: a mistyping folded, so it never reaches RapidFuzz")
+    # And the candidate pass must actually offer them, or the typos are just noise.
+    # Both spellings go in together: `candidates()` only compares names it holds, and
+    # blocks on the surname's first letter, which a same-name mistyping shares. Not all
+    # typos are offered — a single-word name has no surname to block on, and a swap can
+    # move a letter across the block boundary — so this asserts the path is reachable,
+    # not that every typo is reported.
+    if typos:
+        pairs = [(name, plan.variant) for _k, name, plan in typos]
+        offered = canon.candidates([n for pair in pairs for n in pair], kind="place")
+        assert offered, (
+            f"{len(pairs)} mistyped variants produced no candidate lines at all; "
+            "the RapidFuzz path has no input")
 
 
 def test_sender_fuzz_reaches_the_payloads(generated, world):
@@ -552,12 +676,12 @@ def test_sender_fuzz_reaches_the_payloads(generated, world):
 
 
 def test_body_fuzz_reaches_the_payloads(generated, world):
-    """Org/place/person variants must reach the platforms they were decided for.
+    """Fuzzy org/place/product spellings must reach the platforms they were decided for.
 
-    Not every variant can be guaranteed: at the default knobs there are more entities
-    per platform than a thread's opening rows can hold, so a few will not surface in a
-    given build. What must hold is that the shape is genuinely exercised — a high share
-    of variants written, on their own platform, and never on the copy-only Outlook.
+    Mentions are sampled, not allocated, so not every fuzzy item is guaranteed to be
+    written in a given build — the assertion is that the shape is genuinely exercised
+    (a good share written, on a platform the item was assigned) and never on the
+    copy-only Outlook.
     """
     import zipfile
 
@@ -580,32 +704,68 @@ def test_body_fuzz_reaches_the_payloads(generated, world):
             for name in archive.namelist() if name.endswith(".html"))
 
     # Outlook is a copied .pst, so it must never be handed a variant at all.
-    checked = missing = 0
-    for table in (world.body_orgs, world.body_places, world.body_persons):
-        for canonical, variants in table.items():
-            assert "outlook" not in variants, (
-                f"{canonical} was fuzzed onto the copy-only Outlook export")
-            for platform, spelling in variants.items():
-                if spelling == canonical or platform not in blobs:
+    checked = written = 0
+    for kind, table in world.body_entities.items():
+        for name, plan in table.items():
+            assert "outlook" not in plan.platforms, (
+                f"{kind} {name} was fuzzed onto the copy-only Outlook export")
+            if not plan.variant:
+                continue
+            for platform in plan.platforms:
+                if platform not in blobs:
                     continue
                 checked += 1
-                if spelling not in blobs[platform]:
-                    missing += 1
+                if plan.variant in blobs[platform]:
+                    written += 1
 
     assert checked, "no body fuzz reached a checked platform"
-    assert missing <= max(1, checked // 4), (
-        f"{missing} of {checked} body variants never reached their platform; "
+    # A variant lands only if a message on its platform happened to sample it, so a
+    # high miss rate is expected — a TOTAL miss is the failure (the fuzz is configured
+    # but never reaching the writers).
+    assert written >= max(5, checked // 20), (
+        f"only {written} of {checked} fuzzy spellings reached their platform; "
         "the fuzz is configured but not being written")
 
 
-def test_fuzz_knobs_at_zero_produce_no_variants(monkeypatch):
-    """0 disables the shape, and nothing leaks through anyway."""
-    for name in ("FUZZ_SENDERS_CROSS", "FUZZ_SENDERS_INTRA",
-                 "FUZZ_BODIES_CROSS", "FUZZ_BODIES_INTRA"):
+def test_fuzzy_variants_are_written_in_volume(generated, world):
+    """The point of `BODY_FUZZY=0.15` is ~30 variants actually reaching the corpus.
+
+    At the slot supply measured in `writer_major_edit.md` §1 only about a third of the
+    items a share flags are ever named, which is why the knob is not 0.07.
+    """
+    import zipfile
+
+    text = "\n".join([
+        next((generated / "sms" / "sms_xml").glob("sms-*.xml"))
+        .read_text(encoding="utf-8", errors="ignore"),
+        (next((generated / "telegram" / "Telegram Desktop").glob("DataExport_*/result.json")))
+        .read_text(encoding="utf-8"),
+        "\n".join(zipfile.ZipFile(path).read("chat.txt").decode("utf-8", "ignore")
+                  for path in (generated / "whatsapp" / "whatsapp_web").glob("*.zip")),
+    ])
+    found = {(kind, name, plan.variant)
+             for kind, table in world.body_entities.items()
+             for name, plan in table.items()
+             if plan.variant and plan.variant in text}
+    assert len(found) >= 15, (
+        f"only {len(found)} fuzzy body spellings appear in the corpus (Telegram/WhatsApp/SMS); "
+        "BODY_FUZZY is not reaching the writers")
+
+
+def test_fuzz_knobs_at_zero_produce_nothing(monkeypatch):
+    """0 disables a shape, and nothing leaks through anyway."""
+    for name in ("CORR_FUZZY", "CORR_MULTI_PLATFORM", "FUZZ_SENDERS_INTRA",
+                 "BODY_FUZZY", "BODY_MULTI_MENTION", "BODY_MULTI_PLATFORM"):
         monkeypatch.setattr(config, name, 0)
     empty = world_module.build(config.SEED)
-    assert empty.fuzz_summary() == {"labelled": 0, "cross": 0, "intra": 0}
-    assert not empty.body_orgs and not empty.body_places and not empty.body_persons
+    summary = empty.fuzz_summary()
+    assert not summary["corr_fuzzy"] and not summary["corr_multi_platform"]
+    assert not summary["intra"]
+    for kind in ("org", "place", "product"):
+        stats = summary[kind]
+        assert not stats["fuzzy"], f"{kind} still fuzzy at BODY_FUZZY=0"
+        assert not stats["multi_mention"], f"{kind} still multi-mention"
+        assert not stats["multi_platform"], f"{kind} still multi-platform"
 
 
 def test_staging_the_email_folder_keeps_it_whole(generated, tmp_path):

@@ -6,7 +6,6 @@ byte-identical.
 """
 from __future__ import annotations
 
-import math
 import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -326,6 +325,36 @@ def norm_person_name(name: str | None) -> str:
 
 
 @dataclass
+class EntityPlan:
+    """What one body item (a Place, Organization or Product) will do.
+
+    Three dice, rolled independently in `_assign_body_entities()`:
+
+      platforms  1, or `randint(2, len(config.PLATFORMS))` — where it may be named
+      mention    "single" | "multi", with `mention_n` times on ONE platform
+      variant    the fuzzy spelling drawn by `fuzz.pick_variant()`, or None
+
+    **Mentions are available, not promised.** `entity_line()` samples freely and may
+    never name a given item at all; that is where the `mention_count: 1` tail comes
+    from. Nothing here is an allocation the dialogue layer must honour.
+    """
+
+    platforms: tuple[str, ...]
+    mention: str = "single"
+    mention_n: int = 1
+    variant: str | None = None
+    variant_name: str | None = None
+
+    @property
+    def multi_platform(self) -> bool:
+        return len(self.platforms) > 1
+
+    @property
+    def multi_mention(self) -> bool:
+        return self.mention == "multi"
+
+
+@dataclass
 class World:
     seed: int
     owner: str
@@ -333,18 +362,18 @@ class World:
     end: datetime
     people: list[Person] = field(default_factory=list)
     rng: random.Random = field(default_factory=random.Random)
-    # Entity fuzz for message bodies. Each entry is `canonical -> {platform: spelling}`,
-    # so a body can say `Celestica` on one platform and `Celstica` on another. Decided
-    # once at build time, like `Person.labels`.
-    body_orgs: dict[str, dict[str, str]] = field(default_factory=dict)
-    body_places: dict[str, dict[str, str]] = field(default_factory=dict)
-    body_products: dict[str, dict[str, str]] = field(default_factory=dict)
-    body_persons: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Entity plans for message bodies, keyed `kind -> name -> EntityPlan`. One generic
+    # table for every body kind: a Place, an Organization and a Product answer the same
+    # three questions, so a fourth kind would need no second table.
+    body_entities: dict[str, dict[str, EntityPlan]] = field(default_factory=dict)
+    # Rows the world could not satisfy — a fuzzy item no variant would apply to. Printed
+    # by `fuzz_lines()`, never raised: one stubborn name is not a build failure.
+    fuzz_misses: list[str] = field(default_factory=list)
 
     # --- construction ------------------------------------------------------------
 
     @classmethod
-    def build(cls, seed: int | None = None) -> "World":
+    def build(cls, seed: int | None = None) -> World:
         seed = config.SEED if seed is None else seed
         rng = random.Random(seed)
         world = cls(
@@ -399,25 +428,17 @@ class World:
                 topics=topics,
             ))
 
-        # Presence. Everyone gets at least one platform; only a small share get more
-        # than one. The share is drawn over the random cast only — the fixed cast is
-        # multi-platform by construction, so including it would push the ratio past the
-        # band for reasons that are not a bug.
-        platforms = ["whatsapp", "telegram", "messenger", "sms", "linkedin", "email"]
-        share = self.rng.uniform(config.CROSS_PLATFORM_MIN, config.CROSS_PLATFORM_MAX)
-        # The denominator must be the *random* cast only, because that is what
-        # `multi_platform_share()` measures. This used `if not p.on`, but at this point
-        # nobody has `on` set yet, so the fixed cast (already multi-platform) was counted
-        # in the denominator and not in the numerator, dragging the ratio below the band.
+        # Presence. Everyone gets at least one platform; `CORR_MULTI_PLATFORM` is the
+        # share that gets more than one. Drawn over the random cast only — the fixed
+        # cast is multi-platform by construction, so counting it would measure the
+        # brief rather than the generator.
+        #
+        # The platform list comes from `config.PLATFORMS`, not a local copy: the local
+        # list here and the one in `_assign_labels()` both omitted `outlook`, so a
+        # platform could be added to config and silently never receive a person.
+        platforms = self.cast_platforms()
         random_cast = [p for p in self.people if not p.is_fixed]
-        # `round` can land a rounded share outside the band the contract asserts, which
-        # made the build fail for reasons that depend on the cast size rather than on a
-        # bug. Clamp to the band's own integer bounds instead, and round *up* at the
-        # lower bound so a ratio that rounds down cannot under-shoot it.
-        multi_count = int(round(len(random_cast) * share))
-        low = math.ceil(config.CROSS_PLATFORM_MIN * len(random_cast))
-        high = int(config.CROSS_PLATFORM_MAX * len(random_cast))
-        multi_count = max(low, min(multi_count, high))
+        multi_count = round(len(random_cast) * config.CORR_MULTI_PLATFORM)
         order = list(self.people)
         self.rng.shuffle(order)
         # Count *eligible* people, not loop indices: the fixed cast already has `on`
@@ -458,71 +479,28 @@ class World:
         pool = [p for p in self.people
                 if not p.is_fixed and norm_person_name(p.name) != owner]
         self.rng.shuffle(pool)
-        # The platforms a person can be promoted onto. `_populate` has its own local
-        # `platforms`; this method needs its own copy because the cross-promotion below
-        # can add a second platform to a person who only has one.
-        platforms = ["whatsapp", "telegram", "messenger", "sms", "linkedin", "email"]
+        # The platforms a person can be promoted onto come from `config.PLATFORMS` via
+        # `cast_platforms()` inside the intra pass, so a new platform needs no second
+        # list kept in step.
 
-        # A cross-platform pair needs two platforms. A nickname is the nicest case
-        # (`Chris` / `Christopher`), but a mistyped given name across two platforms is
-        # just as real a mismatch and is available for anybody — so a candidate without
-        # a nickname falls back to that rather than leaving the knob unmet. Measured on
-        # 60 seeds: nickname-only left 14 of them short.
-        need = max(0, config.FUZZ_SENDERS_CROSS)
-        # The cross shape needs two platforms *per candidate*, and only a small share of
-        # the cast is multi-platform, so a fixed quota can exceed the multi-platform
-        # pool. Two passes keep the cross-platform share band intact:
-        #   1. use people already on two platforms — no promotion, so the share is
-        #      untouched;
-        #   2. only if the quota is still unmet, promote single-platform people onto a
-        #      second platform, and only as many as the quota still needs.
-        made = 0
-
-        def _assign(person) -> bool:
-            """Give `person` a cross pair of spellings; True if it took."""
-            nonlocal made
-            # Prefer two platforms that are NOT the intra ones, so a cross pair does not
-            # spend the same platform slots the intra quota needs (seed 21 hit this).
-            preferred = [x for x in sorted(person.on)
-                         if x not in config.FUZZ_SENDERS_INTRA_PLATFORMS]
-            if len(preferred) >= 2:
-                first, second = preferred[:2]
-            elif len(person.on) == 2 and set(person.on) <= set(
-                    config.FUZZ_SENDERS_INTRA_PLATFORMS):
-                # Both platforms are intra ones. The person is already multi-platform,
-                # so using them for cross adds no platform and cannot inflate the share
-                # band; the intra pass simply skips anyone already carrying a label.
-                first, second = sorted(person.on)[:2]
-            else:
-                first, second = sorted(person.on)[:2]
-            other = fuzz.nicknamed(person.name) or fuzz.vary_sender(person.name, self.rng)
-            if not other or other == person.name:
-                return False
-            person.labels[first] = person.name
-            person.labels[second] = other
-            made += 1
-            return True
-
-        # Pass 1: already-multi-platform people only. No promotion, so the
-        # cross-platform share band is untouched.
-        for person in list(pool):
-            if made >= need:
-                break
-            if len(person.on) >= 2:
-                _assign(person)
-        # Pass 2: promote singles only if the quota is still unmet. Promote one at a
-        # time and **revert** if the person cannot be varied, so a failed promotion does
-        # not inflate the cross-platform share band.
-        if made < need:
-            for person in list(pool):
-                if made >= need:
-                    break
-                if len(person.on) >= 2:
-                    continue
-                extra = self.rng.choice([x for x in platforms if x not in person.on])
-                person.on.add(extra)
-                if not _assign(person):
-                    person.on.discard(extra)
+        # A person carries a fuzzy spelling on ONE of their platforms. Which people are
+        # multi-platform is already settled by `CORR_MULTI_PLATFORM`; this pass decides
+        # only *which spelling*, so it can never move the platform share. Jittered around
+        # `CORR_FUZZY` rather than hitting it exactly, because the cast is small and a
+        # rounded count would make every seed identical.
+        candidates = [p for p in pool if len(p.on) >= 2]
+        fuzzy_count = round(len(pool) * config.CORR_FUZZY)
+        for person in candidates[:max(0, fuzzy_count)]:
+            platforms_on = sorted(person.on)
+            platform = platforms_on[self.rng.randrange(len(platforms_on))]
+            if platform in person.labels:
+                continue
+            spelling, applied = fuzz.pick_variant(
+                person.name, self.rng, config.FUZZ_VARIANTS["corr"])
+            if applied is None:
+                self.fuzz_misses.append(f"corr: no variant applied to {person.name!r}")
+                continue
+            person.labels[platform] = spelling
 
         # Keyed by name, not by object: `Person` is a mutable dataclass and therefore
         # unhashable. Names are unique in the cast (`_populate` dedupes on them).
@@ -568,132 +546,128 @@ class World:
 
         self._assign_body_entities()
 
-    def _assign_body_entities(self) -> None:
-        """Decide how each fuzzed entity is spelled on each platform.
+    def cast_platforms(self) -> list[str]:
+        """Platforms a *person* can be on, from `config.PLATFORMS`.
 
-        Unlike a sender label, a body entity is not tied to a person: it is an
-        organisation, a place or a named colleague mentioned in a message. Each gets a
-        map `platform -> spelling`, and any platform without an entry uses the
-        canonical spelling.
-
-        Two shapes, both knob-counted:
-
-          intra  several spellings inside one platform (`Celestica`, `celestica`)
-          cross  a different spelling on two platforms (`N Dakota` / `North Dakota`)
-
-        Kept to the drain-the-shortfall rule: if a pool runs out before the quota is
-        met the build reports it rather than looping forever. `fuzz_lines` prints the
-        counts, and `assert_contract` fails when a kind produced nothing at all.
+        `outlook` is excluded: a `.pst` is a byte copy of a committed fixture, so a
+        person placed there is never written, and the same holds for a body variant.
+        Derived from config so adding a platform needs no second list kept in step.
         """
-        # Outlook is excluded: `outlook_copy/Outlook.pst` is a byte copy of the
-        # committed fixture, so a variant decided for it is never written. Including it
-        # spent a quota slot on a platform that cannot carry the fuzz.
-        platforms = [p for p in config.PLATFORMS
-                     if p in config.VARIANTS and p != "outlook"]
+        return [p for p in config.PLATFORMS if p != "outlook"]
+
+    def _assign_body_entities(self) -> None:
+        """Roll the three independent dice for every body item.
+
+        One generic table, `body_entities[kind][name] -> EntityPlan`, because a Place, an
+        Organization and a Product answer the same three questions. Per item:
+
+          fuzzy          share `BODY_FUZZY`; one variant, uniform over `FUZZ_VARIANTS`
+          multi-mention  share `BODY_MULTI_MENTION`; 2-4 mentions on ONE platform
+          multi-platform share `BODY_MULTI_PLATFORM`; 2..len(PLATFORMS) platforms
+
+        **Every dice is over the whole population of its kind**, never conditioned on an
+        earlier roll — "fuzzy or otherwise", "multi-mention or not". That is what makes
+        the four combinations independent and all of them reachable.
+
+        `person` is deliberately absent: see `writer_major_edit.md` §8.
+        """
+        platforms = self.cast_platforms()
         if not platforms:
             return
-        # `FUZZ_BODIES_INTRA_PLATFORMS` is a count of platforms, not a list of names:
-        # it says how many exports carry intra-platform variants. Pick that many, so
-        # the shape is spread rather than piled onto one platform.
-        count = max(1, min(int(config.FUZZ_BODIES_INTRA_PLATFORMS), len(platforms)))
-        intra_platforms = sorted(self.rng.sample(platforms, k=count))
-
         kinds = set(config.FUZZ_BODY_KINDS)
-
-        # (table, canonical pool, modes, cross-line transform)
-        sources: list[tuple[dict, list[str], tuple[str, ...]]] = []
+        pools: dict[str, list[str]] = {}
         if "org" in kinds:
-            sources.append((self.body_orgs, list(ORG_POOLS["tech"] + ORG_POOLS["public"]),
-                            ("lower", "drop_letter", "swap")))
+            pools["org"] = list(ORGS)
         if "place" in kinds:
-            # Places abbreviate by rule (`North Dakota` -> `N Dakota`), which is the
-            # shape that matters here. Most place names have no qualifying first word
-            # though (`Denver`, `Berlin`), so `abbrev` alone left the quota at 2 of 8.
-            # Fall back to case/letter-drop, so every place can carry a variant.
-            sources.append((self.body_places, list(PLACES),
-                            ("abbrev", "lower", "drop_letter")))
-        if "person" in kinds:
-            # A person variant is a nickname, not a mechanical edit: `Bob` -> `Robert`.
-            nicknamed = [p.name for p in self.people
-                         if not p.is_fixed and fuzz.nicknamed(p.name)]
-            sources.append((self.body_persons, nicknamed, ("nickname",)))
+            pools["place"] = list(PLACES)
         if "product" in kinds:
-            # Products had no body table at all before this, so `Product` could never be
-            # mentioned in a message and the app's Product kind had no data to test with.
-            # `hyphen` is product-only: `Coca Cola` / `Coca-Cola` is one product, and
-            # `canon` flattens the hyphen for products and keeps it for people.
-            sources.append((self.body_products, list(PRODUCTS),
-                            ("lower", "drop_letter", "swap")))
+            pools["product"] = list(PRODUCTS)
 
-        def variant(canonical: str, modes: tuple[str, ...]) -> str | None:
-            if modes == ("nickname",):
-                other = fuzz.nicknamed(canonical)
-                return other if other and other != canonical else None
-            # `abbrev` is tried first when the mode list contains it, so a place with a
-            # qualifying word (`North Dakota`) abbreviates to `N Dakota` instead of
-            # getting a letter dropped. A place without one falls through to the
-            # mechanical modes, which is why the list carries both.
-            for mode in modes:
-                other = fuzz.vary(canonical, self.rng, (mode,))
-                if other != canonical:
-                    return other
-            return None
+        for kind, pool in pools.items():
+            table: dict[str, EntityPlan] = {}
+            variants = config.FUZZ_VARIANTS[kind]
+            for name in pool:
+                # Axis B: how many platforms, and which. `randint(2, len(platforms))`
+                # rather than a fixed (2, 7), so the dice cannot claim a platform the
+                # world does not write.
+                if self.rng.random() < config.BODY_MULTI_PLATFORM:
+                    count = self.rng.randint(2, len(platforms))
+                    where = tuple(sorted(self.rng.sample(platforms, k=count)))
+                else:
+                    where = (self.rng.choice(platforms),)
 
-        for table, pool, modes in sources:
-            ordered = list(pool)
-            self.rng.shuffle(ordered)
+                # Axis C: mentions, independent of where it lands.
+                low, high = config.MENTIONS_MULTI
+                if self.rng.random() < config.BODY_MULTI_MENTION:
+                    mention, mention_n = "multi", self.rng.randint(low, high)
+                else:
+                    mention, mention_n = "single", 1
 
-            # Cross: a different spelling on two platforms, drawn from the pool first
-            # so an entity does not end up in both shapes.
-            for canonical in ordered[:max(0, config.FUZZ_BODIES_CROSS)]:
-                other = variant(canonical, modes)
-                if other is None:
-                    continue
-                first, second = self.rng.sample(platforms, k=min(2, len(platforms)))
-                table[canonical] = {first: canonical, second: other}
+                # Axis A: the spelling, uniform over the kind's list. Retried until one
+                # applies, so a fuzzy item is genuinely fuzzy.
+                variant = variant_name = None
+                if self.rng.random() < config.BODY_FUZZY:
+                    variant, variant_name = fuzz.pick_variant(name, self.rng, variants)
+                    if variant_name is None:
+                        variant = None
+                        self.fuzz_misses.append(
+                            f"{kind}: no variant applied to {name!r}")
 
-            # Intra: a variant inside one export, on the platforms the knob names.
-            remaining = [c for c in ordered if c not in table]
-            for canonical in remaining[:max(0, config.FUZZ_BODIES_INTRA)]:
-                other = variant(canonical, modes)
-                if other is None:
-                    continue
-                platform = self.rng.choice(intra_platforms)
-                table.setdefault(canonical, {})[platform] = other
+                table[name] = EntityPlan(platforms=where, mention=mention,
+                                         mention_n=mention_n, variant=variant,
+                                         variant_name=variant_name)
+            self.body_entities[kind] = table
 
-    def body_entity(self, canonical: str, platform: str) -> str:
-        """How a body on `platform` spells an org, place or person.
+    def body_entity(self, canonical: str, platform: str, kind: str | None = None) -> str:
+        """How a body on `platform` spells an org, place or product.
 
-        Falls back to the canonical spelling when the entity was not chosen for fuzz,
-        or when this platform has no variant for it.
+        Falls back to the canonical spelling when the item was not made fuzzy for this
+        run. `kind` skips the scan; without it every kind is tried, which keeps the old
+        call sites working.
         """
-        for table in (self.body_orgs, self.body_places, self.body_products,
-                      self.body_persons):
-            variants = table.get(canonical)
-            if variants and platform in variants:
-                return variants[platform]
+        tables = (self.body_entities[kind],) if kind in self.body_entities else \
+            tuple(self.body_entities.values())
+        for table in tables:
+            plan = table.get(canonical)
+            if plan and plan.variant:
+                return plan.variant
         return canonical
 
-    def fuzz_summary(self) -> dict[str, int]:
+    def plan_for(self, kind: str, name: str) -> EntityPlan | None:
+        """The plan the dialogue layer reads: which platforms, how many mentions."""
+        return self.body_entities.get(kind, {}).get(name)
+
+    def fuzz_summary(self) -> dict[str, object]:
         """What the fuzz knobs actually produced, for the build log.
 
-        `cross` counts people carrying two platform spellings; `intra` counts the
-        single-platform spellings that are *not* part of a cross pair, so the two
-        numbers answer different questions and can be checked against their knobs.
+        Counts, not shares — `config.fuzz_lines()` prints each beside its knob so a
+        share that produced nothing is visible rather than assumed.
         """
-        cross = sum(1 for p in self.people if len({v for v in p.labels.values()}) > 1
-                    and len(p.labels) > 1)
-        intra = sum(len(p.labels) for p in self.people
-                    if len(p.labels) == 1)
-        return {"labelled": len([p for p in self.people if p.labels]),
-                "cross": cross, "intra": intra}
+        owner = norm_person_name(self.owner)
+        random_cast = [p for p in self.people
+                       if not p.is_fixed and norm_person_name(p.name) != owner]
+        summary: dict[str, object] = {
+            "corr_total": len(random_cast),
+            "corr_fuzzy": sum(1 for p in random_cast if p.labels),
+            "corr_multi_platform": sum(1 for p in random_cast if len(p.on) > 1),
+            "intra": sum(1 for p in random_cast if len(p.labels) == 1),
+        }
+        for kind, table in self.body_entities.items():
+            plans = list(table.values())
+            summary[kind] = {
+                "items": len(plans),
+                "fuzzy": sum(1 for plan in plans if plan.variant),
+                "multi_mention": sum(1 for plan in plans if plan.multi_mention),
+                "multi_platform": sum(1 for plan in plans if plan.multi_platform),
+            }
+        return summary
 
     def _assert_contract(self) -> None:
         share = self.multi_platform_share()
-        if not (config.CROSS_PLATFORM_MIN <= share <= config.CROSS_PLATFORM_MAX):
+        if share > config.CORR_MULTI_PLATFORM + 0.05:
             raise AssertionError(
-                f"cross-platform share {share:.3f} outside "
-                f"{config.CROSS_PLATFORM_MIN}-{config.CROSS_PLATFORM_MAX}"
+                f"cast multi-platform share {share:.3f} well above "
+                f"CORR_MULTI_PLATFORM={config.CORR_MULTI_PLATFORM}"
             )
 
     # --- queries -----------------------------------------------------------------
