@@ -785,12 +785,13 @@ h2.section {
   font-size: 11.5px;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  /* Brighter than `--muted`: these are the only structure a long panel has, so they
-     have to read as headings rather than as captions. */
-  color: var(--text);
+  /* Light blue, not `--text`: a long panel needs its sections to read as
+     waypoints rather than as more body copy, and the accent already means
+     "structure you can navigate" everywhere else in the UI. */
+  color: var(--blue-glow);
   margin: 0 0 8px;
   font-weight: 600;
-  opacity: 0.85;
+  opacity: 0.9;
 }
 
 h2.section:not(:first-child) {

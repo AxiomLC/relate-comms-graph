@@ -3,18 +3,17 @@ import { FileUp, Loader2, Upload } from "lucide-react";
 import { uppie } from "uppie";
 
 import { api } from "../../lib/api.js";
-import { formatBytes } from "../../lib/format.js";
 import Modal, { Check, TextField } from "./Modal.jsx";
 
 /**
  * Ingest: one modal, one tab, top to bottom.
  *
- *   ┌ drop box ────────────────────────────────────────────────┐
+ *   ├ Truncate Graph DB ......... Delete Spool ────────────────┤
  *   │ pick one or many files, or paste a path                  │
  *   ├ IMAP ────────────────────────────────────────────────────┤
  *   │ email / password / host / port, saved to ./.env          │
  *   ├ ── separator ────────────────────────────────────────────┤
- *   │ window · silent groups · spam threads · prune            │
+ *   │ window · silent groups · spam threads                    │
  *   └ [ Close ]                        [ Preview ]  [ Ingest ] ┘
  *
  * Three rules the UI must not break:
@@ -117,28 +116,33 @@ export default function IngestModal({ onClose, onIngested }) {
   const [spamThreads, setSpamThreads] = useState(true);
   const [spamPlatforms, setSpamPlatforms] = useState({ email: true, outlook: true });
   const [spamGroups, setSpamGroups] = useState(false);
-  // "off" | "0" | "1" | "2" — the prune policy. A string so the buttons can be a
-  // plain list; `Number()` only happens on the way out.
-  const [pruneKeep, setPruneKeep] = useState("off");
 
 
   // --- run state -----------------------------------------------------------
-  // `delta` is the normal path: only new messages are extracted. The checkbox below
-  // is its INVERSE (`fullReprocess`), because the safe, fast default must be the one
-  // nobody has to think about, and a control labelled "delta" invites turning it off.
+  // `delta` is the normal path and is no longer a UI choice: it only ever reads
+  // messages the store does not already hold. The former "Full re-process" checkbox is
+  // gone because truncating first achieves the same thing with no extra cost, and a
+  // toggle that needed a paragraph of explanation was a toggle nobody read.
+  // The capability still exists at the API (`delta: false`) for a scripted re-extract.
   const [writeEnabled, setWriteEnabled] = useState(false);
-  const [fullReprocess, setFullReprocess] = useState(false);
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState(null);
   const [error, setError] = useState(null);
   const [preview, setPreview] = useState(null);
   const [log, setLog] = useState([]);
+  // An actionable message shown DIRECTLY under the dropzone. Separate from `error`,
+  // which renders far below in the report area and is invisible at modal height.
+  const [dropNotice, setDropNotice] = useState(null);
   const [halted, setHalted] = useState(null);
 
   // Double confirm: `wipeStep` 0 = idle, 1 = "are you sure", 2 = "type nothing, press
   // the second button". Two deliberate clicks, because there is no undo.
+  // `spoolStep` is the same ladder for the spool, kept separate so confirming one
+  // never arms the other.
   const [wipeStep, setWipeStep] = useState(0);
   const [wipeResult, setWipeResult] = useState(null);
+  const [spoolStep, setSpoolStep] = useState(0);
+  const [spoolResult, setSpoolResult] = useState(null);
 
   useEffect(() => {
     api.envStatus().then(setEnvStatus).catch(() => setEnvStatus(null));
@@ -159,6 +163,13 @@ export default function IngestModal({ onClose, onIngested }) {
     // A cancelled dialog fires `change` with an empty list. Sending it would hit the
     // route's required `files` field and surface a validation error for doing nothing.
     if (!files.length) return;
+    if (!writeEnabled) {
+      setDropNotice(
+        "Tick Ingest Ready first — files cannot be staged until write access is on."
+      );
+      return;
+    }
+    setDropNotice(null);
     setBusy(true);
     setError(null);
     try {
@@ -190,6 +201,18 @@ export default function IngestModal({ onClose, onIngested }) {
       note("info", "nothing selected");
       return;
     }
+    // **Refuse here, not at the server.** The upload route answers 400 when write is
+    // disabled, and that message used to land in INGEST LOG at the bottom of the modal —
+    // off-screen at normal height, so a correct drop looked like a dead dropzone. This
+    // check is local, instant, and appears directly under the dropzone.
+    if (!writeEnabled) {
+      setDropNotice(
+        "Tick Ingest Ready first — files cannot be staged until write access is on."
+      );
+      note("warn", "upload blocked: Ingest Ready is off");
+      return;
+    }
+    setDropNotice(null);
     setBusy(true);
     setError(null);
     note("info", `reading ${formData.getAll("files").length} file(s)…`);
@@ -297,10 +320,7 @@ export default function IngestModal({ onClose, onIngested }) {
         exclude_spam_threads: spamThreads,
         spam_thread_platforms: spamThreads ? ticked(spamPlatforms) : null,
         exclude_spam_groups: spamGroups,
-        prune: pruneKeep !== "off",
-        prune_keep: pruneKeep === "off" ? null : Number(pruneKeep),
         write_enabled: writeEnabled,
-        delta: !fullReprocess,
       });
 
       // A leg that failed is the one thing worth stopping on: the rest landed, and the
@@ -350,23 +370,23 @@ export default function IngestModal({ onClose, onIngested }) {
   };
 
   /**
-   * Wipe the graph. Two clicks, and the manifest always goes with it.
+   * Destructive actions, both two clicks, both independent of `Ingest Ready`.
    *
-   * **Not gated by `writeEnabled`.** Truncate is independent of ingest: it is not a
-   * step in a run, and the `Ingest Ready` toggle arms the *Ingest* button, not this one.
-   * Its own double confirm IS the arming — two deliberate clicks for one destructive
-   * action, which is the same guarantee the backend's `write_enabled` + `confirm` pair
-   * asks for. Sending `write_enabled: true` here is therefore honest, not a bypass:
-   * the user has just confirmed twice.
+   * **Not gated by `writeEnabled`.** Truncate and the spool delete are not steps in a
+   * run, and the toggle arms the *Ingest* button only. Their own double confirm IS the
+   * arming — two deliberate clicks for one irreversible action, the same guarantee the
+   * backend's `write_enabled` + `confirm` pair asks for. Sending `write_enabled: true`
+   * here is therefore honest, not a bypass: the user has just confirmed twice.
    *
-   * The log records it, because a wipe is the one event that explains a graph that
-   * suddenly holds nothing.
+   * `withSpool` deletes the exports as well. They are separate buttons because they are
+   * separate decisions: wiping the graph is not a request to throw away your downloads,
+   * but leaving stale exports means the next ingest re-reads what you just removed.
    */
   const truncate = async () => {
     setBusy(true);
     setError(null);
     setWipeResult(null);
-    note("info", "truncating the store…");
+    note("info", "truncating the graph…");
     try {
       const result = await api.truncate({
         write_enabled: true,
@@ -374,10 +394,11 @@ export default function IngestModal({ onClose, onIngested }) {
       });
       setWipeResult(result);
       setWipeStep(0);
+      setSpoolStep(0);
       setReport(null);
       note(
         "warn",
-        `store truncated — ${result.removed.length} file(s) removed` +
+        `truncated — ${result.removed.length} path(s) removed` +
           (result.kept?.length ? ` · kept ${result.kept.length}` : ""),
       );
       refreshPreview();
@@ -385,6 +406,36 @@ export default function IngestModal({ onClose, onIngested }) {
     } catch (err) {
       setError(err.message);
       note("warn", `truncate failed: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Delete the spool ONLY. The graph is left exactly as it is.
+   *
+   * **Not `truncate({withSpool: true})`.** That was the first version and it was wrong:
+   * the button said "Delete Spool", so a user clearing old exports silently lost the
+   * graph built from them. One button, one consequence.
+   */
+  const deleteSpool = async () => {
+    setBusy(true);
+    setError(null);
+    setSpoolResult(null);
+    note("info", "deleting the spool…");
+    try {
+      const result = await api.deleteSpool({
+        write_enabled: true,
+        confirm: true,
+        older_than_days: 1,
+      });
+      setSpoolResult(result);
+      setSpoolStep(0);
+      note("warn", `spool deleted — ${result.count} file(s) removed`);
+      refreshPreview();
+    } catch (err) {
+      setError(err.message);
+      note("warn", `spool delete failed: ${err.message}`);
     } finally {
       setBusy(false);
     }
@@ -422,16 +473,10 @@ export default function IngestModal({ onClose, onIngested }) {
               armed explicitly and never remembered — a remembered toggle is a toggle
               nobody remembers turning on. */}
           <Check
-            label="Full re-process"
-            checked={fullReprocess}
-            onChange={setFullReprocess}
-            note="Off: only messages the store does not already hold are written and extracted — an incremental ingest costs what is new, not what is in the export. On: every message is re-parsed and re-extracted. Use it after changing the extractor, or to give old rows Place nodes."
-          />
-          <Check
             label="Ingest Ready"
             checked={writeEnabled}
             onChange={setWriteEnabled}
-            note="Arms the Ingest button. Ingest writes to the store, so it is a deliberate second step and is never remembered. Truncate does not need it."
+            note="confirm"
           />
           <span className="spacer" />
           <button className="ghost" onClick={onClose}>
@@ -448,13 +493,17 @@ export default function IngestModal({ onClose, onIngested }) {
         </>
       }
     >
-      {/* ------------------------------------------------------------ truncate */}
-      {/* At the top, because it is the one control that changes what the whole app is
-          looking at. Two clicks, no undo. */}
+      {/* ------------------------------------------------- truncate / spool delete */}
+      {/* At the top, because these change what the whole app is looking at. Truncate is
+          left, the spool delete right, on one row: they are the two irreversible
+          actions in this modal and they belong together. No explanatory paragraph —
+          each button names exactly what it deletes, and the second click is where the
+          warning lives. */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
+          justifyContent: "space-between",
           gap: 10,
           padding: "8px 10px",
           marginBottom: 14,
@@ -462,50 +511,76 @@ export default function IngestModal({ onClose, onIngested }) {
           borderRadius: "var(--radius-sm)",
         }}
       >
-        {wipeStep === 0 && (
-          <>
-            <span className="pager-info" style={{ flex: 1 }}>
-              {wipeResult
-                ? `store truncated · ${wipeResult.removed.length} file(s) removed`
-                : "Wipe the graph and start again. The dedup record goes with it."}
-            </span>
+        {/* ---- left: the graph ---- */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {wipeStep === 0 && (
             <button className="ghost" onClick={() => setWipeStep(1)} disabled={busy}>
-              Truncate Relate DB
+              Truncate Graph DB
             </button>
-          </>
-        )}
-        {wipeStep === 1 && (
-          <>
-            <span className="pager-info" style={{ flex: 1, color: "var(--orange-text)" }}>
-              This deletes <code>store/graph.rl</code> and the list of files already
-              ingested. Your exports in <code>spool/real/</code> are kept. There is no
-              undo.
+          )}
+          {wipeStep === 1 && (
+            <>
+              <button className="ghost" onClick={() => setWipeStep(0)} disabled={busy}>
+                Keep it
+              </button>
+              <button onClick={() => setWipeStep(2)} disabled={busy}>
+                Yes, delete
+              </button>
+            </>
+          )}
+          {wipeStep === 2 && (
+            <>
+              <button className="ghost" onClick={() => setWipeStep(0)} disabled={busy}>
+                Cancel
+              </button>
+              {/* No `!writeEnabled` — see `truncate()`. The double confirm is the arming. */}
+              <button onClick={() => truncate()} disabled={busy}>
+                {busy ? <Loader2 size={13} className="spin" /> : null}
+                Delete everything
+              </button>
+            </>
+          )}
+          {wipeResult && wipeStep === 0 && (
+            <span className="pager-info" style={{ color: "var(--orange-text)" }}>
+              graph truncated
             </span>
-            <button className="ghost" onClick={() => setWipeStep(0)} disabled={busy}>
-              Keep it
+          )}
+        </div>
+
+        {/* ---- right: the exports themselves ---- */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {spoolStep === 0 && (
+            <button className="ghost" onClick={() => setSpoolStep(1)} disabled={busy}>
+              Delete Spool
             </button>
-            <button onClick={() => setWipeStep(2)} disabled={busy}>
-              Yes, delete
-            </button>
-          </>
-        )}
-        {wipeStep === 2 && (
-          <>
-            <span className="pager-info" style={{ flex: 1, color: "var(--orange-text)" }}>
-              Last chance. Pressing this empties the graph.
+          )}
+          {spoolStep === 1 && (
+            <>
+              <button className="ghost" onClick={() => setSpoolStep(0)} disabled={busy}>
+                Keep them
+              </button>
+              <button onClick={() => setSpoolStep(2)} disabled={busy}>
+                Yes, delete
+              </button>
+            </>
+          )}
+          {spoolStep === 2 && (
+            <>
+              <button className="ghost" onClick={() => setSpoolStep(0)} disabled={busy}>
+                Cancel
+              </button>
+              <button onClick={deleteSpool} disabled={busy}>
+                {busy ? <Loader2 size={13} className="spin" /> : null}
+                Delete spool
+              </button>
+            </>
+          )}
+          {spoolResult && spoolStep === 0 && (
+            <span className="pager-info" style={{ color: "var(--orange-text)" }}>
+              spool deleted
             </span>
-            <button className="ghost" onClick={() => setWipeStep(0)} disabled={busy}>
-              Cancel
-            </button>
-            {/* No `!writeEnabled` here — see `truncate()`. The double confirm is the
-                arming, and this button must not look dead for a reason the user
-                cannot see from the top of the modal. */}
-            <button onClick={truncate} disabled={busy}>
-              {busy ? <Loader2 size={13} className="spin" /> : null}
-              Delete everything
-            </button>
-          </>
-        )}
+          )}
+        </div>
       </div>
 
       {/* ---------------------------------------------------------- drop box */}
@@ -558,15 +633,35 @@ export default function IngestModal({ onClose, onIngested }) {
           Choose files
         </button>
         <span className="pager-info" style={{ alignSelf: "center" }}>
-          folders: drag one onto the box, or paste its path below
+          {writeEnabled
+            ? "folders: drag one onto the box, or paste its path below"
+            : "tick Ingest Ready below to enable staging"}
         </span>
       </div>
 
+      {dropNotice && (
+        <div
+          className="pager-info"
+          style={{ color: "var(--orange-text)", marginTop: 8 }}
+        >
+          {dropNotice}
+        </div>
+      )}
+
       {stagedCount > 0 && (
         <div style={{ marginTop: 8 }}>
+          <h2 className="section">{stagedCount} file(s) ready</h2>
           {staged.map((item, index) => (
-            <div key={index} className="result-row" style={{ cursor: "default" }}>
-              <div className="result-snippet">{item.name}</div>
+            <div
+              key={index}
+              className="result-row"
+              style={{ cursor: "default" }}
+            >
+              {/* Light blue, the same accent the platform pills use: these are newly
+                  staged files, and the modal's other text is deliberately muted. */}
+              <div className="result-snippet" style={{ color: "var(--blue-glow)" }}>
+                {item.name}
+              </div>
               <div className="result-meta">
                 {item.platform}
                 {item.recognised ? "" : " · not recognised, kept"}
@@ -584,33 +679,18 @@ export default function IngestModal({ onClose, onIngested }) {
         hint="One per line. For a folder export (Telegram writes a directory) or a file too large to upload. Files are COPIED into spool/real/<platform>/, chosen by content, never by filename."
       />
 
-      {/* What is already in the spool. Read-only, and the only place a duplicate is
-          caught before the parse rather than after it. */}
-      {preview && preview.legs.length > 0 && (
-        <>
-          <h2 className="section">Already in the spool</h2>
-          {preview.legs.map((leg, index) => (
-            <div key={index} className="result-row" style={{ cursor: "default" }}>
-              <div className="result-snippet">
-                {leg.platform || "?"} · {leg.path.split(/[\\/]/).slice(-2).join("/")}
-              </div>
-              <div className="result-meta">
-                {formatBytes(leg.bytes)}
-                {leg.duplicate
-                  ? ` · already ingested${leg.ingested_at ? ` ${leg.ingested_at.slice(0, 10)}` : ""}`
-                  : " · new"}
-                {leg.large ? " · large file" : ""}
-                {leg.recognised ? "" : " · not recognised, kept"}
-              </div>
-            </div>
-          ))}
-          {preview.duplicates > 0 && (
-            <div className="pager-info" style={{ marginBottom: 8 }}>
-              {preview.duplicates} file(s) already ingested. Re-running is safe — every
-              write is a MERGE on a stable key — but it costs the parse again.
-            </div>
-          )}
-        </>
+      {/* What is already in the spool. No list: the user does not need to read their own
+          folder back. The ONLY thing worth showing is that something in there is already
+          ingested and will not be read again — flagged in orange, because silently
+          skipping a file is indistinguishable from a failed ingest. */}
+      {preview && preview.duplicates > 0 && (
+        <div
+          className="pager-info"
+          style={{ color: "var(--orange-text)", margin: "8px 0 4px" }}
+        >
+          {preview.duplicates} file(s) in the spool are already ingested and will be
+          skipped.
+        </div>
       )}
 
       {/* --------------------------------------------------------------- IMAP */}
@@ -772,28 +852,6 @@ export default function IngestModal({ onClose, onIngested }) {
         hint="Fcbk Mssgr only. Drops group threads where at least half the rows are housekeeping — 'sent a link', 'added X to the group', 'left the group'. Real group chats sit far below that ratio."
       />
 
-      <h2 className="section">Prune prior ingests</h2>
-      <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
-        Deletes spool files from earlier runs once this one has verified. A file that
-        failed to land is never deleted.
-      </div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-        {[
-          ["off", "Off"],
-          ["0", "All"],
-          ["1", "Keep last"],
-          ["2", "Keep last 2"],
-        ].map(([key, label]) => (
-          <button
-            key={key}
-            className={pruneKeep === key ? "active" : "ghost"}
-            onClick={() => setPruneKeep(key)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
       {/* ------------------------------------------------------------ report */}
       {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
 
@@ -851,7 +909,6 @@ export default function IngestModal({ onClose, onIngested }) {
               <div className="result-meta">
                 {batch.messages} msgs · {batch.attachments} attachments
                 {batch.verified ? " · verified" : ""}
-                {batch.pruned ? " · pruned" : ""}
                 {batch.error ? ` · ${batch.error}` : ""}
               </div>
               {Object.entries(batch.skipped || {}).map(([reason, count]) => (

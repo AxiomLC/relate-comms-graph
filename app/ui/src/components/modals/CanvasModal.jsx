@@ -34,19 +34,19 @@ const SORTS = [
     key: "messages",
     label: "Most messages",
     hint: "the biggest threads first",
-    note: "Keeps the busiest conversations and drops the quiet ones.",
+    note: "Busiest conversations first.",
   },
   {
     key: "recent",
     label: "Most recent",
     hint: "the live ones first",
-    note: "Keeps whatever was active last, however small.",
+    note: "Whatever was active last.",
   },
   {
     key: "quiet",
     label: "Quietest",
     hint: "the ones that went silent first",
-    note: "Keeps the threads that stopped — the question this app exists to answer.",
+    note: "The threads that stopped.",
   },
 ];
 
@@ -136,29 +136,39 @@ export default function CanvasModal({
         </>
       }
     >
-      <h2 className="section" style={{ marginTop: 0 }}>Sort — which nodes survive the cutoff</h2>
+      <h2 className="section" style={{ marginTop: 0 }}>Shortened graph view</h2>
       <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
-        The canvas draws a limited number of nodes. Whichever order is chosen decides
-        which ones you can never see, so this is a real choice, not a preference.
+        Sort and view only:
       </div>
-      {SORTS.map((sort) => (
-        <Check
-          key={sort.key}
-          label={sort.label}
-          checked={(draft.filter.sort || "messages") === sort.key}
-          onChange={() => {
-            setDraft((prev) => ({
-              ...prev,
-              filter: { ...prev.filter, sort: sort.key },
-            }));
-            onReload?.({ sort: sort.key });
-          }}
-          hint={sort.hint}
-          note={sort.note}
-        />
-      ))}
+      {/* **Horizontal.** These sort with `filter.sort`; they are one exclusive choice of
+          three, so they belong side by side like the `How many nodes` limits below —
+          three stacked rows wasted the width the sidebar already has. */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+        {SORTS.map((sort) => (
+          <button
+            key={sort.key}
+            className={(draft.filter.sort || "messages") === sort.key ? "active" : "ghost"}
+            title={sort.hint}
+            onClick={() => {
+              setDraft((prev) => ({
+                ...prev,
+                filter: { ...prev.filter, sort: sort.key },
+              }));
+              onReload?.({ sort: sort.key });
+            }}
+          >
+            {sort.label}
+          </button>
+        ))}
+      </div>
+      <div className="empty" style={{ paddingTop: 0, paddingBottom: 6 }}>
+        {SORTS.map((s) => s.note).join("  ·  ")}
+      </div>
 
       <h2 className="section">How many nodes</h2>
+      <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
+        Viewable graph; but full graph still searchable.
+      </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
         {LIMITS.map((value) => (
           <button
@@ -185,46 +195,47 @@ export default function CanvasModal({
       )}
 
       <h2 className="section">Node types</h2>
-      {Object.entries(NODE_TYPES).map(([type, meta]) => {
-        const count = types.data?.node_types?.find((entry) => entry.type === type)?.count;
-        return (
-          <Check
-            key={type}
-            label={`${meta.label}${count != null ? ` (${count.toLocaleString()})` : ""}${
-              meta.drawable ? "" : " — not drawable"
-            }`}
-            checked={draft.filter.nodeTypes.includes(type)}
-            onChange={() => toggleType(type)}
-            hint={meta.hint}
-          />
-        );
-      })}
+      {/* Two columns, because six single-line rows cost the modal more vertical space
+          than the content deserves. `gridTemplateColumns: 1fr 1fr` keeps the DOM order
+          (a11y and tab order unchanged) and only changes placement. */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 10px" }}>
+        {Object.entries(NODE_TYPES).map(([type, meta]) => {
+          const count = types.data?.node_types?.find((entry) => entry.type === type)?.count;
+          return (
+            <Check
+              key={type}
+              label={`${meta.label}${count != null ? ` (${count.toLocaleString()})` : ""}${
+                meta.drawable ? "" : " — not drawable"
+              }`}
+              checked={draft.filter.nodeTypes.includes(type)}
+              onChange={() => toggleType(type)}
+              hint={meta.hint}
+            />
+          );
+        })}
+      </div>
 
       <h2 className="section">Viewable platforms</h2>
       <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
-        All on by default. Toggle one off to hide its cluster from the canvas — it stays
-        fully searchable, and the AI chat still sees it. This is <em>not</em>{" "}
-        <strong>Utilities</strong>, which narrows what the tools return.
+        All on by default. Not <strong>Utilities</strong>, which narrows what the tools
+        return.
       </div>
-      {(platforms?.rows || []).map((row) => (
-        <label key={row.platform} className="check" style={{ marginBottom: 6 }}>
-          <input
-            type="checkbox"
-            checked={isPlatformOn(draft.filter.platforms, row.platform, platforms?.rows)}
-            onChange={() => togglePlatform(row.platform)}
-          />
-          <span
-            className="legend-swatch"
-            style={{ background: platformColor(row.platform), marginRight: 2 }}
-          />
-          <span style={{ minWidth: 90 }}>
-            {PLATFORM_LABELS[row.platform] || row.platform}
-          </span>
-          <span className="pager-info">
-            {row.built ? `${row.count.toLocaleString()} messages` : "not built yet"}
-          </span>
-        </label>
-      ))}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 10px" }}>
+        {(platforms?.rows || []).map((row) => (
+          <label key={row.platform} className="check" style={{ marginBottom: 6 }}>
+            <input
+              type="checkbox"
+              checked={isPlatformOn(draft.filter.platforms, row.platform, platforms?.rows)}
+              onChange={() => togglePlatform(row.platform)}
+            />
+            <span
+              className="legend-swatch"
+              style={{ background: platformColor(row.platform), marginRight: 2 }}
+            />
+            <span>{PLATFORM_LABELS[row.platform] || row.platform}</span>
+          </label>
+        ))}
+      </div>
 
       <h2 className="section">Threads you never spoke in</h2>
       <Check
@@ -238,6 +249,20 @@ export default function CanvasModal({
         }
         hint="View only. A thread you never replied in is often a broadcast or a group you were added to — hidden here, still searchable."
         note="A thread you never replied in is usually a broadcast or a group you were added to."
+      />
+
+      <h2 className="section">Extracted entities</h2>
+      <Check
+        label="Hide Place, Person, Org mentioned only once"
+        checked={!!draft.filter.hideSingleMentions}
+        onChange={(value) =>
+          setDraft((prev) => ({
+            ...prev,
+            filter: { ...prev.filter, hideSingleMentions: value },
+          }))
+        }
+        hint="View only. A node seen on two platforms is shown regardless — that is two independent sightings, not one."
+        note="Shows cross-platform merged nodes."
       />
     </Modal>
   );

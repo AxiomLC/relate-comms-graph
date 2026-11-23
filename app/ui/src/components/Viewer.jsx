@@ -762,7 +762,14 @@ function EntityView({ entry, onOpen }) {
               {platformLabel(platform)}
             </span>
           ))}
-          {entry.merged && <span className="pill merged">Merged</span>}
+          {entry.merged && (
+            <span
+              className="pill merged"
+              title={`Same canonical name seen on ${platformsOf(entry).length} platforms — a spelling match, not a verified identity`}
+            >
+              Merged
+            </span>
+          )}
         </div>
       </div>
 

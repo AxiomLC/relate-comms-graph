@@ -64,32 +64,55 @@ export const NODE_TYPES = {
     labelMax: 28,
     glow: true,
     iconKind: "entity",
+    // Every extracted kind declares its own halo, or it falls through to the base
+    // `node.merged` rule and glows ORANGE — the Correspondent bridge colour, a stronger
+    // claim than any of these makes. Person keeps the neutral grey it shares with the
+    // Correspondent glyph, because "the same human name" is the closest of the four to
+    // an identity, but it still does not borrow the orange.
+    mergedGlowColor: "#8a97a8",
   },
   Place: {
     drawable: true,
     shape: "ellipse",
     label: "Place",
     hint: "a location mentioned in a body",
-    sizeLadder: ["D", "E", "F"],
+    // B / D / E — Places outrank Threads at the same band (a Place is a rarer, more
+    // deliberate find than one conversation) and each Place is a hub for many threads.
+    // The ladder still interleaves: A thread, B place, C thread, D both, E both, F
+    // correspondent. Collides with Correspondent's D only, which is intended.
+    sizeLadder: ["B", "D", "E"],
     countKey: "mention_count",
     labelMax: 28,
     glow: true,
     iconKind: "entity",
-    // A merged Place glows DARK GREY, not orange. Orange is the bridge colour for a
-    // person seen on several platforms; a place is a different claim (same spelling,
-    // two platforms) and must not borrow the stronger signal.
-    mergedGlowColor: "#5a5f66",
+    // A merged Place glows YELLOW, not orange. Orange is the bridge colour for a person
+    // seen on several platforms — a verified identity. A place is the weaker claim (same
+    // canonical spelling, two platforms) and must not borrow the stronger signal.
+    //
+    // **Yellow, not the old dark grey.** Grey on a near-black page read as "switched
+    // off" rather than as a distinct claim. Yellow says "a different kind of merge"
+    // without matching either the orange person bridge or any platform hue.
+    //
+    // The gradient's SHAPE is shared with Correspondents; only the hue differs. The
+    // stops are derived from this hex by `mergedStopsFor()`, so the ramp always tapers
+    // to a transparent stop of the same colour.
+    mergedGlowColor: "#c9a227",
   },
   Organization: {
     drawable: true,
     shape: "ellipse",
     label: "Organization",
-    hint: "a company or body mentioned in a body",
+    hint: "a company, council, NGO, union or club mentioned in a body",
     sizeLadder: ["D", "E", "F"],
     countKey: "mention_count",
     labelMax: 28,
     glow: true,
     iconKind: "entity",
+    // `UIVISUALS.md` §7: future kinds keep the halo SHAPE and swap the COLOUR to
+    // yellow. Without this key a merged Organization would fall through to the base
+    // `node.merged` rule and glow ORANGE — the Correspondent bridge colour — which is
+    // the exact "borrowing the stronger signal" the doc forbids.
+    mergedGlowColor: "#b8912a",
   },
   Product: {
     drawable: true,
@@ -100,7 +123,10 @@ export const NODE_TYPES = {
     countKey: "mention_count",
     labelMax: 28,
     glow: true,
+    // No fourth glyph — a filled circle is more honest than borrowing one.
     iconKind: null,
+    // Yellow, same reason as Organization: an extracted kind never borrows orange.
+    mergedGlowColor: "#b8912a",
   },
   Message: {
     drawable: false,
@@ -146,6 +172,7 @@ export const PLATFORM_COLORS = {
  * Correspondents and Persons use `PERSON_ICONS` below, so the two kinds never look
  * alike.
  *
+ /**
  * Icons are the only node look — there is no circle mode.
  */
 export const PLATFORM_ICONS = {
@@ -252,12 +279,19 @@ export function entityIcon(type, platform, merged = false) {
 /**
  * The glyph for one node, chosen by its KIND and then its platform.
  *
- * Only two kinds have glyphs today: a Thread draws its platform's glyph, a
- * Correspondent draws the person glyph. **`Person` / `Place` / `Organization` /
- * `Product` deliberately have none** — `iconKind: null` — so they draw as the base
- * filled circle. A glyph cannot be tinted at runtime, so each one would need a file
- * per platform colour the way `PERSON_ICONS` does; until then, a circle is the
- * honest look.
+ * The glyph for one node, chosen by its KIND and then its platform.
+ *
+ * Four routes, one per `iconKind`:
+ *
+ *   - `platform`  — a Thread draws its source's glyph.
+ *   - `person`    — a Correspondent draws the person glyph, neutral grey if merged.
+ *   - `entity`    — Person / Place / Organization draw their own generated set.
+ *   - `null`      — Product has no glyph yet and draws the base filled circle.
+ *
+ * A glyph cannot be tinted at runtime, so each one needs a file per platform colour.
+ * That is why the entity sets are generated (`scripts/build_entity_icons.py`) rather
+ * than hand-written, and why a kind with no artwork is a circle rather than an
+ * invented glyph.
  */
 export function nodeIcon(type, platform, merged = false) {
   const kind = NODE_TYPES[type]?.iconKind;

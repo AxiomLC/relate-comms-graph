@@ -127,9 +127,9 @@ export const THEME = {
     // (opacity 0.3), so it is a soft band rather than a hard line — see `visual` for
     // why a real glow is not possible.
     edge: [
-      { min: 80, width: 8, opacity: 0.3 },
-      { min: 12, width: 0.8, opacity: 1 },
-      { min: 0, width: 0.5, opacity: 1 },
+      { min: 80, width: 4, opacity: 0.3 },
+      { min: 12, width: 0.3, opacity: 1 },
+      { min: 0, width: 0.1, opacity: 1 },
     ],
   },
 
@@ -289,9 +289,11 @@ export const THEME = {
    * keeps the ones that went silent — the question this app exists to answer.
    */
   filter: {
-    // The default set. The four entity kinds are drawable but hold zero rows until
-    // body-entity extraction lands, so they are off until someone ticks them.
-    nodeTypes: ["Thread", "Correspondent"],
+    // Places are drawn by default because they have rows now (21 in the live store).
+    // The other three extracted kinds stay off until their extractors land — a ticked
+    // kind with zero rows only costs a query. To distrust the extractor, untick
+    // `Place` here or in the Canvas modal.
+    nodeTypes: ["Thread", "Correspondent", "Place", "Organization"],
     // One invisible bag per platform, so fcose clusters threads by source instead of
     // letting them float free. Client-side only — a bag is a body for the layout, not
     // data, and it never reaches the server or any count. Off is a real option: with
@@ -303,6 +305,21 @@ export const THEME = {
     // appears without the user having to tick it.
     platforms: [],
     hideSilent: false, // hide threads the owner never sent a message in
+    // Hide an extracted entity mentioned only once, unless it spans two platforms.
+    //
+    // **Negative form, and the default is OFF.** A node is data the store holds; hiding
+    // it must be something the user asked for, not a silent default. The earlier
+    // `showSingleMentions` was a positive toggle defaulting to false, which hid the
+    // long tail without the user having chosen it.
+    //
+    // `:Merged` overrides the count, and that is the whole point of the rule: one
+    // mention on Telegram is one sighting, but the same name on Telegram AND on email is
+    // two independent ones. A rare contact must not be hidden for being quiet.
+    //
+    // The key changed name as well as polarity. `relate.graphStyle.overrides` stores a
+    // diff, so an old `showSingleMentions` in someone's localStorage no longer matches
+    // any default and is therefore ignored rather than misread as `hideSingleMentions`.
+    hideSingleMentions: false,
     sort: "messages", // messages | recent | quiet
     limit: 2000, // nodes drawn; the canvas reports the real total beside it
   },

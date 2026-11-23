@@ -94,6 +94,14 @@ const FALLBACK_META = {
 const metaOf = (node) => NODE_TYPES[node.type] || FALLBACK_META;
 
 /**
+ * Is this node an extracted entity (Place, Organization, …) rather than ingested data?
+ *
+ * Read from `iconKind`, which only the extracted kinds carry. A kind added later is
+ * covered without a second list to keep in sync.
+ */
+const isExtractedKind = (type) => NODE_TYPES[type]?.iconKind === "entity";
+
+/**
  * The id of one platform's bag.
  *
  * Prefixed so it can never collide with a real node id — a Thread key is
@@ -106,9 +114,10 @@ const bagId = (platform) => `bag:${platform}`;
  * The id of the merged bag — the second tier of the composition.
  *
  * Platform bags sit on the ring; this one sits at the centre. It holds every node
- * that is not in a platform bag: merged Correspondents, multi-platform entities and
- * anything with no platform at all. `merged` is not a platform name, so this can
- * never collide with `bagId(platform)`.
+ * that spans more than one platform, and anything with no single platform at all.
+ * That is ONE rule for all kinds: a merged Place and a merged Correspondent are both
+ * "a thing on several platforms", and both belong here. `merged` is not a platform
+ * name, so this can never collide with `bagId(platform)`.
  */
 const MERGED_BAG_ID = "bag:merged";
 
@@ -152,6 +161,11 @@ const GraphCanvas = forwardRef(function GraphCanvas(
   // and referencing it there throws `hideSilent is not defined` on every render —
   // which blanks the whole app.
   const hideSilent = !!theme.filter.hideSilent;
+  // Same rule as `hideSilent` above, and the same trap: it is read inside the elements
+  // memo AND listed in its dependency array, so it must live in the enclosing scope.
+  // Declaring it inside the callback (the obvious place) throws
+  // "hideSingles is not defined" on every render and blanks the app.
+  const hideSingles = !!theme.filter.hideSingleMentions;
   const elements = useMemo(() => {
     const theme = themeRef.current; // eslint-disable-line no-shadow
     if (!data) return [];
@@ -174,9 +188,20 @@ const GraphCanvas = forwardRef(function GraphCanvas(
         ? node.platforms
         : [node.platform];
     const chosen = theme.filter.platforms || [];
+    // `hideSingleMentions` hides an extracted entity seen in exactly one message,
+    // UNLESS it is `:Merged` — two platforms is two independent sightings and outranks
+    // a count of one. Threads and Correspondents are unaffected: this is about
+    // extraction evidence, and neither is extracted.
+    //
+    // **Off by default.** Nothing is hidden unless the user asks. See `theme.filter`.
+    // `hideSingles` is hoisted above the memo — see the note there.
     const allNodes = (data.nodes || []).filter((node) => {
       if (chosen.length && !platformsOf(node).some((p) => chosen.includes(p))) {
         return false;
+      }
+      if (hideSingles && isExtractedKind(node.type) && !node.merged) {
+        const mentions = Number(node.mention_count) || 0;
+        if (mentions <= 1) return false;
       }
       // A thread the owner never spoke in. `message_count` is the only signal the
       // canvas has, so a thread with no messages is not hidden by this — it is
@@ -263,11 +288,20 @@ const GraphCanvas = forwardRef(function GraphCanvas(
           rawLabel: node.label || node.id,
           type: node.type,
           platform: node.platform || "",
+          // The FULL platform list, not just the first-by-date string. The Viewer reads
+          // this to draw one pill per platform; without it a 4-platform node rendered
+          // one pill and looked single-platform. Cytoscape data values must be
+          // primitives or arrays it can clone — an array of strings is fine.
+          platforms: platformsOf(node),
           messageCount: node.message_count || 0,
           threadCount: node.thread_count || 0,
           firstTs: node.first_ts || null,
           lastTs: node.last_ts || null,
           isGroup: !!node.is_group,
+          // Extracted entities: the hub count (`thread_count`) and the mention count
+          // are both real and differ, so both travel. The Viewer shows whichever the
+          // kind's `countKey` names.
+          mentionCount: node.mention_count || 0,
           // `:Merged` is the bag-membership test, inverted: a merged node goes in
           // the central merged bag rather than a platform bag.
           merged: !!node.merged,
@@ -293,12 +327,20 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     // so a bag that survives its children (or the reverse) is a hard failure, not a
     // cosmetic one.
     //
-    // Membership is `:Merged`, inverted: a node with exactly one platform goes in
-    // that platform's bag. Everything else — a merged Correspondent, a Place
-    // mentioned on two platforms, a node with no platform at all — goes in the
-    // MERGED bag, the second tier of the composition, which is placed at the centre
-    // rather than on the ring. The test reads the LABEL, not `platforms.length`: a
-    // `platforms.length === 1` test would have quietly bagged the world's geography.
+    // Membership is ONE rule for every kind, extracted entities included:
+    //
+    //   - not merged, exactly one platform              → that platform's bag
+    //   - merged (several platforms)                    → MERGED_BAG_ID, centre
+    //   - not merged but no single platform (no data)   → MERGED_BAG_ID
+    //
+    // **Entities are not special-cased.** A Place seen only on Telegram belongs in the
+    // Telegram bag, next to the threads that mention it — that is where it is *used*.
+    // An earlier version put every entity in its own bag regardless of platform, which
+    // stranded single-platform places away from their own conversations and left their
+    // mention edges crossing the whole canvas.
+    //
+    // The test reads the `merged` LABEL, not `platforms.length`: a length test would
+    // quietly bag the world's geography (see HANDOVER, Open decisions).
     //
     // Bags are synthetic. They are excluded from the reveal and from every count —
     // `cy.nodes().length` includes them, so nothing may use that raw.
@@ -371,8 +413,12 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     // cluster, hiding a silent thread or turning bags on must rebuild the elements;
     // the rest of the theme stays out of it so a slider move does not throw away the
     // layout.
+    // `hideSingleMentions` hides a node on data, not on style, so it must rebuild the
+    // elements — the same reason `hideSilent` is a dependency. Listed below, not just
+    // mentioned here: a missing dependency is exactly how the `hideSilent` toggle once
+    // changed the theme and nothing on screen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, sizeKey, platformKey, hideSilent, bagsOn]);
+  }, [data, sizeKey, platformKey, hideSilent, bagsOn, hideSingles]);
 
   /* ------------------------------------------------------------------- create */
 
@@ -417,7 +463,14 @@ const GraphCanvas = forwardRef(function GraphCanvas(
         id: node.data("id"),
         label: node.data("rawLabel"),
         platform: node.data("platform"),
+        // Carried because the Viewer's platform pills read `platforms`, never
+        // `platform`. Omitting them was the bug: the Viewer fix was correct and had
+        // nothing to render, because the click payload never sent the list.
+        platforms: node.data("platforms") || [],
+        merged: !!node.data("merged"),
         messageCount: node.data("messageCount"),
+        threadCount: node.data("threadCount"),
+        mentionCount: node.data("mentionCount"),
         firstTs: node.data("firstTs"),
         lastTs: node.data("lastTs"),
         isGroup: node.data("isGroup"),
@@ -1102,22 +1155,72 @@ function rgbToHex(r, g, b) {
  * Order is the legend order, so a platform is always in the same place. A graph that
  * reshuffles itself between visits reads as noise.
  */
+
+/**
+ * Centre a bag's children on a point.
+ *
+ * A compound's box is the union of its children, so moving the children moves the bag.
+ * The centre is read from the children, not from `bag.position()` — for a compound that
+ * value is derived and can lag a frame behind.
+ *
+ * `position()` is ABSOLUTE even for a child (Cytoscape's `relativePosition()` is the one
+ * that subtracts the parent), so an absolute delta is correct here.
+ */
+function moveBagTo(bag, target) {
+  const children = bag.children();
+  if (!children.length) return false;
+  const box = children.boundingBox();
+  const dx = target.x - (box.x1 + box.w / 2);
+  const dy = target.y - (box.y1 + box.h / 2);
+  // A compound whose bounds have not settled reports `NaN`, and a `NaN` delta would put
+  // every child at `NaN` — a blank canvas, not a misplaced node.
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+  children.forEach((child) => {
+    const position = child.position();
+    child.position({ x: position.x + dx, y: position.y + dy });
+  });
+  return true;
+}
+
+/** Half the larger side of a bag's box — its effective radius, for spacing. */
+function bagRadius(bag) {
+  const children = bag.children();
+  if (!children.length) return 0;
+  const box = children.boundingBox();
+  const r = Math.max(box.w, box.h) / 2;
+  return Number.isFinite(r) ? r : 0;
+}
+
 function placeBagsOnRing(cy, spread = 1) {
-  // Platform bags only. The merged bag is placed by its own rule (centre), and
-  // leaving it in would also inflate the radius from its own footprint.
+  const merged = cy.getElementById(MERGED_BAG_ID);
+  const hasMerged = !!(merged && merged.length);
+
+  // Platform bags only. The merged bag is excluded here and centred at the end —
+  // including it would also inflate the radius from its own footprint.
   const bags = cy.nodes('[type = "Bag"]').filter((bag) => bag.id() !== MERGED_BAG_ID);
-  if (bags.length < 2) return;
+
+  // **The merge guard must not swallow the centring.** Early-returning on
+  // `bags.length < 2` used to skip everything, so a store with one platform never put
+  // the merged bag at the origin either — it stayed wherever fcose left it.
+  if (bags.length < 2) {
+    if (hasMerged) moveBagTo(merged, { x: 0, y: 0 });
+    return;
+  }
+
+  // The merged bag's footprint sets the inner clearance: the ring must be far enough out
+  // that the platform bags do not sit on top of it. Read BEFORE anything moves.
+  const mergedRadius = hasMerged ? bagRadius(merged) : 0;
 
   // Radius from the bags' own footprint, so seven of them sit shoulder to shoulder
   // without touching and a small store does not get a vast empty circle.
   const widest = Math.max(
     ...bags.map((bag) => Math.max(bag.outerWidth(), bag.outerHeight())),
   );
-  // A compound whose bounds have not settled reports `NaN`, and a `NaN` radius would
-  // put every child at `NaN` — the same blank canvas the constraint produced. Fall
-  // back to a fixed radius rather than trusting the measurement.
+  // `+ mergedRadius`: the platforms sit OUTSIDE the merged bag, never over it. Without
+  // this a small store put the rings on top of the centre cluster.
   const base = Number.isFinite(widest) && widest > 0 ? widest * 1.6 : 260;
-  const radius = Math.max(base, 260) * (spread || 1);
+  const ring = Math.max(base, 260) + mergedRadius;
+  const radius = ring * (spread || 1);
 
   const ordered = bags.toArray().sort((a, b) => {
     const ai = LEGEND_PLATFORMS.indexOf(a.data("platform"));
@@ -1128,28 +1231,20 @@ function placeBagsOnRing(cy, spread = 1) {
 
   cy.batch(() => {
     ordered.forEach((bag, index) => {
-      const children = bag.children();
-      if (!children.length) return;
-
+      // Evenly spaced, starting at the top, so a platform is always in the same place —
+      // a graph that reshuffles between visits reads as noise.
       const angle = (2 * Math.PI * index) / ordered.length - Math.PI / 2;
-      const target = { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
-
-      // The bag's own box is the union of its children, so moving the children moves
-      // the bag. Its centre is read from the children, not from `bag.position()`,
-      // which for a compound is derived and can lag a frame behind.
-      //
-      // `position()` is ABSOLUTE even for a child (Cytoscape's `relativePosition()`
-      // is the one that subtracts the parent), so an absolute delta is right here.
-      const box = children.boundingBox();
-      const dx = target.x - (box.x1 + box.w / 2);
-      const dy = target.y - (box.y1 + box.h / 2);
-      if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
-
-      children.forEach((child) => {
-        const position = child.position();
-        child.position({ x: position.x + dx, y: position.y + dy });
-      });
+      moveBagTo(bag, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
     });
+
+    // Second tier: the merged bag goes to the ORIGIN, inside the ring the platforms form.
+    //
+    // **This was missing.** The docstring said the merged bag "belongs at the centre" and
+    // excluded it from the ring, but nothing ever moved it — so it stayed wherever fcose
+    // left it, which after the platform bags were translated was usually well outside
+    // them. A merged node connects to platforms all round the ring, so the centre is also
+    // the only position where its edges pull evenly.
+    if (hasMerged) moveBagTo(merged, { x: 0, y: 0 });
   });
 }
 

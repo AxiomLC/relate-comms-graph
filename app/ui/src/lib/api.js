@@ -166,6 +166,13 @@ export const api = {
   truncate: (payload) =>
     request("/api/ingest/truncate", { method: "POST", body: JSON.stringify(payload) }),
 
+  /** Delete the exports in `spool/real/` only. The graph is untouched. */
+  deleteSpool: (payload) =>
+    request("/api/ingest/spool/delete", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   /** Write IMAP credentials to `./.env`. The password is never echoed back. */
   saveEnv: (payload) =>
     request("/api/ingest/env", { method: "POST", body: JSON.stringify(payload) }),
