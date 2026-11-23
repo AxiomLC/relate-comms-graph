@@ -153,6 +153,19 @@ def _count_non_english(result: IngestResult) -> int:
     )
 
 
+def _count_documents(result: IngestResult) -> int:
+    """Bodies too long to be chat messages, so their entities are skipped.
+
+    A count on the report, never an error and never a gate on the message write — the
+    message is still stored, it just contributes no entities. Without this line the run
+    would show fewer Places/Organizations than the seconds before it and give no reason.
+    """
+    return sum(
+        1 for message in result.messages
+        if extract.looks_like_document(message.body)
+    )
+
+
 @dataclass
 class Batch:
     """One export file, before it is parsed."""
@@ -185,8 +198,10 @@ class BatchOutcome:
     fingerprint: str = ""
     correspondents: int = 0
     places: int = 0
+    organizations: int = 0
     mentions: int = 0
     non_english: int = 0
+    documents: int = 0
     # Messages the export contained (parsed), and how many of those the delta cutoff
     # dropped as already-stored. `messages` above is what was actually written, so
     # `read - delta_dropped == messages` is the invariant a delta run is judged on.
@@ -215,8 +230,10 @@ class BatchOutcome:
             "read": self.read,
             "delta_dropped": self.delta_dropped,
             "places": self.places,
+            "organizations": self.organizations,
             "mentions": self.mentions,
             "non_english": self.non_english,
+            "documents": self.documents,
             # Warnings are potentially numerous; the CLI prints them, the JSON
             # summary keeps them so nothing is lost between surfaces.
             "warnings": self.warnings,
@@ -328,6 +345,71 @@ def looks_like_telegram(path: Path) -> bool:
     )
 
 
+# Folders Telegram puts an export in before the user gets to it. Documented for the
+# reader, not used as a gate: a container is recognised by its CONTENTS, because users
+# rename folders and a name test would be wrong exactly when it mattered.
+_TG_CONTAINER_NAMES = frozenset({
+    "telegram desktop", "telegram", "tdata", "telegram desktop export",
+})
+
+
+def looks_like_telegram_dir(path: Path) -> bool:
+    """Is this directory itself a Telegram export? (Not a container — see `peel`.)
+
+    A **single** export root: `path/result.json` in Telegram's shape. That is
+    `ChatExport_<date>/` (one chat) and `DataExport_<date>/` (whole account).
+
+    Detecting the export root is what keeps the batch unit equal to the file the
+    manifest records, so `prune` and the per-file dedup keep working. A *container*
+    (`Telegram Desktop/`) is handled separately by `peel`, which rewrites it into the
+    exports inside it — claiming it here instead made `discover()` stop at the parent
+    and hand `prune` a directory it cannot delete.
+    """
+    if not path.is_dir():
+        return False
+    direct = path / "result.json"
+    return direct.is_file() and looks_like_telegram(direct)
+
+
+def peel(path: Path) -> list[Path]:
+    """Expand a dropped CONTAINER folder into the exports inside it.
+
+    `Telegram Desktop/` is the folder a user actually has and actually drops. It is not
+    an export: it holds `ChatExport_<date>/` and/or `DataExport_<date>/`, each of which
+    is. Returning those lets every export stay its own batch, keep its own manifest
+    entry, and remain individually prunable.
+
+    **Gated on the folder NAME, and that is deliberate.** A shape test cannot tell a
+    container from a spool folder holding one export per subfolder — `spool/a/` and
+    `Telegram Desktop/ChatExport_x/` are the same two levels deep with the same contents,
+    and `spool/` holds exactly one export in the common case. Treating that as a
+    container made `prune` receive a directory it cannot delete (measured: "Permission
+    denied" on the folder, and `pruned` False). A name gate is unambiguous, and the set
+    is tiny because Telegram Desktop is what the app writes.
+    """
+    if not path.is_dir():
+        return []
+    if path.name.casefold() not in _TG_CONTAINER_NAMES:
+        return []
+    if looks_like_telegram_dir(path):
+        return []
+    try:
+        children = sorted(path.iterdir())
+    except OSError:
+        return []
+    # Each child is an export FOLDER; return its `result.json`, because that file is the
+    # batch unit — fingerprintable, prunable, and recognised by `detect_platform`'s file
+    # branch. Returning the folder instead left every export `unrecognised`.
+    peeled: list[Path] = []
+    for child in children:
+        if not child.is_dir():
+            continue
+        candidate = child / "result.json"
+        if candidate.is_file() and looks_like_telegram(candidate):
+            peeled.append(candidate)
+    return peeled
+
+
 def detect_platform(path: Path) -> str | None:
     """Which adapter owns this path? None means 'unrecognised, report and keep'.
 
@@ -350,8 +432,23 @@ def detect_platform(path: Path) -> str | None:
         # `_detect_whatsapp`, which reads a `chat.txt` from a zip or a bare text file.
         if _detect_whatsapp(path) is not None:
             return whatsapp.PLATFORM
-        # Telegram's folder holds `result.json`; the file branch below handles it once
-        # `discover()` has walked in, so a folder is not claimed here.
+        # A Telegram export FOLDER is NOT claimed here, deliberately.
+        #
+        # Claiming `ChatExport_<date>/` makes the batch path a DIRECTORY, and a directory
+        # cannot be fingerprinted — `manifest.fingerprint()` stats a file — so the batch
+        # is never recorded, and `_prune_keep_last` skips it forever (measured:
+        # "not recorded in the manifest: Permission denied"). That silently disables
+        # spool pruning for every Telegram export.
+        #
+        # So the export folder is walked into and its `result.json` is the batch, which
+        # is fingerprinted, prunable, and deduped like every other file. The two-shape
+        # problem (`ChatExport_` vs `DataExport_`) is solved in the adapter, which reads
+        # both via `_iter_chats`, and the dropped-container problem is solved by
+        # `peel()`, which rewrites `Telegram Desktop/` into the exports inside it.
+        #
+        # `_detect_whatsapp` above and this branch agree on the principle: a folder is
+        # only claimed when the adapter reads the folder AS the unit (WhatsApp reads
+        # `chat.txt` out of a zip/folder); Telegram reads a JSON file.
         return None
 
     suffix = path.suffix.lower()
@@ -441,6 +538,13 @@ def discover(root: Path) -> list[Batch]:
     candidates: list[Path] = []
     for entry in sorted(root.iterdir()):
         if entry.is_dir():
+            # A CONTAINER (`Telegram Desktop/`) is peeled into the exports inside it, so
+            # each export stays its own batch and keeps its own manifest entry. Done
+            # before the claim test below, which is what a real export root answers.
+            peeled = peel(entry)
+            if peeled:
+                candidates.extend(peeled)
+                continue
             # One batch for the folder when an adapter claims it as a whole.
             if detect_platform(entry) is not None:
                 candidates.append(entry)
@@ -899,34 +1003,36 @@ def ingest(
             report.keys.update(written["keys"])
             outcome.attachments = written["attachments"]
 
-            # Body-entity extraction: places only in v1. Runs **after** the messages are
-            # written, because a `MENTIONS` edge hangs off a Thread that must exist, and
-            # because an extraction failure must never cost the messages — it is a
-            # warning, not an error, exactly like the correspondent write above.
+            # Body-entity extraction: Places and Organizations. Runs **after** the
+            # messages are written, because a `MENTIONS` edge hangs off a Thread that must
+            # exist, and because an extraction failure must never cost the messages — it
+            # is a warning, not an error, exactly like the correspondent write above.
             #
-            # Nothing is decided here: `extract` proposes spans, `write_places` folds
-            # them within this platform via `canon`, and `link.link()` below merges
-            # across platforms. A better extractor can be re-run over old messages
-            # without a re-ingest because the spans are not the graph.
+            # Nothing is decided here: `extract` proposes spans, `write_entities` folds
+            # them within this platform via `canon`, and `link.link()` below merges across
+            # platforms. A better extractor can be re-run over old messages without a
+            # re-ingest because the spans are not the graph.
             if extract.available():
                 try:
                     found = extract.extract(
                         (m.key, m.platform, m.body) for m in result.messages
                     )
                     outcome.non_english = _count_non_english(result)
+                    outcome.documents = _count_documents(result)
                     if found:
                         meta = {
                             m.key: (writer.thread_key(m), to_utc_string(m.ts_utc))
                             for m in result.messages
                         }
-                        counted = writer.write_places(
+                        counted = writer.write_entities(
                             conn, found, message_meta=meta,
                         )
                         outcome.places = counted["places"]
+                        outcome.organizations = counted["organizations"]
                         outcome.mentions = counted["mentions"]
                 except Exception as exc:  # noqa: BLE001 - never fail the batch over this
                     outcome.warnings.append(
-                        f"places not written: {type(exc).__name__}: {exc}")
+                        f"entities not written: {type(exc).__name__}: {exc}")
             else:
                 reason = extract.unavailable_reason()
                 if reason and reason not in report.warnings:
@@ -934,7 +1040,11 @@ def ingest(
             if outcome.non_english:
                 outcome.warnings.append(
                     f"{outcome.non_english} message(s) look non-English and contributed "
-                    "no Places; extraction is English-only in v1")
+                    "no entities; extraction is English-only in v1")
+            if outcome.documents:
+                outcome.warnings.append(
+                    f"{outcome.documents} message(s) look like documents, not chat "
+                    "messages, and contributed no entities")
 
             ok, verification = writer.verify_present(conn, result)
             outcome.verified = ok

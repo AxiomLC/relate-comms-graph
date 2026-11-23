@@ -43,7 +43,10 @@ SHARED = {"gmail": "email", "imap": "email"}
 # take DARK GREY (requested); the other kinds keep the neutral grey the Correspondent
 # glyph uses, which `person-merged.svg` already establishes.
 MERGED_COLORS = {
-    "place": "#5a5f66",
+    # Two shades lighter than the original `#5a5f66`: on a near-black canvas that grey
+    # read as "disabled" rather than neutral. Kept BELOW the Correspondent grey
+    # (`#8a97a8`) so a merged Place still reads as the weaker claim of the two.
+    "place": "#9aa3ad",
     "organization": "#8a97a8",
     "person": "#8a97a8",
     # The extracted `Person` glyph, kept apart from the Correspondent's `person-*`
@@ -96,6 +99,12 @@ def _body(inner: str, fill: str) -> str:
 
 
 def build(kind: str, source: Path) -> None:
+    # The source art is NOT committed (`.tmp_*.svg` is gitignored), so on a fresh clone
+    # only the generated files exist. Skipping an absent source lets one kind be
+    # regenerated alone — `build("place", …)` must not die on a missing `.tmp_org.svg`.
+    if not source.exists():
+        print(f"{kind}: skipped — source {source.name} not present")
+        return
     raw = source.read_text(encoding="utf-8")
     inner = _strip_svg(raw)
     viewbox = _viewbox(inner)
@@ -126,6 +135,12 @@ def build(kind: str, source: Path) -> None:
 
 
 if __name__ == "__main__":
-    build("place", ROOT / ".tmp_pin.svg")
-    build("organization", ROOT / ".tmp_org.svg")
-    build("person-extracted", ROOT / ".tmp_person.svg")
+    # `scripts/icons_src/` holds a committed copy of any source whose download is gone.
+    # `.tmp_*` is the original convention and wins if present (a fresh download).
+    def source(tmp: str, keep: str) -> Path:
+        tmp_path = ROOT / tmp
+        return tmp_path if tmp_path.exists() else ROOT / "scripts" / "icons_src" / keep
+
+    build("place", source(".tmp_pin.svg", "place.svg"))
+    build("organization", source(".tmp_org.svg", "organization.svg"))
+    build("person-extracted", source(".tmp_person.svg", "person.svg"))

@@ -302,6 +302,19 @@ def verify(which: Literal["real", "sample"] = "real") -> dict:
     return tools.verify_ingest(which)
 
 
+@router.post("/ingest/spool/delete")
+def delete_spool(request: PruneRequest) -> dict:
+    """Delete every export in `spool/real/`. Needs write **and** confirm.
+
+    Independent of the graph — see `tools.delete_spool` for why this is not
+    `truncate(also_spool=True)`.
+    """
+    return tools.delete_spool(
+        write_enabled=request.write_enabled,
+        confirm=request.confirm,
+    )
+
+
 @router.post("/ingest/prune")
 def prune(request: PruneRequest) -> dict:
     """Delete verified spool files older than N days. Needs write **and** confirm."""

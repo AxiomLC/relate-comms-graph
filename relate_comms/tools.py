@@ -380,12 +380,20 @@ def _snippet(body: str, needle: str, width: int = 160) -> str:
 # The canvas draws these and nothing else (UI-Cytoscape.md §3): 955 threads is
 # drawable, 12,499 messages is not. Asking for `Message` is explicit, never default.
 #
-# The four extracted kinds are **queryable but not drawn by default**: they have zero
-# rows until body-entity extraction lands. The UI's `NODE_TYPES` config does know them
-# (edit 3) and can draw them once ticked, but they stay off in `filter.nodeTypes` for
-# the same reason. They are in `_NODE_QUERIES` so a caller can ask for them explicitly
-# and so the queries exist before the writer that fills them.
-DRAWABLE_NODE_TYPES: tuple[str, ...] = ("Thread", "Correspondent")
+# **`Place` is the first extracted kind to be drawn.** The other three (Person,
+# Organization, Product) are still queryable-but-not-drawn: they have zero rows until
+# their extractors land, and a kind with no rows in the default set would only cost a
+# query per load. `Place` has 21 rows in the live store, so it earns its slot.
+#
+# Adding a kind here also makes its `MENTIONS_<KIND>` edges returnable — `graph_slice`
+# only keeps an edge whose BOTH endpoints are drawn, so a caller asking for
+# `node_types=["Place"]` alone still gets 0 edges. Threads must be requested too.
+#
+# They are in `_NODE_QUERIES` so a caller can ask for them explicitly and so the
+# queries exist before the writer that fills them.
+DRAWABLE_NODE_TYPES: tuple[str, ...] = (
+    "Thread", "Correspondent", "Place", "Organization",
+)
 
 # The four kinds a body-entity extractor will produce. One shape, one query, one
 # alias — the only thing that differs is the label. `Correspondent` is deliberately
@@ -614,7 +622,9 @@ _EDGE_PLATFORM_ALIAS: dict[str, str] = {
 # `POSSIBLY` is drawn by default because both its endpoints are Correspondents, and
 # the line IS the product: a fuzzy guess a human can see and ignore. It is written by
 # `link.py` at the end of an ingest, so it is empty until one has run.
-DRAWABLE_EDGE_TYPES: tuple[str, ...] = ("WITH", "POSSIBLY")
+DRAWABLE_EDGE_TYPES: tuple[str, ...] = (
+    "WITH", "POSSIBLY", "MENTIONS_PLACE", "MENTIONS_ORGANIZATION",
+)
 
 
 def _node_where(node_type: str, params: dict[str, Any]) -> str:
@@ -1439,6 +1449,38 @@ def verify_ingest(which: str = "real") -> dict[str, Any]:
     }
 
 
+def delete_spool(*, write_enabled: bool = False, confirm: bool = False) -> dict[str, Any]:
+    """Delete every export in `spool/real/`, independent of the graph.
+
+    **Why this is not `truncate_store(also_spool=True)`.** That wipes the graph *and*
+    the spool in one action, so it is the wrong control for "throw away these files but
+    keep what has been built from them" — and worse, a user who only wanted to clear the
+    spool would silently lose the graph. These are two separate decisions.
+
+    Also not `prune_spool`: that deliberately deletes only files that verified into the
+    store, which is the right rule for routine housekeeping and the wrong one here —
+    the point of this button is to clear the spool BEFORE an ingest, when nothing has
+    verified yet.
+
+    Destructive, so it needs write access and `confirm=true` in the call itself. The
+    dedup manifest is left alone: the graph still holds what these files produced, and
+    forgetting it would make a later re-ingest of the same export write duplicates.
+
+    `.gitkeep` is preserved so the directory survives and `paths.real_dir()` keeps
+    working without a re-create.
+    """
+    require(Access.DESTRUCTIVE, write_enabled=write_enabled, confirmed=confirm)
+
+    root = paths.real_dir()
+    removed: list[str] = []
+    if root.exists():
+        for entry in sorted(root.rglob("*")):
+            if entry.is_file() and entry.name != ".gitkeep":
+                entry.unlink()
+                removed.append(str(entry))
+    return {"removed": removed, "count": len(removed)}
+
+
 def prune_spool(
     older_than_days: int = 3,
     *,
@@ -1476,6 +1518,7 @@ def _register_all() -> None:
         (truncate_store, Access.DESTRUCTIVE),
         (verify_ingest, Access.READ),
         (prune_spool, Access.DESTRUCTIVE),
+        (delete_spool, Access.DESTRUCTIVE),
     ):
         register(Tool(
             name=fn.__name__,

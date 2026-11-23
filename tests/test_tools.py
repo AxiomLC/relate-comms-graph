@@ -133,13 +133,19 @@ def test_unimplemented_tools_are_not_registered():
 
 def test_graph_slice_draws_threads_and_correspondents_by_default(store):
     slice_ = tools.graph_slice()
-    assert slice_["node_types"] == ["Thread", "Correspondent"]
+    # `Place` and `Organization` join the default set now that they have rows.
+    # `Person` and `Product` stay out until their extractors land.
+    assert slice_["node_types"] == ["Thread", "Correspondent", "Place", "Organization"]
     # `POSSIBLY` is drawn by default too: both endpoints are Correspondents and the
     # line is the product. It holds no rows until `link.py` has run.
-    assert slice_["edge_types"] == ["WITH", "POSSIBLY"]
+    # `MENTIONS_*` rides along with its kind: an edge is only kept when BOTH its
+    # endpoints are drawn, so the thread side has to be in the set — it is, by default.
+    assert slice_["edge_types"] == [
+        "WITH", "POSSIBLY", "MENTIONS_PLACE", "MENTIONS_ORGANIZATION"]
     assert slice_["counts"]["nodes"] > 0
     types = {node["type"] for node in slice_["nodes"]}
-    assert types == {"Thread", "Correspondent"}
+    assert types <= {"Thread", "Correspondent", "Place", "Organization"}
+    assert {"Thread", "Correspondent"} <= types
     # Every edge has both endpoints drawn, or it is not returned.
     ids = {node["id"] for node in slice_["nodes"]}
     for edge in slice_["edges"]:
@@ -192,7 +198,10 @@ def test_the_extracted_kinds_are_queryable_but_empty(store):
         assert slice_["nodes"] == []
         assert slice_["total"] == 0
     assert set(tools.ENTITY_KINDS) == {"Person", "Place", "Organization", "Product"}
-    assert not set(tools.ENTITY_KINDS) & set(tools.DRAWABLE_NODE_TYPES)
+    # `Place` and `Organization` are the extracted kinds drawn today. `Person` and
+    # `Product` remain queryable only until their extractors land.
+    assert set(tools.ENTITY_KINDS) & set(tools.DRAWABLE_NODE_TYPES) == {
+        "Place", "Organization"}
 
 
 def test_company_is_not_a_kind(store):

@@ -35,6 +35,37 @@ from .routers import chat, graph, ingest, search, system
 STATIC = Path(__file__).parent / "static"
 
 
+class IconsElsewhere(StaticFiles):
+    """Serve `/static/icons/*` with `Cache-Control: no-cache`; everything else as before.
+
+    **Why icons and not the whole static tree.** An icon is a *file at a fixed URL*.
+    Replacing `place-merged.svg` reuses the same path, so a browser is entitled to keep
+    serving its cached copy — and a hard refresh does not reliably clear an image that
+    is referenced from a CSS rule rather than from the HTML. That produced a real "the
+    new art did not appear" report while the server was serving the new file.
+
+    `no-cache` does NOT mean "never store": it means "revalidate before reuse". The
+    `ETag` / `Last-Modified` this mount already sends answer that check with a 304 when
+    nothing changed, so the cost is one conditional request per icon per load — nothing
+    on localhost, and it removes the need for any `?v=` query stamp in the UI.
+
+    Deliberately NOT applied to the whole mount: `app.js` and the vendored Cytoscape
+    bundles are large and their names carry no hash, so making them revalidate too would
+    trade a real download for a problem that does not exist — a rebuild changes them and
+    `/` is already `no-store`, so the shell always points at a fresh bundle.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        # **Normalise the separator.** Starlette passes the relative path with the OS
+        # separator, so on Windows this arrives as `icons\place-merged.svg` and a
+        # `startswith("icons/")` test silently never matches — the header was absent and
+        # nothing said so. Verified, not assumed.
+        if path.replace("\\", "/").startswith("icons/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Point the tool layer at a store before the first request.
@@ -66,7 +97,7 @@ app.include_router(search.router)
 app.include_router(chat.router)
 app.include_router(ingest.router)
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/static", IconsElsewhere(directory=STATIC), name="static")
 
 
 @app.get("/", include_in_schema=False)

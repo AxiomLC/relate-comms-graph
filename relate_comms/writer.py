@@ -29,6 +29,7 @@ _SCHEMA = (
     # Named, not iterated over `canon.KINDS`, because this tuple is imported lazily at
     # connect time and an entity written unindexed is a silent per-ingest scan.
     "CREATE INDEX place_key IF NOT EXISTS FOR (p:Place) ON (p.key)",
+    "CREATE INDEX organization_key IF NOT EXISTS FOR (o:Organization) ON (o.key)",
     # The delta watermark: `max(ts_utc)` for one platform. Without this index that
     # query is a full scan of every message, which defeats the point of a delta run —
     # measured at 63 ms for 910 messages, i.e. linear and growing with the store.
@@ -777,29 +778,42 @@ def counts_by_kind(conn: Any, platform: str) -> dict[str, int]:
 # The split is the Correspondent split and for the same reason: `handle_<p>` /
 # `seen_<p>` are flat per-platform facts, and everything derived (`platforms`,
 # `platform_label`, `:Merged`) is recomputed by `_reconcile` afterwards, because an
-# `UNWIND` row cannot see what a sibling row just wrote.
+# The entity kinds this writer can land. Each maps to its store label, its key prefix,
+# and the `canon` kind used to fold spellings. `person` is deliberately absent: it
+# competes with `Correspondent` and stays last, per the extraction design.
+_ENTITY_WRITE_KINDS: dict[str, str] = {
+    "place": "Place",
+    "organization": "Organization",
+}
+
+# Cypher cannot parameterise a label, so the statement is built once per kind rather
+# than formatted per row.
+def _entity_cypher(label: str) -> str:
+    return (
+        "UNWIND $rows AS row "
+        f"MERGE (e:{label} {{key: row.key}}) "
+        "SET e[row.handle_prop] = CASE WHEN e[row.seen_prop] IS NULL "
+        "        OR (row.first_seen_utc IS NOT NULL AND row.first_seen_utc < e[row.seen_prop]) "
+        "    THEN row.handle ELSE e[row.handle_prop] END "
+        "SET e[row.seen_prop] = CASE WHEN e[row.seen_prop] IS NULL "
+        "        OR (row.first_seen_utc IS NOT NULL AND row.first_seen_utc < e[row.seen_prop]) "
+        "    THEN coalesce(row.first_seen_utc, e[row.seen_prop]) ELSE e[row.seen_prop] END "
+        "SET e.mention_count = CASE WHEN e.mention_count IS NULL OR row.mentions > e.mention_count "
+        "    THEN row.mentions ELSE e.mention_count END "
+        "WITH e, row "
+        "MATCH (t:Thread {key: row.thread_key}) "
+        "MERGE (t)-[:MENTIONS]->(e)"
+    )
 #
 # **`mention_count` is accumulated, not set.** Two ingests of the same export both see
-# a place, and the second must not double it. It is therefore computed here from the
+# an entity, and the second must not double it. It is therefore computed here from the
 # distinct message keys this run holds (`row.mentions`), then the node keeps the
 # larger of the two — an entity seen in three messages stays three when re-ingested.
-_PLACE_CYPHER = (
-    "UNWIND $rows AS row "
-    "MERGE (p:Place {key: row.key}) "
-    "SET p[row.handle_prop] = CASE WHEN p[row.seen_prop] IS NULL "
-    "        OR (row.first_seen_utc IS NOT NULL AND row.first_seen_utc < p[row.seen_prop]) "
-    "    THEN row.handle ELSE p[row.handle_prop] END "
-    "SET p[row.seen_prop] = CASE WHEN p[row.seen_prop] IS NULL "
-    "        OR (row.first_seen_utc IS NOT NULL AND row.first_seen_utc < p[row.seen_prop]) "
-    "    THEN coalesce(row.first_seen_utc, p[row.seen_prop]) ELSE p[row.seen_prop] END "
-    "SET p.mention_count = CASE WHEN p.mention_count IS NULL OR row.mentions > p.mention_count "
-    "    THEN row.mentions ELSE p.mention_count END "
-    "WITH p, row "
-    "MATCH (t:Thread {key: row.thread_key}) "
-    "MERGE (t)-[:MENTIONS]->(p)"
-)
+#
+# This replaced a fixed `_PLACE_CYPHER`; the statement is generated per label because
+# Relate cannot parameterise a label, and two hand-written copies would drift.
 
-# Evidence for a Place fold -> the `merged_by` value the audit query reads.
+# Evidence for a name-only fold -> the `merged_by` value the audit query reads.
 _ENTITY_MERGED_BY = {"suffix": "exact_name", "case": "exact_name",
                      "diacritic": "exact_name", "camel": "exact_name"}
 
@@ -827,7 +841,65 @@ def write_places(
 
     Returns `{"places": n, "mentions": n}` where `places` counts distinct keys.
     """
+    return write_entities(conn, mentions, message_meta=message_meta, kinds=("place",))
+
+
+def write_entities(
+    conn: Any,
+    mentions: Iterable[Any],
+    *,
+    message_meta: dict[str, tuple[str, str]],
+    kinds: Iterable[str] = ("place", "organization"),
+) -> dict[str, int]:
+    """Write entity nodes for every `kind` present in `mentions`.
+
+    **One function for every kind.** The fold, the `mention_count` accumulation, the
+    `MENTIONS` edge and `_reconcile` are identical for a Place and an Organization —
+    only the label, the key prefix and the `canon` kind differ, and all three come from
+    `_ENTITY_WRITE_KINDS`. A second kind is therefore a table entry, not a second
+    implementation. `write_places` is kept as the one-kind entry point callers already use.
+
+    Returns `{"places": n, "organizations": n, "mentions": n}`, with a key for every
+    kind requested (`0` when that kind had no mentions).
+    """
+    wanted = tuple(k for k in kinds if k in _ENTITY_WRITE_KINDS)
+    counted = {f"{kind}s": 0 for kind in wanted}
+    mentions = list(mentions)
+    if not wanted or not mentions:
+        return {**counted, "mentions": 0}
+
+    per_kind: dict[str, list[Any]] = {kind: [] for kind in wanted}
+    for mention in mentions:
+        # A mention from the old single-kind path has no `kind`; it was a Place.
+        kind = getattr(mention, "kind", "place")
+        if kind in per_kind:
+            per_kind[kind].append(mention)
+
+    rows_written = 0
+    for kind, rows_mentions in per_kind.items():
+        if not rows_mentions:
+            continue
+        keys, rows = _write_one_kind(
+            conn, rows_mentions, message_meta=message_meta, kind=kind,
+        )
+        counted[f"{kind}s"] = keys
+        rows_written += rows
+    # `mentions` is the number of (thread, entity, platform) rows written, not the
+    # number of distinct keys — that is the contract callers already rely on.
+    return {**counted, "mentions": rows_written}
+
+
+def _write_one_kind(
+    conn: Any,
+    mentions: list[Any],
+    *,
+    message_meta: dict[str, tuple[str, str]],
+    kind: str,
+) -> tuple[int, int]:
+    """The fold-and-write pass for ONE kind. Returns `(distinct keys, rows written)`."""
     from .canon import canonical
+
+    label = _ENTITY_WRITE_KINDS[kind]
 
     # task (key, platform) -> the facts a single `MERGE` row needs.
     facts: dict[tuple[str, str], dict[str, Any]] = {}
@@ -840,10 +912,10 @@ def write_places(
             continue
         thread_key, ts_utc = meta
         platform = mention.platform or ""
-        record = canonical(mention.text, kind="place")
+        record = canonical(mention.text, kind=kind)
         if not record.key:
             continue
-        key = f"place:{record.key}"
+        key = f"{kind}:{record.key}"
         seen_messages[key].add(mention.message_key)
 
         slot = (key, platform)
@@ -862,7 +934,7 @@ def write_places(
         thread_rows.append({**fact, "thread_key": thread_key})
 
     if not facts:
-        return {"places": 0, "mentions": 0}
+        return (0, 0)
 
     # One row per (thread, place, platform); `mentions` carries the count for the whole
     # key so every row agrees on it — the same order-independence the Correspondent
@@ -877,11 +949,12 @@ def write_places(
         rows.append({**row, "mentions": len(seen_messages[row["key"]])})
 
     cur = conn.cursor()
+    statement = _entity_cypher(label)
     for batch in _chunks(rows):
-        cur.execute(_PLACE_CYPHER, {"rows": batch})
-    _reconcile(cur, set(seen_messages), label="Place")
+        cur.execute(statement, {"rows": batch})
+    _reconcile(cur, set(seen_messages), label=label)
     conn.commit()
-    return {"places": len(seen_messages), "mentions": len(thread_rows)}
+    return (len(seen_messages), len(rows))
 
 
 def ingest_file(

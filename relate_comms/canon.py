@@ -435,6 +435,14 @@ def _canonical_text(text: str, kind: Kind) -> Canonical:
         return Canonical(raw=text, key="", display=text, kind=kind, evidence="raw")
 
     if kind == "organization":
+        # A leading article carries no identity, exactly as for a place and a product.
+        # Without this `the ABC Corp` was its own node beside `ABC Corp` — verified on
+        # `canonical` itself, not assumed. Stripped BEFORE the legal suffix so `the
+        # ABC Corp` -> `abc` rather than leaving the article behind.
+        if len(words) > 1 and words[0] in ARTICLES:
+            words = words[1:]
+            if evidence == "raw":
+                evidence = "article"
         words, stripped = _strip_legal(words)
         if stripped and evidence == "raw":
             evidence = "suffix"

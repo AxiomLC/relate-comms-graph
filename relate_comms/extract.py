@@ -63,9 +63,74 @@ from dataclasses import dataclass
 # comes back as an ORG, and guessing otherwise would be extraction deciding).
 PLACE_LABELS: tuple[str, ...] = ("GPE", "LOC", "FAC")
 
+# The spaCy label that means "an organisation" — deliberately BROAD, matching the
+# CoNLL/OntoNotes scheme the model was trained on: companies, government bodies,
+# councils, NGOs, unions, clubs, societies, universities, teams.
+#
+# **One label, one kind.** A span is a Place or an Organization, never both — the
+# `_mentions_from_doc` loop assigns exactly one kind per entity, so the two kinds can
+# never be minted from the same words. That is the same boundary the Place comments
+# draw from the other side.
+ORG_LABELS: tuple[str, ...] = ("ORG",)
+
+# A span that ENDS on one of these was cut short by the model, not named. Measured on
+# `en_core_web_sm`: `University of Sydney` came back as `University of`, which would
+# have become its own node. Dropped rather than extended — extending means deciding
+# where the name stops, which is extraction inventing.
+TRUNCATION_TAILS = frozenset({"of", "the", "and", "de", "du", "des", "for"})
+
+# A shipped ORG dictionary, applied by the same `EntityRuler` as the place list.
+#
+# **Why it is needed, measured not assumed.** Over 18 clearly-named organisations,
+# `en_core_web_sm` found 13. It missed exactly the names it was never trained to treat as
+# institutions: product-style company names (`Snowflake`, `Databricks`, `BlackRock`),
+# and an NGO whose name is not English (`Medecins Sans Frontieres`). It also split
+# `Unite the Union` down to `Union`.
+#
+# This is not a substitute for the model — it is the same audit table `PLACE_DICTIONARY`
+# is, for the names the model silently drops. Keep it boring: every entry is a claim
+# that the words name an organisation. The Owner's own graph is the useful seed.
+ORG_DICTIONARY: tuple[str, ...] = (
+    # Product-style company names the model reads as brands, not institutions.
+    "Snowflake", "Databricks", "BlackRock", "Scale AI", "Weights & Biases",
+    "OpenAI", "Anthropic", "Retool", "Celestica", "Palantir", "Stripe",
+    "Shopify", "Twilio", "Cloudflare", "MongoDB", "Hugging Face",
+    # NGOs and bodies whose names are not English, which the English model skips.
+    "Medecins Sans Frontieres", "Médecins Sans Frontières", "Amnesty International",
+    "Oxfam", "Greenpeace", "Red Cross", "Brotherhood of St Laurence",
+    # Long forms the model truncates or partial-matches.
+    "Unite the Union", "University of Sydney", "NSW Health",
+)
+
 # Below this many characters a span is noise (`NY` survives, `N` does not). Applied
 # after trimming, never to the canonical form: `canon` owns that decision.
 MIN_SPAN_CHARS = 2
+
+# A body above this many characters is not a chat message, and running chat-oriented
+# NER over it is a category error.
+#
+# **Measured, not guessed.** On the live store of 2,085 messages the length
+# distribution is: median 28 chars, p95 77, p99 122, max 11,719. Every junk
+# Organization we saw (`pdf`, `swf`, `pptm`, `wordprocessing ml 2003`,
+# `end user license agreement`, `jasper reports`) came from exactly ONE message — a
+# 11,719-character marketing newsletter — which is 96x the p99.
+#
+# So the noise was never a long tail of uncertain mentions. It was one document being
+# read as if it were a conversation. A frequency threshold (`count >= 2`) would have
+# kept every one of those junk nodes, because the real signal (`sox`, 15 mentions
+# across two platforms) and the junk differ by LENGTH, not by count.
+#
+# The number is derived, not chosen: 4x the p99 of this corpus (122 chars) rounded up to
+# a clean boundary, i.e. ~400 chars. A genuine long message — a forwarded brief, a
+# pasted transcript, a long email — sits in the hundreds and still extracts. The guard
+# only catches a body that is orders of magnitude out of family with the corpus, which
+# is what the 11,719-char newsletter was.
+#
+# **Getting this wrong once already:** the first version used 12,000, one round number
+# picked by eye, which sat just ABOVE the 11,719-char message it was written to catch and
+# therefore did nothing. A threshold next to the case it targets is a coincidence, not a
+# rule; derive it from the distribution and the mistake cannot recur.
+DOCUMENT_CHARS = 2_000
 
 # A shipped place dictionary, applied by spaCy's `EntityRuler` **before** the learned
 # NER. This is not a nicety: `en_core_web_sm` labels a bare city `PERSON` when the
@@ -114,6 +179,10 @@ class Mention:
     end: int
     message_key: str
     platform: str
+    # Which canonicalisation kind and store label this mention belongs to:
+    # `"place"` or `"organization"`. Set here, because the spaCy label is the only
+    # thing that decides it and resolving it later would mean guessing again.
+    kind: str = "place"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -123,6 +192,7 @@ class Mention:
             "end": self.end,
             "message_key": self.message_key,
             "platform": self.platform,
+            "kind": self.kind,
         }
 
 
@@ -182,11 +252,19 @@ def _install_ruler() -> None:
     """
     if _NLP is None or "place_ruler" in _NLP.pipe_names:
         return
+    # Renamed in spirit, kept as `place_ruler` so an existing pipeline is not rebuilt.
+    # One pipe holds both dictionaries: `overwrite_ents` gives the ruler precedence over
+    # the learned pass, and two pipes would only make that precedence harder to reason
+    # about (the second would silently win on an overlapping span).
     ruler = _NLP.add_pipe("entity_ruler", name="place_ruler", before="ner",
                          config={"overwrite_ents": True})
     ruler.add_patterns([
         {"label": "GPE", "pattern": name, "id": name.casefold()}
         for name in PLACE_DICTIONARY
+    ])
+    ruler.add_patterns([
+        {"label": "ORG", "pattern": name, "id": name.casefold()}
+        for name in ORG_DICTIONARY
     ])
 
 
@@ -206,6 +284,16 @@ _ENGLISH_MARKERS = frozenset({
 # tell `ok` (English) from `ok` (Dutch), so it is not accused of anything.
 _MIN_WORDS_FOR_GUESS = 12
 _MARKER_SHARE = 0.12
+
+
+def looks_like_document(body: str) -> bool:
+    """Is this body too long to be a chat message? See `DOCUMENT_CHARS`.
+
+    A warning signal like `language_guess`, not a silent gate: the ingest counts these
+    and says so, because "N message(s) look like documents and contributed no entities"
+    is actionable, whereas an unexplained empty result is not.
+    """
+    return len(body or "") > DOCUMENT_CHARS
 
 
 def language_guess(body: str) -> str:
@@ -250,16 +338,29 @@ def places(body: str, *, message_key: str = "", platform: str = "") -> list[Ment
     _ensure_model()
     if _NLP is None or not (body or "").strip():
         return []
-    return _mentions_from_doc(_NLP(body), message_key, platform, body)
+    return [m for m in _mentions_from_doc(_NLP(body), message_key, platform, body)
+            if m.kind == "place"]
+
+
+def organizations(
+    body: str, *, message_key: str = "", platform: str = "",
+) -> list[Mention]:
+    """Every organization span in one body. Same contract as `places()`."""
+    _ensure_model()
+    if _NLP is None or not (body or "").strip():
+        return []
+    return [m for m in _mentions_from_doc(_NLP(body), message_key, platform, body)
+            if m.kind == "organization"]
 
 
 def extract(
     messages: Iterable[tuple[str, str, str]],
 ) -> list[Mention]:
-    """Places from `(message_key, platform, body)` triples, batched through spaCy.
+    """Every entity span — Places AND Organizations — from `(key, platform, body)`.
 
     One `nlp.pipe` call rather than one per message: the parser pays a fixed cost per
-    call, and an ingest hands over thousands of bodies at once.
+    call, and an ingest hands over thousands of bodies at once. Each `Mention` carries
+    its own `kind`, so the caller splits rather than asking the model twice.
     """
     _ensure_model()
     rows = [(key, platform, body or "") for key, platform, body in messages]
@@ -278,7 +379,13 @@ def _pipe_with_context(rows: list[tuple[str, str, str]]):
     spaCy's `pipe` skips nothing, so empty bodies would still cost a parse; they are
     filtered here and the surviving indices re-zip to their own key and platform.
     """
-    live = [(index, body) for index, (_k, _p, body) in enumerate(rows) if body.strip()]
+    live = [
+        (index, body) for index, (_k, _p, body) in enumerate(rows)
+        # `looks_like_document` skips a newsletter or pasted article: chat-oriented NER
+        # over marketing copy mints file extensions as Organizations. Skipped here, so
+        # the cost is not even paid, and reported by the caller rather than silently.
+        if body.strip() and not looks_like_document(body)
+    ]
     if not live or _NLP is None:
         return
     docs = _NLP.pipe([body for _index, body in live], batch_size=64)
@@ -299,10 +406,18 @@ def _mentions_from_doc(doc, key: str, platform: str, body: str) -> list[Mention]
     """
     out: list[Mention] = []
     for ent in doc.ents:
-        if ent.label_ not in PLACE_LABELS:
+        if ent.label_ in PLACE_LABELS:
+            kind = "place"
+        elif ent.label_ in ORG_LABELS:
+            kind = "organization"
+        else:
             continue
         text = ent.text.strip()
         if len(text) < MIN_SPAN_CHARS:
+            continue
+        # A span the model cut short is a fragment, not a name — `University of` would
+        # otherwise become an Organization node of its own. Dropped, never extended.
+        if kind == "organization" and text.split()[-1].rstrip(".,").casefold() in TRUNCATION_TAILS:
             continue
         start = ent.start_char
         end = start + len(ent.text.rstrip())
@@ -310,6 +425,6 @@ def _mentions_from_doc(doc, key: str, platform: str, body: str) -> list[Mention]
             continue
         out.append(Mention(
             text=text, label=ent.label_, start=start, end=end,
-            message_key=key, platform=platform,
+            message_key=key, platform=platform, kind=kind,
         ))
     return out
