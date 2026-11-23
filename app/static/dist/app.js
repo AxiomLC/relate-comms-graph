@@ -14697,6 +14697,11 @@
     preview: (which = "real") => request(`/api/ingest/preview?which=${which}`),
     /** Wipe the graph and the dedup manifest. Destructive; needs confirm. */
     truncate: (payload) => request("/api/ingest/truncate", { method: "POST", body: JSON.stringify(payload) }),
+    /** Delete the exports in `spool/real/` only. The graph is untouched. */
+    deleteSpool: (payload) => request("/api/ingest/spool/delete", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
     /** Write IMAP credentials to `./.env`. The password is never echoed back. */
     saveEnv: (payload) => request("/api/ingest/env", { method: "POST", body: JSON.stringify(payload) }),
     verify: (which = "real") => request(`/api/ingest/verify?which=${which}`),
@@ -14836,9 +14841,9 @@
       // (opacity 0.3), so it is a soft band rather than a hard line — see `visual` for
       // why a real glow is not possible.
       edge: [
-        { min: 80, width: 8, opacity: 0.3 },
-        { min: 12, width: 0.8, opacity: 1 },
-        { min: 0, width: 0.5, opacity: 1 }
+        { min: 80, width: 4, opacity: 0.3 },
+        { min: 12, width: 0.3, opacity: 1 },
+        { min: 0, width: 0.1, opacity: 1 }
       ]
     },
     /* ------------------------------------------------------------------- visual */
@@ -15008,9 +15013,11 @@
      * keeps the ones that went silent — the question this app exists to answer.
      */
     filter: {
-      // The default set. The four entity kinds are drawable but hold zero rows until
-      // body-entity extraction lands, so they are off until someone ticks them.
-      nodeTypes: ["Thread", "Correspondent"],
+      // Places are drawn by default because they have rows now (21 in the live store).
+      // The other three extracted kinds stay off until their extractors land — a ticked
+      // kind with zero rows only costs a query. To distrust the extractor, untick
+      // `Place` here or in the Canvas modal.
+      nodeTypes: ["Thread", "Correspondent", "Place", "Organization"],
       // One invisible bag per platform, so fcose clusters threads by source instead of
       // letting them float free. Client-side only — a bag is a body for the layout, not
       // data, and it never reaches the server or any count. Off is a real option: with
@@ -15023,6 +15030,21 @@
       platforms: [],
       hideSilent: false,
       // hide threads the owner never sent a message in
+      // Hide an extracted entity mentioned only once, unless it spans two platforms.
+      //
+      // **Negative form, and the default is OFF.** A node is data the store holds; hiding
+      // it must be something the user asked for, not a silent default. The earlier
+      // `showSingleMentions` was a positive toggle defaulting to false, which hid the
+      // long tail without the user having chosen it.
+      //
+      // `:Merged` overrides the count, and that is the whole point of the rule: one
+      // mention on Telegram is one sighting, but the same name on Telegram AND on email is
+      // two independent ones. A rare contact must not be hidden for being quiet.
+      //
+      // The key changed name as well as polarity. `relate.graphStyle.overrides` stores a
+      // diff, so an old `showSingleMentions` in someone's localStorage no longer matches
+      // any default and is therefore ignored rather than misread as `hideSingleMentions`.
+      hideSingleMentions: false,
       sort: "messages",
       // messages | recent | quiet
       limit: 2e3
@@ -16004,33 +16026,56 @@
       countKey: "mention_count",
       labelMax: 28,
       glow: true,
-      iconKind: "entity"
+      iconKind: "entity",
+      // Every extracted kind declares its own halo, or it falls through to the base
+      // `node.merged` rule and glows ORANGE — the Correspondent bridge colour, a stronger
+      // claim than any of these makes. Person keeps the neutral grey it shares with the
+      // Correspondent glyph, because "the same human name" is the closest of the four to
+      // an identity, but it still does not borrow the orange.
+      mergedGlowColor: "#8a97a8"
     },
     Place: {
       drawable: true,
       shape: "ellipse",
       label: "Place",
       hint: "a location mentioned in a body",
-      sizeLadder: ["D", "E", "F"],
+      // B / D / E — Places outrank Threads at the same band (a Place is a rarer, more
+      // deliberate find than one conversation) and each Place is a hub for many threads.
+      // The ladder still interleaves: A thread, B place, C thread, D both, E both, F
+      // correspondent. Collides with Correspondent's D only, which is intended.
+      sizeLadder: ["B", "D", "E"],
       countKey: "mention_count",
       labelMax: 28,
       glow: true,
       iconKind: "entity",
-      // A merged Place glows DARK GREY, not orange. Orange is the bridge colour for a
-      // person seen on several platforms; a place is a different claim (same spelling,
-      // two platforms) and must not borrow the stronger signal.
-      mergedGlowColor: "#5a5f66"
+      // A merged Place glows YELLOW, not orange. Orange is the bridge colour for a person
+      // seen on several platforms — a verified identity. A place is the weaker claim (same
+      // canonical spelling, two platforms) and must not borrow the stronger signal.
+      //
+      // **Yellow, not the old dark grey.** Grey on a near-black page read as "switched
+      // off" rather than as a distinct claim. Yellow says "a different kind of merge"
+      // without matching either the orange person bridge or any platform hue.
+      //
+      // The gradient's SHAPE is shared with Correspondents; only the hue differs. The
+      // stops are derived from this hex by `mergedStopsFor()`, so the ramp always tapers
+      // to a transparent stop of the same colour.
+      mergedGlowColor: "#c9a227"
     },
     Organization: {
       drawable: true,
       shape: "ellipse",
       label: "Organization",
-      hint: "a company or body mentioned in a body",
+      hint: "a company, council, NGO, union or club mentioned in a body",
       sizeLadder: ["D", "E", "F"],
       countKey: "mention_count",
       labelMax: 28,
       glow: true,
-      iconKind: "entity"
+      iconKind: "entity",
+      // `UIVISUALS.md` §7: future kinds keep the halo SHAPE and swap the COLOUR to
+      // yellow. Without this key a merged Organization would fall through to the base
+      // `node.merged` rule and glow ORANGE — the Correspondent bridge colour — which is
+      // the exact "borrowing the stronger signal" the doc forbids.
+      mergedGlowColor: "#b8912a"
     },
     Product: {
       drawable: true,
@@ -16041,7 +16086,10 @@
       countKey: "mention_count",
       labelMax: 28,
       glow: true,
-      iconKind: null
+      // No fourth glyph — a filled circle is more honest than borrowing one.
+      iconKind: null,
+      // Yellow, same reason as Organization: an extracted kind never borrows orange.
+      mergedGlowColor: "#b8912a"
     },
     Message: {
       drawable: false,
@@ -16226,6 +16274,7 @@
     iconKind: null
   };
   var metaOf = (node) => NODE_TYPES[node.type] || FALLBACK_META;
+  var isExtractedKind = (type) => NODE_TYPES[type]?.iconKind === "entity";
   var bagId = (platform) => `bag:${platform}`;
   var MERGED_BAG_ID = "bag:merged";
   var GraphCanvas = (0, import_react7.forwardRef)(function GraphCanvas2({ data, theme, onNodeClick, onBackgroundClick, onLayoutDone }, ref) {
@@ -16239,6 +16288,7 @@
     const platformKey = (theme.filter.platforms || []).join(",");
     const bagsOn = !!theme.filter.bags;
     const hideSilent = !!theme.filter.hideSilent;
+    const hideSingles = !!theme.filter.hideSingleMentions;
     const elements = (0, import_react7.useMemo)(() => {
       const theme2 = themeRef.current;
       if (!data) return [];
@@ -16247,6 +16297,10 @@
       const allNodes = (data.nodes || []).filter((node) => {
         if (chosen.length && !platformsOf2(node).some((p) => chosen.includes(p))) {
           return false;
+        }
+        if (hideSingles && isExtractedKind(node.type) && !node.merged) {
+          const mentions = Number(node.mention_count) || 0;
+          if (mentions <= 1) return false;
         }
         if (hideSilent && metaOf(node).hideWhenSilent && node.is_silent) return false;
         return true;
@@ -16296,11 +16350,20 @@
             rawLabel: node.label || node.id,
             type: node.type,
             platform: node.platform || "",
+            // The FULL platform list, not just the first-by-date string. The Viewer reads
+            // this to draw one pill per platform; without it a 4-platform node rendered
+            // one pill and looked single-platform. Cytoscape data values must be
+            // primitives or arrays it can clone — an array of strings is fine.
+            platforms: platformsOf2(node),
             messageCount: node.message_count || 0,
             threadCount: node.thread_count || 0,
             firstTs: node.first_ts || null,
             lastTs: node.last_ts || null,
             isGroup: !!node.is_group,
+            // Extracted entities: the hub count (`thread_count`) and the mention count
+            // are both real and differ, so both travel. The Viewer shows whichever the
+            // kind's `countKey` names.
+            mentionCount: node.mention_count || 0,
             // `:Merged` is the bag-membership test, inverted: a merged node goes in
             // the central merged bag rather than a platform bag.
             merged: !!node.merged,
@@ -16370,7 +16433,7 @@
         };
       });
       return [...bagNodes, ...nodes, ...edges];
-    }, [data, sizeKey, platformKey, hideSilent, bagsOn]);
+    }, [data, sizeKey, platformKey, hideSilent, bagsOn, hideSingles]);
     (0, import_react7.useEffect)(() => {
       if (!hostRef.current || cyRef.current) return void 0;
       if (window.cytoscapeFcose && !window.__fcoseRegistered) {
@@ -16404,7 +16467,14 @@
           id: node.data("id"),
           label: node.data("rawLabel"),
           platform: node.data("platform"),
+          // Carried because the Viewer's platform pills read `platforms`, never
+          // `platform`. Omitting them was the bug: the Viewer fix was correct and had
+          // nothing to render, because the click payload never sent the list.
+          platforms: node.data("platforms") || [],
+          merged: !!node.data("merged"),
           messageCount: node.data("messageCount"),
+          threadCount: node.data("threadCount"),
+          mentionCount: node.data("mentionCount"),
           firstTs: node.data("firstTs"),
           lastTs: node.data("lastTs"),
           isGroup: node.data("isGroup")
@@ -16936,14 +17006,41 @@
     const part = (value) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0");
     return `#${part(r)}${part(g)}${part(b)}`;
   }
+  function moveBagTo(bag, target) {
+    const children = bag.children();
+    if (!children.length) return false;
+    const box = children.boundingBox();
+    const dx = target.x - (box.x1 + box.w / 2);
+    const dy = target.y - (box.y1 + box.h / 2);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+    children.forEach((child) => {
+      const position = child.position();
+      child.position({ x: position.x + dx, y: position.y + dy });
+    });
+    return true;
+  }
+  function bagRadius(bag) {
+    const children = bag.children();
+    if (!children.length) return 0;
+    const box = children.boundingBox();
+    const r = Math.max(box.w, box.h) / 2;
+    return Number.isFinite(r) ? r : 0;
+  }
   function placeBagsOnRing(cy, spread = 1) {
+    const merged = cy.getElementById(MERGED_BAG_ID);
+    const hasMerged = !!(merged && merged.length);
     const bags = cy.nodes('[type = "Bag"]').filter((bag) => bag.id() !== MERGED_BAG_ID);
-    if (bags.length < 2) return;
+    if (bags.length < 2) {
+      if (hasMerged) moveBagTo(merged, { x: 0, y: 0 });
+      return;
+    }
+    const mergedRadius = hasMerged ? bagRadius(merged) : 0;
     const widest = Math.max(
       ...bags.map((bag) => Math.max(bag.outerWidth(), bag.outerHeight()))
     );
     const base = Number.isFinite(widest) && widest > 0 ? widest * 1.6 : 260;
-    const radius = Math.max(base, 260) * (spread || 1);
+    const ring = Math.max(base, 260) + mergedRadius;
+    const radius = ring * (spread || 1);
     const ordered = bags.toArray().sort((a, b) => {
       const ai = LEGEND_PLATFORMS.indexOf(a.data("platform"));
       const bi = LEGEND_PLATFORMS.indexOf(b.data("platform"));
@@ -16951,19 +17048,10 @@
     });
     cy.batch(() => {
       ordered.forEach((bag, index) => {
-        const children = bag.children();
-        if (!children.length) return;
         const angle = 2 * Math.PI * index / ordered.length - Math.PI / 2;
-        const target = { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
-        const box = children.boundingBox();
-        const dx = target.x - (box.x1 + box.w / 2);
-        const dy = target.y - (box.y1 + box.h / 2);
-        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
-        children.forEach((child) => {
-          const position = child.position();
-          child.position({ x: position.x + dx, y: position.y + dy });
-        });
+        moveBagTo(bag, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
       });
+      if (hasMerged) moveBagTo(merged, { x: 0, y: 0 });
     });
   }
   function setSmartEdgeLength(enabled) {
@@ -17672,7 +17760,14 @@
             },
             platform
           )),
-          entry.merged && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { className: "pill merged", children: "Merged" })
+          entry.merged && /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+            "span",
+            {
+              className: "pill merged",
+              title: `Same canonical name seen on ${platformsOf(entry).length} platforms \u2014 a spelling match, not a verified identity`,
+              children: "Merged"
+            }
+          )
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "pane-body tight", children: [
@@ -17909,19 +18004,19 @@
       key: "messages",
       label: "Most messages",
       hint: "the biggest threads first",
-      note: "Keeps the busiest conversations and drops the quiet ones."
+      note: "Busiest conversations first."
     },
     {
       key: "recent",
       label: "Most recent",
       hint: "the live ones first",
-      note: "Keeps whatever was active last, however small."
+      note: "Whatever was active last."
     },
     {
       key: "quiet",
       label: "Quietest",
       hint: "the ones that went silent first",
-      note: "Keeps the threads that stopped \u2014 the question this app exists to answer."
+      note: "The threads that stopped."
     }
   ];
   var LIMITS = [500, 1e3, 2e3, 5e3, 1e4, 2e4];
@@ -17977,26 +18072,27 @@
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "primary", onClick: onRerunLayout, children: "Re-run layout" })
         ] }),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Sort \u2014 which nodes survive the cutoff" }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "The canvas draws a limited number of nodes. Whichever order is chosen decides which ones you can never see, so this is a real choice, not a preference." }),
-          SORTS.map((sort) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-            Check,
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", style: { marginTop: 0 }, children: "Shortened graph view" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Sort and view only:" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }, children: SORTS.map((sort) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+            "button",
             {
-              label: sort.label,
-              checked: (draft.filter.sort || "messages") === sort.key,
-              onChange: () => {
+              className: (draft.filter.sort || "messages") === sort.key ? "active" : "ghost",
+              title: sort.hint,
+              onClick: () => {
                 setDraft((prev) => ({
                   ...prev,
                   filter: { ...prev.filter, sort: sort.key }
                 }));
                 onReload?.({ sort: sort.key });
               },
-              hint: sort.hint,
-              note: sort.note
+              children: sort.label
             },
             sort.key
-          )),
+          )) }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 6 }, children: SORTS.map((s) => s.note).join("  \xB7  ") }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "How many nodes" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Viewable graph; but full graph still searchable." }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: LIMITS.map((value) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
             "button",
             {
@@ -18017,7 +18113,7 @@
             " nodes are not drawn. Raise the number above, or change the sort, to reach them. Search and the AI chat always see the whole store \u2014 this cutoff is the canvas only."
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Node types" }),
-          Object.entries(NODE_TYPES).map(([type, meta]) => {
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 10px" }, children: Object.entries(NODE_TYPES).map(([type, meta]) => {
             const count = types.data?.node_types?.find((entry) => entry.type === type)?.count;
             return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
               Check,
@@ -18029,16 +18125,14 @@
               },
               type
             );
-          }),
+          }) }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Viewable platforms" }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
-            "All on by default. Toggle one off to hide its cluster from the canvas \u2014 it stays fully searchable, and the AI chat still sees it. This is ",
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("em", { children: "not" }),
-            " ",
+            "All on by default. Not ",
             /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: "Utilities" }),
             ", which narrows what the tools return."
           ] }),
-          (platforms?.rows || []).map((row) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("label", { className: "check", style: { marginBottom: 6 }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 10px" }, children: (platforms?.rows || []).map((row) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("label", { className: "check", style: { marginBottom: 6 }, children: [
             /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
               "input",
               {
@@ -18054,9 +18148,8 @@
                 style: { background: platformColor(row.platform), marginRight: 2 }
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { style: { minWidth: 90 }, children: PLATFORM_LABELS[row.platform] || row.platform }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "pager-info", children: row.built ? `${row.count.toLocaleString()} messages` : "not built yet" })
-          ] }, row.platform)),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: PLATFORM_LABELS[row.platform] || row.platform })
+          ] }, row.platform)) }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Threads you never spoke in" }),
           /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
             Check,
@@ -18069,6 +18162,20 @@
               })),
               hint: "View only. A thread you never replied in is often a broadcast or a group you were added to \u2014 hidden here, still searchable.",
               note: "A thread you never replied in is usually a broadcast or a group you were added to."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { className: "section", children: "Extracted entities" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
+            Check,
+            {
+              label: "Hide Place, Person, Org mentioned only once",
+              checked: !!draft.filter.hideSingleMentions,
+              onChange: (value) => setDraft((prev) => ({
+                ...prev,
+                filter: { ...prev.filter, hideSingleMentions: value }
+              })),
+              hint: "View only. A node seen on two platforms is shown regardless \u2014 that is two independent sightings, not one.",
+              note: "Shows cross-platform merged nodes."
             }
           )
         ]
@@ -18465,17 +18572,18 @@
     const [spamThreads, setSpamThreads] = (0, import_react12.useState)(true);
     const [spamPlatforms, setSpamPlatforms] = (0, import_react12.useState)({ email: true, outlook: true });
     const [spamGroups, setSpamGroups] = (0, import_react12.useState)(false);
-    const [pruneKeep, setPruneKeep] = (0, import_react12.useState)("off");
     const [writeEnabled, setWriteEnabled] = (0, import_react12.useState)(false);
-    const [fullReprocess, setFullReprocess] = (0, import_react12.useState)(false);
     const [busy, setBusy] = (0, import_react12.useState)(false);
     const [report, setReport] = (0, import_react12.useState)(null);
     const [error, setError] = (0, import_react12.useState)(null);
     const [preview, setPreview] = (0, import_react12.useState)(null);
     const [log, setLog] = (0, import_react12.useState)([]);
+    const [dropNotice, setDropNotice] = (0, import_react12.useState)(null);
     const [halted, setHalted] = (0, import_react12.useState)(null);
     const [wipeStep, setWipeStep] = (0, import_react12.useState)(0);
     const [wipeResult, setWipeResult] = (0, import_react12.useState)(null);
+    const [spoolStep, setSpoolStep] = (0, import_react12.useState)(0);
+    const [spoolResult, setSpoolResult] = (0, import_react12.useState)(null);
     (0, import_react12.useEffect)(() => {
       api.envStatus().then(setEnvStatus).catch(() => setEnvStatus(null));
       refreshPreview();
@@ -18485,6 +18593,13 @@
     const ticked = (map) => Object.entries(map).filter(([, on]) => on).map(([key]) => key);
     const stageFiles = async (files) => {
       if (!files.length) return;
+      if (!writeEnabled) {
+        setDropNotice(
+          "Tick Ingest Ready first \u2014 files cannot be staged until write access is on."
+        );
+        return;
+      }
+      setDropNotice(null);
       setBusy(true);
       setError(null);
       try {
@@ -18504,6 +18619,14 @@
         note("info", "nothing selected");
         return;
       }
+      if (!writeEnabled) {
+        setDropNotice(
+          "Tick Ingest Ready first \u2014 files cannot be staged until write access is on."
+        );
+        note("warn", "upload blocked: Ingest Ready is off");
+        return;
+      }
+      setDropNotice(null);
       setBusy(true);
       setError(null);
       note("info", `reading ${formData.getAll("files").length} file(s)\u2026`);
@@ -18587,10 +18710,7 @@
           exclude_spam_threads: spamThreads,
           spam_thread_platforms: spamThreads ? ticked(spamPlatforms) : null,
           exclude_spam_groups: spamGroups,
-          prune: pruneKeep !== "off",
-          prune_keep: pruneKeep === "off" ? null : Number(pruneKeep),
-          write_enabled: writeEnabled,
-          delta: !fullReprocess
+          write_enabled: writeEnabled
         });
         const failed = (result.batches || []).filter(
           (batch) => batch.error && !skip.has(batch.platform)
@@ -18627,7 +18747,7 @@
       setBusy(true);
       setError(null);
       setWipeResult(null);
-      note("info", "truncating the store\u2026");
+      note("info", "truncating the graph\u2026");
       try {
         const result = await api.truncate({
           write_enabled: true,
@@ -18635,16 +18755,39 @@
         });
         setWipeResult(result);
         setWipeStep(0);
+        setSpoolStep(0);
         setReport(null);
         note(
           "warn",
-          `store truncated \u2014 ${result.removed.length} file(s) removed` + (result.kept?.length ? ` \xB7 kept ${result.kept.length}` : "")
+          `truncated \u2014 ${result.removed.length} path(s) removed` + (result.kept?.length ? ` \xB7 kept ${result.kept.length}` : "")
         );
         refreshPreview();
         onIngested?.({});
       } catch (err) {
         setError(err.message);
         note("warn", `truncate failed: ${err.message}`);
+      } finally {
+        setBusy(false);
+      }
+    };
+    const deleteSpool = async () => {
+      setBusy(true);
+      setError(null);
+      setSpoolResult(null);
+      note("info", "deleting the spool\u2026");
+      try {
+        const result = await api.deleteSpool({
+          write_enabled: true,
+          confirm: true,
+          older_than_days: 1
+        });
+        setSpoolResult(result);
+        setSpoolStep(0);
+        note("warn", `spool deleted \u2014 ${result.count} file(s) removed`);
+        refreshPreview();
+      } catch (err) {
+        setError(err.message);
+        note("warn", `spool delete failed: ${err.message}`);
       } finally {
         setBusy(false);
       }
@@ -18671,19 +18814,10 @@
           /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             Check,
             {
-              label: "Full re-process",
-              checked: fullReprocess,
-              onChange: setFullReprocess,
-              note: "Off: only messages the store does not already hold are written and extracted \u2014 an incremental ingest costs what is new, not what is in the export. On: every message is re-parsed and re-extracted. Use it after changing the extractor, or to give old rows Place nodes."
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
-            Check,
-            {
               label: "Ingest Ready",
               checked: writeEnabled,
               onChange: setWriteEnabled,
-              note: "Arms the Ingest button. Ingest writes to the store, so it is a deliberate second step and is never remembered. Truncate does not need it."
+              note: "confirm"
             }
           ),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "spacer" }),
@@ -18708,6 +18842,7 @@
               style: {
                 display: "flex",
                 alignItems: "center",
+                justifyContent: "space-between",
                 gap: 10,
                 padding: "8px 10px",
                 marginBottom: 14,
@@ -18715,28 +18850,35 @@
                 borderRadius: "var(--radius-sm)"
               },
               children: [
-                wipeStep === 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { flex: 1 }, children: wipeResult ? `store truncated \xB7 ${wipeResult.removed.length} file(s) removed` : "Wipe the graph and start again. The dedup record goes with it." }),
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setWipeStep(1), disabled: busy, children: "Truncate Relate DB" })
-                ] }),
-                wipeStep === 1 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("span", { className: "pager-info", style: { flex: 1, color: "var(--orange-text)" }, children: [
-                    "This deletes ",
-                    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: "store/graph.rl" }),
-                    " and the list of files already ingested. Your exports in ",
-                    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: "spool/real/" }),
-                    " are kept. There is no undo."
+                /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [
+                  wipeStep === 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setWipeStep(1), disabled: busy, children: "Truncate Graph DB" }),
+                  wipeStep === 1 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setWipeStep(0), disabled: busy, children: "Keep it" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { onClick: () => setWipeStep(2), disabled: busy, children: "Yes, delete" })
                   ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setWipeStep(0), disabled: busy, children: "Keep it" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { onClick: () => setWipeStep(2), disabled: busy, children: "Yes, delete" })
+                  wipeStep === 2 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setWipeStep(0), disabled: busy, children: "Cancel" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("button", { onClick: () => truncate(), disabled: busy, children: [
+                      busy ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(LoaderCircle, { size: 13, className: "spin" }) : null,
+                      "Delete everything"
+                    ] })
+                  ] }),
+                  wipeResult && wipeStep === 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { color: "var(--orange-text)" }, children: "graph truncated" })
                 ] }),
-                wipeStep === 2 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { flex: 1, color: "var(--orange-text)" }, children: "Last chance. Pressing this empties the graph." }),
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setWipeStep(0), disabled: busy, children: "Cancel" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("button", { onClick: truncate, disabled: busy, children: [
-                    busy ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(LoaderCircle, { size: 13, className: "spin" }) : null,
-                    "Delete everything"
-                  ] })
+                /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [
+                  spoolStep === 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setSpoolStep(1), disabled: busy, children: "Delete Spool" }),
+                  spoolStep === 1 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setSpoolStep(0), disabled: busy, children: "Keep them" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { onClick: () => setSpoolStep(2), disabled: busy, children: "Yes, delete" })
+                  ] }),
+                  spoolStep === 2 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => setSpoolStep(0), disabled: busy, children: "Cancel" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("button", { onClick: deleteSpool, disabled: busy, children: [
+                      busy ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(LoaderCircle, { size: 13, className: "spin" }) : null,
+                      "Delete spool"
+                    ] })
+                  ] }),
+                  spoolResult && spoolStep === 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { color: "var(--orange-text)" }, children: "spool deleted" })
                 ] })
               ]
             }
@@ -18785,15 +18927,37 @@
           ),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { display: "flex", gap: 8, marginTop: 8 }, children: [
             /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => fileRef.current?.click(), children: "Choose files" }),
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { alignSelf: "center" }, children: "folders: drag one onto the box, or paste its path below" })
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { alignSelf: "center" }, children: writeEnabled ? "folders: drag one onto the box, or paste its path below" : "tick Ingest Ready below to enable staging" })
           ] }),
-          stagedCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { marginTop: 8 }, children: staged.map((item, index) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "result-snippet", children: item.name }),
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-meta", children: [
-              item.platform,
-              item.recognised ? "" : " \xB7 not recognised, kept"
-            ] })
-          ] }, index)) }),
+          dropNotice && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
+            "div",
+            {
+              className: "pager-info",
+              style: { color: "var(--orange-text)", marginTop: 8 },
+              children: dropNotice
+            }
+          ),
+          stagedCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { marginTop: 8 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("h2", { className: "section", children: [
+              stagedCount,
+              " file(s) ready"
+            ] }),
+            staged.map((item, index) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
+              "div",
+              {
+                className: "result-row",
+                style: { cursor: "default" },
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "result-snippet", style: { color: "var(--blue-glow)" }, children: item.name }),
+                  /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-meta", children: [
+                    item.platform,
+                    item.recognised ? "" : " \xB7 not recognised, kept"
+                  ] })
+                ]
+              },
+              index
+            ))
+          ] }),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             TextField,
             {
@@ -18804,26 +18968,17 @@
               hint: "One per line. For a folder export (Telegram writes a directory) or a file too large to upload. Files are COPIED into spool/real/<platform>/, chosen by content, never by filename."
             }
           ),
-          preview && preview.legs.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Already in the spool" }),
-            preview.legs.map((leg, index) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-row", style: { cursor: "default" }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-snippet", children: [
-                leg.platform || "?",
-                " \xB7 ",
-                leg.path.split(/[\\/]/).slice(-2).join("/")
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-meta", children: [
-                formatBytes(leg.bytes),
-                leg.duplicate ? ` \xB7 already ingested${leg.ingested_at ? ` ${leg.ingested_at.slice(0, 10)}` : ""}` : " \xB7 new",
-                leg.large ? " \xB7 large file" : "",
-                leg.recognised ? "" : " \xB7 not recognised, kept"
-              ] })
-            ] }, index)),
-            preview.duplicates > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "pager-info", style: { marginBottom: 8 }, children: [
-              preview.duplicates,
-              " file(s) already ingested. Re-running is safe \u2014 every write is a MERGE on a stable key \u2014 but it costs the parse again."
-            ] })
-          ] }),
+          preview && preview.duplicates > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
+            "div",
+            {
+              className: "pager-info",
+              style: { color: "var(--orange-text)", margin: "8px 0 4px" },
+              children: [
+                preview.duplicates,
+                " file(s) in the spool are already ingested and will be skipped."
+              ]
+            }
+          ),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "IMAP mailbox" }),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
             "For a live mailbox. A ",
@@ -18983,22 +19138,6 @@
               hint: "Fcbk Mssgr only. Drops group threads where at least half the rows are housekeeping \u2014 'sent a link', 'added X to the group', 'left the group'. Real group chats sit far below that ratio."
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "Prune prior ingests" }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: "Deletes spool files from earlier runs once this one has verified. A file that failed to land is never deleted." }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }, children: [
-            ["off", "Off"],
-            ["0", "All"],
-            ["1", "Keep last"],
-            ["2", "Keep last 2"]
-          ].map(([key, label]) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
-            "button",
-            {
-              className: pruneKeep === key ? "active" : "ghost",
-              onClick: () => setPruneKeep(key),
-              children: label
-            },
-            key
-          )) }),
           error && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "error", style: { marginTop: 12 }, children: error }),
           halted && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "error", style: { marginTop: 12 }, children: [
             /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("strong", { children: [
@@ -19045,7 +19184,6 @@
                 batch.attachments,
                 " attachments",
                 batch.verified ? " \xB7 verified" : "",
-                batch.pruned ? " \xB7 pruned" : "",
                 batch.error ? ` \xB7 ${batch.error}` : ""
               ] }),
               Object.entries(batch.skipped || {}).map(([reason, count]) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-meta", children: [

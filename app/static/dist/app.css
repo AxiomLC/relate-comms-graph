@@ -644,10 +644,10 @@ h2.section {
   font-size: 11.5px;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: var(--text);
+  color: var(--blue-glow);
   margin: 0 0 8px;
   font-weight: 600;
-  opacity: 0.85;
+  opacity: 0.9;
 }
 h2.section:not(:first-child) {
   margin-top: 18px;
