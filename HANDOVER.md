@@ -14,6 +14,8 @@ Durable facts: [`TECHREADME.md`](TECHREADME.md). UI and visual facts:
 
 **Live store: rebuilt 2026-11-22** (after a truncate, then an ingest of the whole spool).
 **2,085 messages · 177 threads · 98 correspondents · 21 `Place` nodes (8 `:Merged`).**
+**Default canvas load: 296 nodes / 323 edges** — Thread + Correspondent + Place, with
+`WITH`, `POSSIBLY` and 118 `MENTIONS_PLACE`.
 Per platform: telegram 831 · messenger 661 · linkedin 228 · sms 139 · email 128 ·
 whatsapp 92 · outlook 6.
 
@@ -57,27 +59,36 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 
 ### 1. The graph as a portable module
 
-**The goal:** `graph_slice()`'s payload is already a universal node/edge structure — every
-point is uniform, with no cytoscape-specific shape. Make that explicit and the renderer
-becomes swappable.
+**Detail is in [`detacheable_graph.md`](detacheable_graph.md).** Short version: the
+payload is already renderer-neutral; the cost is the canvas, not the data.
 
-**Targets, in order of fit:**
-
-| Renderer | Fits when |
-|---|---|
-| **vasturiano `2d-force-graph`** | closest match to the current look; d3-force instead of fcose |
-| **vasturiano `3d-force-graph`** | same data, third dimension — loses label legibility |
-| **React Flow / `@xyflow/react`** | nodes become real UI widgets: message lists, badges, collapsible threads, inputs |
-
-**Why it matters:** the multi-bag + separate-gravity model fights fcose's design. fcose is a
-force simulation, not a packer, so node overlap cannot be prevented — only reduced. A
-renderer with real node components would make overlap a CSS problem instead.
-
-**Work:** (a) document the payload contract as the boundary — node/edge fields, what is
-required vs optional; (b) keep every cytoscape concept (bags, ring, tiers) on the client
-side of that boundary; (c) build one alternative renderer behind a switch, not a rewrite.
+- **Cheap (~2 days, do regardless)** — freeze the payload with a key-set test, drop the
+  dead `per_platform` projection, and write the cross-definitions (bag ≈ d3
+  `forceRadial` / React Flow `parentId`; halo ≈ sprite / `box-shadow`).
+- **Expensive (2–4 days, only when wanted)** — one alternative renderer behind a switch.
+  `GraphCanvas.jsx` is 1,314 lines and the payload is ~5% of the port.
+- **The two losses to expect** are native label LOD and merged-halo occlusion — both
+  already recorded as unsolvable in Cytoscape, so a new renderer may *fix* them.
 
 ### 2. Body-entity extraction — Places first, one generic pipeline
+
+**`Organization` is built too** — same pipeline, second kind. `ORG_LABELS` (`ORG`, which
+covers companies, councils, NGOs, unions, clubs, universities), `ORG_DICTIONARY` (26 names
+`en_core_web_sm` misses — it reads `Snowflake`/`Databricks`/`BlackRock` as brands and skips
+non-English names like `Médecins Sans Frontières`), `TRUNCATION_TAILS` (drops `University of`),
+and `writer.write_entities()` which handles every kind through one table. 11/11 on a
+named-org probe; 19 Org nodes on the live corpus after the document guard below.
+
+**The noise finding that reframed the design.** Every junk Org came from ONE 11,719-char
+marketing newsletter, against a corpus median of 28 chars and p99 of 122. So the tail was
+never a long tail of uncertain mentions — it was a document read as a conversation. Fix is
+`extract.DOCUMENT_CHARS = 2000` (4× p99), reported as a warning, never an error.
+**A `count >= 2` floor would have kept every junk node**, because the signal (`sox`, 15
+mentions on two platforms) and the junk differ by message LENGTH, not by count.
+
+The single-mention floor therefore lives in the **view**: `theme.filter.showSingleMentions`
+(default off), overridden by `:Merged` — one mention on Telegram is one sighting, the same
+name on two platforms is two independent ones.
 
 **v1 extracts `Place` only.** `Person`, `Organization` and `Product` are deferred until the
 complete pipeline is proven on Places — including ambiguous matches, reversibility and repeat
@@ -154,15 +165,32 @@ not a rewrite.
 
 **Still open, not done:**
 
-- **Canvas.** Places are queryable (`graph_slice(node_types=["Place"],
-  edge_types=["MENTIONS_PLACE"])`) but **not drawn by default** — `DRAWABLE_NODE_TYPES`
-  is still `("Thread", "Correspondent")`. Entity bags need a placement slot; the merged-node
-  template (grey glyph, radial halo, own bag) is the one to copy. `UIVISUALS.md` §7.
-- **`merged_by` remains a weak claim for Places.** A fold means "same canonical name, seen
-  on two platforms". The UI must say exactly that, not imply a verified identity.
+- **`merged_by` wording.** Now surfaced as a hover title on the `Merged` pill in
+  `EntityView` ("a spelling match, not a verified identity"). Good enough; a visible
+  second line would be better if Places turn out to confuse.
 - **`sample_writer` needs no work** — it already exercises both folds. Verified on
   `sample_writer/out`: `N Dakota`/`North Dakota` and `Bay Area`/`the Bay Area` converge, and
   `toronto`/`austin` merge across three platforms each.
+
+**Drawn since 2026-11-22.** Places draw with the design's own art (`place-*.svg`, map
+pin, 8 colour variants from `scripts/build_entity_icons.py`) and the design's own halo —
+`#5a5f66` dark grey, not the Correspondent orange, because a Place merge is the weaker
+claim. **Bagging is the standard rule for every kind:** one platform → that platform's bag
+(13 of 21 Places), merged → the centre (8 of 21). An earlier attempt gave entities their
+own bag; it stranded single-platform places away from the conversations that mention them
+and was removed. `Organization` and `Product` were given the yellow `#b8912a` halo the note
+asked for; both still need their extractors before the option means anything.
+
+⚠ **Place art replaced 2026-11-22** with the `location-svgrepo-com.svg` map pin. The source
+is committed (normalised) at `scripts/icons_src/place.svg`, so `python
+scripts/build_entity_icons.py` regenerates all 8 files from the repo alone. An absent
+source is now *skipped*, not fatal, so one kind can be rebuilt without the others.
+
+⚠ **Icon caching is handled on the server, not in the UI.** `app/main.py`'s
+`IconsElsewhere` mount returns `Cache-Control: no-cache` for `/static/icons/*`; the `ETag`
+then answers 304, so a replaced glyph appears on a hard refresh with no version to bump.
+(Starlette passes the path with the OS separator — the check normalises `\` to `/`, or it
+never matches on Windows.)
 
 Full design: [`archive_docs/locking_in_node_extraction.md`](archive_docs/locking_in_node_extraction.md).
 
@@ -389,6 +417,23 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
 
 ## Done — one line each
 
+- **2026-11-22** — **Organization extraction built** (`canon` article fix, `ORG_LABELS`,
+  `ORG_DICTIONARY` 26 names, `TRUNCATION_TAILS`, kind-aware `writer.write_entities`,
+  `Organization` in `DRAWABLE_NODE_TYPES`/`EDGE_TYPES`/`nodeTypes`/`nodeLabels`). **The
+  noise was not what we thought:** all ~22 junk Orgs (`pdf`, `swf`, `wordprocessing ml
+  2003`, `end user license agreement`) came from ONE 11,719-char newsletter, against a
+  corpus median of 28 chars. Added `extract.DOCUMENT_CHARS` (2,000, derived from 4x p99)
+  — **49 Org nodes → 19**, MIME class gone. A `count >= 2` floor would have kept every
+  one of them. Canvas floor added as a VIEW toggle (`filter.showSingleMentions`, default
+  off, `:Merged` overrides it) — no store change, no re-ingest.
+- **2026-11-22** — **Viewer multi-platform bug: the real cause was the click payload, not
+  the Viewer.** `GraphCanvas`'s `tap` handler built `entry` from 8 fields and never sent
+  `platforms` or `merged`, so `platformsOf(entry)` fell back to the single `platform`
+  string and `entry.merged` was `undefined` — the earlier `CorrespondentView` fix was
+  correct and had nothing to render. `platforms`, `merged`, `threadCount`, `mentionCount`
+  now travel. **Places drawn**: `DRAWABLE_NODE_TYPES` + `DRAWABLE_EDGE_TYPES`
+  (`MENTIONS_PLACE`), `theme.filter.nodeTypes`, and a separate **entity bag** so a spelling
+  match never shares a region with a verified person fold.
 - **2026-11-22** — Incremental ingest (`delta`, 10x on a weekly case) with a `msg_ts`
   index and a `Full re-process` escape hatch; drag and drop rebuilt on `uppie` so a folder
   drops correctly; three bugs fixed on the way (manifest recording `msgs=0`, the API layer

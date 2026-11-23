@@ -136,6 +136,18 @@ throws on an empty string and defeats the renderer's image cache.
 one per platform colour, plus `merged` — the neutral grey glyph used by any Correspondent
 that spans several platforms.
 
+**Icon URLs carry no version stamp.** Replacing glyph artwork is picked up by a hard refresh
+alone. The protection lives on the server: `app/main.py`'s `IconsElsewhere` mount sends
+`Cache-Control: no-cache` for `/static/icons/*`, so the browser always revalidates and the
+`ETag` answers 304 when nothing changed. That is one conditional request per icon, no
+re-download, and **nothing in the UI to remember**. The bundle and vendored files keep the
+default caching — they change only on `npm run build`, and `/` is already `no-store`.
+
+**`theme.js` needs no mechanism at all.** Only the user's overrides are stored
+(`relate.graphStyle.overrides`), as a diff against the defaults, so a key nobody touched
+always follows the file after a rebuild + refresh. There is no theme version and there must
+not be one — see `theme.js`'s own note.
+
 **`[key]` selectors test field existence, not truthiness.** `node[image]` matches every node
 with an `image` field even when the value is `null`. Use a class.
 
@@ -145,7 +157,7 @@ with an `image` field even when the value is `null`. Use a class.
 
 The pattern for any node that belongs to more than one platform. Built for merged
 Correspondents; **Person / Place / Organization / Product reuse it** when body-entity
-extraction lands, with their own glyph and a yellow glow.
+extraction lands, with their own glyph and their own glow colour.
 
 | Layer | Value | Note |
 |---|---|---|
@@ -162,8 +174,23 @@ const classes = [kind, glyph ? "icon" : null, node.merged ? "merged" : null]
   .filter(Boolean).join(" ");
 ```
 
-**Future kinds:** same shape, `mergedGlowColor` swapped to yellow. The theme keys are
-`visual.mergedGlow*` — they are not Correspondent-specific.
+**Kinds and their halo.** The halo shape is shared; the colour is per kind, declared as
+`mergedGlowColor` in `NODE_TYPES` and applied by a later `node.merged[type = …]` block.
+A kind with **no** `mergedGlowColor` falls through to the base `node.merged` rule and
+glows **orange** — so every extracted kind must declare one, or it borrows the
+Correspondent bridge signal it is supposed to be weaker than.
+
+| Kind | `mergedGlowColor` | Claim it makes |
+|---|---|---|
+| Correspondent | `#d97a2b` (orange, the theme default) | one person, several platforms — a verified fold |
+| Place | `#c9a227` (yellow) | same canonical spelling on two platforms |
+| Organization | `#b8912a` (dark yellow) | same, by name |
+| Product | `#b8912a` (dark yellow) | same, by name |
+| Person (extracted) | `#8a97a8` (grey) | the closest of the four to a person, still not orange |
+
+The theme keys are `visual.mergedGlow*` — they are not Correspondent-specific. The
+per-kind `underlay-gradient-stop-colors` are derived from that kind's hex by
+`mergedStopsFor()`, so the ramp always tapers to a transparent stop of its own hue.
 
 ---
 
@@ -184,6 +211,20 @@ A bag is an invisible compound parent that gives fcose a body to solve around. I
 `:Merged` inverted — a node with exactly one platform goes in that platform's bag, everything
 else goes in the merged bag. The test reads the **label**, not `platforms.length`: a Place
 mentioned on two platforms is `:Merged` and must not be bagged by a platform.
+
+**The centre is applied explicitly, and that is load-bearing.** `placeBagsOnRing()` excludes
+the merged bag from the ring and then moves it to the **origin**, inside the circle the
+platform bags form, with the ring radius offset by the merged bag's own radius so the two
+tiers never overlap. Until 2026-11-22 only the exclusion was written — the centring was
+assumed to happen "by its own rule" and did not exist, so the merged bag stayed wherever
+fcose left it and usually ended up *outside* the ring. Verified by driving the function with
+a stubbed graph: merged at `(0,0)`, all platform bags at one equal radius.
+
+**One rule, every kind.** There is no entity-specific bag. A place seen only on Telegram
+sits in the Telegram bag beside the threads that mention it; a place on four platforms sits
+at the centre. The same applies to `Person`, `Organization` and `Product` when they are drawn
+— nothing needs changing for them, because the rule keys on `merged` and the platform count,
+never on the node kind.
 
 Layout mechanics — the ring, `fixedNodeConstraint`, and what fcose actually honours — stay in
 [`CytoGravityRecommend.md`](CytoGravityRecommend.md) until that work is finished.

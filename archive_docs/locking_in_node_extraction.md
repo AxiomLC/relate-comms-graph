@@ -80,6 +80,12 @@ re-ingest and summed when two nodes fold.
 **`platform` is not `platforms`.** A node on four platforms still has one `platform`
 string. Anything that *displays* platforms must read the list. See "The Viewer rule".
 
+**The Viewer needs them to arrive.** The canvas's `tap` handler builds the Viewer's
+`entry`, and it omitted `platforms` / `merged` until 2026-11-22 — so `CorrespondentView`
+and `EntityView` were correct and received one platform string and `undefined`. Any new
+field the Viewer displays must be added in **two** places: the elements memo's `data`,
+and the `onNodeClick` payload.
+
 ---
 
 ## Glyphs — what each kind draws
@@ -100,6 +106,17 @@ which is why they are **generated**, not hand-written:
 
 The extracted Person is prefixed `person-extracted` so it can never collide with the
 Correspondent's `person-*` artwork — same subject, different kind.
+
+**Where the source art lives.** `scripts/icons_src/<kind>.svg` holds a committed,
+**normalised** copy of each source. The originals were svgrepo downloads (`.tmp_pin.svg`
+etc.); those `.tmp_*` paths still win when present, so a fresh download overrides the
+committed copy without editing the script.
+
+Normalised matters: the generator only swaps the `viewBox` and the fill, **never the
+coordinates**. A raw svgrepo export usually carries a sketch wrapper and a
+`translate(-106,-413)` offset against an unrelated viewBox, which would draw the glyph
+far outside its own box. The pin was rebased so its art spans `x 0–24, y 0–32` inside a
+`-4 0 32 32` viewBox — horizontal margins preserved, height filled.
 
 ### Two rendering bugs this exposed
 
