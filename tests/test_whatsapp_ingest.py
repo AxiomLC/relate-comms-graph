@@ -18,12 +18,15 @@ import pytest
 
 from relate_comms import ingest as ingest_module
 from relate_comms import writer
-from relate_comms.adapters import whatsapp
+from relate_comms.adapters import whatsapp, whatsapp_html
 from relate_comms.paths import spool_dir
 
+# The sample world the app generates, committed to `spool/real/`. The HTML dialect is
+# what the generator writes, so `whatsapp_html` reads it — `whatsapp.parse` expects a
+# native `chat.txt`, which this archive does not contain.
 REAL_EXPORTS = [
-    Path.home() / "Downloads" / "+1 (917) 400-4025.zip",
-    Path.home() / "Downloads" / "+27 84 518 9029.zip",
+    Path(__file__).resolve().parents[1] / "spool" / "real" / "whatsapp"
+    / "whatsapp-chats-20261101.zip",
 ]
 _REAL = next((p for p in REAL_EXPORTS if p.exists()), None)
 
@@ -314,12 +317,18 @@ def test_detection_ignores_a_json_file_in_the_spool(tmp_path):
 
 # ---------------------------------------------------------------------- real files
 
-@pytest.mark.skipif(_REAL is None, reason="no real WhatsApp export on this machine")
+@pytest.mark.skipif(_REAL is None, reason="sample WhatsApp export not present")
 def test_real_export_loses_no_rows():
-    result = whatsapp.parse(_REAL)
-    text, _ = whatsapp.read_export(_REAL)
-    headers = sum(1 for line in text.split("\n") if whatsapp._HEADER.match(line))
-    assert len(result.messages) == headers, (
-        f"{len(result.messages)} rows from {headers} headers"
-    )
+    """Every row the HTML exporter wrote is stored, and every key is distinct.
+
+    The sample world ships the **HTML** dialect, so this reads it with `whatsapp_html`.
+    The native `chat.txt` path is covered by the synthetic tests above; the property
+    here is the one that matters for a real download — nothing silently dropped.
+    """
+    result = whatsapp_html.parse(_REAL)
+    assert result.messages, "no messages parsed from the sample HTML export"
     assert len({m.key for m in result.messages}) == len(result.messages)
+    assert all(m.ts_utc.tzinfo is not None for m in result.messages)
+    # A chat whose rows are all media placeholders yields no messages — counted, not
+    # silently dropped. That is the reconciliation this test exists for.
+    assert set(result.skipped) <= {"chat with no usable messages"}

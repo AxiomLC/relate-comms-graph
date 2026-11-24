@@ -288,6 +288,48 @@ def test_an_organisation_the_model_finds_is_not_a_place(store):
     assert _places() == {}
 
 
+def test_a_longer_name_is_not_truncated_by_a_shorter_dictionary_entry():
+    """The gazetteer must not carve a place out of the front of a longer name.
+
+    **This is the bug the 2026-11-24 list load exposed.** With `overwrite_ents` on a
+    691-entry place list, `Kensington Market` (an `ORG` to the model) was cut down to
+    `place:kensington`. The fix snapshots the model's spans and restores any span the
+    ruler shortened, so the longer name survives intact.
+    """
+    found = extract.extract([("k", "telegram", "Kensington Market is closed")])
+    assert [(m.text, m.kind) for m in found] == [("Kensington Market", "organization")]
+
+
+def test_a_dictionary_phrase_beats_the_models_split():
+    """A multi-word product must match as a phrase, not as two half-names.
+
+    Before products were added to the ruler, `Toyota Hilux` arrived as `Toyota` (ORG) +
+    `Hilux` (PRODUCT) and the index could only rescue the single token it was handed.
+    """
+    found = extract.extract([("k", "telegram", "we bought a Toyota Hilux")])
+    assert [(m.text, m.kind) for m in found] == [("Toyota Hilux", "product")]
+
+
+def test_a_club_the_model_calls_a_facility_is_its_dictionary_kind():
+    """`FAC` means Place, and the model reads a football club as a facility.
+
+    `Paris Saint-Germain` was landing as `place:paris saint-germain`. An exact dictionary
+    hit is the dictionary's to label, so `FAC` is in the promotable set.
+    """
+    found = extract.extract([("k", "telegram", "Paris Saint-Germain won again")])
+    assert [(m.text, m.kind) for m in found] == [("Paris Saint-Germain", "organization")]
+
+
+def test_a_bare_city_the_model_calls_a_person_is_still_a_place():
+    """The original reason the ruler exists, pinned after the ordering change.
+
+    `Then Austin on Friday` proposes `PERSON` from the model. The dictionary must still
+    win, or a real place is silently dropped for a reason the user cannot see.
+    """
+    found = extract.extract([("k", "telegram", "Then Austin on Friday")])
+    assert [(m.text, m.kind) for m in found] == [("Austin", "place")]
+
+
 def test_a_place_is_never_drawn_as_a_fuzzy_candidate(store):
     """Two places a letter apart are two places; there is no second signal to weigh."""
     chat = _chat("telegram", "t1", ("Dave", "David Sartori"))

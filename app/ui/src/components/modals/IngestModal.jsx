@@ -6,6 +6,26 @@ import { api } from "../../lib/api.js";
 import Modal, { Check, TextField } from "./Modal.jsx";
 
 /**
+ * One line describing what is staged, grouped by platform.
+ *
+ * `3 files ready · email, telegram` — or `190 files ready · email` for a mailbox drop.
+ * An unrecognised file is called out because it is the one thing the user may need to
+ * act on; the names themselves are in INGEST LOG.
+ */
+function stagedSummary(items) {
+  const byPlatform = new Map();
+  for (const item of items) {
+    const key = item.platform || "unrecognised";
+    byPlatform.set(key, (byPlatform.get(key) || 0) + 1);
+  }
+  const parts = [...byPlatform.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([platform, count]) => (count > 1 ? `${platform} ×${count}` : platform));
+  const total = items.length;
+  return `${total} file${total === 1 ? "" : "s"} ready · ${parts.join(", ")}`;
+}
+
+/**
  * Ingest: one modal, one tab, top to bottom.
  *
  *   ├ Truncate Graph DB ......... Delete Spool ────────────────┤
@@ -650,24 +670,13 @@ export default function IngestModal({ onClose, onIngested }) {
 
       {stagedCount > 0 && (
         <div style={{ marginTop: 8 }}>
-          <h2 className="section">{stagedCount} file(s) ready</h2>
-          {staged.map((item, index) => (
-            <div
-              key={index}
-              className="result-row"
-              style={{ cursor: "default" }}
-            >
-              {/* Light blue, the same accent the platform pills use: these are newly
-                  staged files, and the modal's other text is deliberately muted. */}
-              <div className="result-snippet" style={{ color: "var(--blue-glow)" }}>
-                {item.name}
-              </div>
-              <div className="result-meta">
-                {item.platform}
-                {item.recognised ? "" : " · not recognised, kept"}
-              </div>
-            </div>
-          ))}
+          {/* **One line, never a file list.** An email drop is ~190 `.eml` files and a
+              `.pst` or a Gmail takeout is thousands; listing them pushed the rest of the
+              modal off-screen and told the user nothing they could act on. What matters
+              is how many, of which platform, and whether anything was unrecognised.
+              The per-file detail is still in INGEST LOG, which is where a failure is
+              read. */}
+          <h2 className="section">{stagedSummary(staged)}</h2>
         </div>
       )}
 

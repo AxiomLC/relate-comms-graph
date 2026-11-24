@@ -19,16 +19,21 @@ from relate_comms.adapters import outlook_pst
 
 pytest.importorskip("pypff", reason="libpff-python is required to read .pst files")
 
+# A `.pst` cannot be generated in pure Python — libpff reads the container format but
+# does not write it — so the committed fixture is the only source. `spool/real/outlook/`
+# is checked first so a real drop-in export is picked up when one is present.
 FIXTURE = Path(__file__).parent / "fixtures" / "outlook" / "Outlook.pst"
-REAL = Path.home() / "Downloads" / "Outlook.pst"
+SPOOL = Path(__file__).resolve().parents[1] / "spool" / "real" / "outlook"
 
 
 def _sample() -> Path:
-    """The committed fixture, or the author's copy when the fixture is absent."""
+    """A committed fixture, a dropped-in export, or a skip."""
     if FIXTURE.exists():
         return FIXTURE
-    if REAL.exists():
-        return REAL
+    if SPOOL.exists():
+        found = sorted(SPOOL.rglob("*.pst"))
+        if found:
+            return found[0]
     pytest.skip("no .pst available")
 
 

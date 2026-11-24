@@ -42,7 +42,11 @@ demand, so the app is always one run away from a realistic demo.
 Every number that shapes the output lives in [`config.py`](config.py), and changing one
 line changes the data:
 
-- `THREADS_PER_PLATFORM` — more threads.
+- `AVG_THREADS_PER_PLATFORM` — more threads (each platform rolls ±`THREADS_JITTER`).
+- `BIG_THREAD_COUNT` / `BIG_THREAD_RANGE` / `BIG_THREAD_LOW_WEIGHT` — how many long-running
+  threads the world gets, how long they are, and how strongly the short end is favoured.
+- `BODY_ENTITY_SHARE` — how often each body kind is chosen (`org` 1.0, `place` 0.7,
+  `product` 1.6). A share, not a count: it multiplies the pool size.
 - `SPAM_GROUPS = 0` — no spam groups; the build then *reports* the shape as unexercised
   rather than silently dropping it.
 - `world.py`'s cast and pools; `dialogue.py`'s topics and sentence frames.
@@ -121,6 +125,23 @@ Fixed cast: `Mark Jones` (Owner, every platform), `Mary Jones`, `Mary Olver`,
 appear on more than one platform — deliberately sparse, so the graph stays honestly
 disconnected.
 
+> **Known gap: the knob is not what the store shows.** Per-platform pools are small
+> (Telegram 5, SMS 6) against ~30 threads each, so `_pick_distinct` exhausts its pool and
+> falls back to any person in the cast — including people whose `on` set never included
+> that platform. Measured 2026-11-24: 52 of 95 Correspondents merged (55%) against a knob
+> of 8%. The fix is a bigger per-platform cast, not a smaller knob.
+
+### Long-running threads
+
+`BIG_THREAD_PLATFORMS = ("telegram", "messenger", "whatsapp", "sms")` — the four where a
+conversation plausibly stays open for years. LinkedIn, email and Outlook are excluded:
+LinkedIn is not used for continuous personal comms, and mail starts a new thread per subject.
+
+The world gets `BIG_THREAD_COUNT = (3, 7)` of them, each `BIG_THREAD_RANGE = (150, 520)`
+messages, with the lower half twice as likely (`BIG_THREAD_LOW_WEIGHT = 2.0`). The count and
+the platform are rolled **once per build**, and the platform list is shuffled before use, so
+the first pass is one big thread per platform rather than three on one.
+
 Bodies are templated, not LLM-written: offline, deterministic, milliseconds.
 
 ### Who a body may name
@@ -184,7 +205,13 @@ axis C  MENTIONS    1 | 2-4, on ONE platform only   [body kinds]
 
 **`BODY_ENTITY_LINES` (default 4), not pool size, is the ceiling.** Every thread gets up to
 that many entity rows in its opening, drawn from all three pools at once. So the mention
-slots are `THREADS_PER_PLATFORM × BODY_ENTITY_LINES`, divided across 670 items.
+slots are `AVG_THREADS_PER_PLATFORM × BODY_ENTITY_LINES`, divided across 670 items.
+
+**Which kind gets a slot is `BODY_ENTITY_SHARE`, not an even split.** The draw is weighted
+by `share × pool size`, so a bigger list is not penalised and a smaller one is not
+over-represented. Defaults tilt away from places (0.7) and toward products (1.6), because
+the app's users are tech people: they name tools and gear far more than geography.
+Measured effect on kind picks: place 33% → 28%, product 33% → 35%.
 
 Measured: roughly **1 body in 12** names an entity. An item that never lands in a body
 writes nothing — that is the `mention_count: 1` tail, by design.

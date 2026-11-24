@@ -493,8 +493,8 @@ def _title_for(
 ) -> str:
     """The title for one message's thread. Same string for every message in it."""
     if chat is None:
-        label = platform_title_label(message.platform)
-        return f"{label}; {message.chat_id[-6:]}"
+        # No platform token: the title is the name and the date, nothing else.
+        return message.chat_id[-6:]
     first, last = spans.get(chat.chat_id, (None, None))
     return thread_display_title(
         chat, owner, first_ts=first, last_ts=last,
@@ -525,21 +525,24 @@ def thread_display_title(
 ) -> str:
     """A human-readable title, always non-empty. **Display only.**
 
-    The schema is two separators, so a group name or email subject that itself
+    The schema is one separator, so a group name or email subject that itself
     contains a date, `-`, `->` or `#2` is harmless — the date block is delimited,
     never merely trailing:
 
-        <Platform>; <Name>; <MM-DD-YYYY>[-][>][ #n]
+        <Name>; <MM-DD-YYYY>[-][>][ #n]
 
-        SMS; Bryan Rodgers; 06-02-2026
-        Facebook; Ryan Phillip; 02-13-2025->
-        WhatsApp; +27 84 518 9029; 04-21-2026->
-        LinkedIn; n8n Hackathon today - log in!🪐; 08-16-2025
-        LinkedIn; Invoice due 08-16-2025; 08-16-2025
+        Bryan Rodgers; 06-02-2026
+        Ryan Phillip; 02-13-2025->
+        +27 84 518 9029; 04-21-2026->
+        n8n Hackathon today - log in!🪐; 08-16-2025
+        Invoice due 08-16-2025; 08-16-2025
 
-    Parse from the outside in — platform before the **first** `;`, date block after
-    the **last** `;`, name between them. Never parse it for the platform key: the
-    token is the display label, and the node's `platform` property is authoritative.
+    Parse from the outside in — date block after the **last** `;`, name before it.
+
+    **No platform token.** The title used to lead with one (`WhatsApp; …`), which
+    spent the widest part of a canvas label on a fact the node already carries: the
+    glyph is platform-coloured and the Viewer draws a platform pill beside the
+    title. The `platform` property is authoritative; never read it from a title.
 
     **Why `->` and not an end date.** An end date changes on every ingest, because
     `max(ts)` moves. `->` changes at most once, ever: the first time a thread spans
@@ -554,13 +557,10 @@ def thread_display_title(
     """
     from .canon import canonical
 
-    label = platform_title_label(chat.platform)
     name = _thread_name(chat, owner, canonical)
     block = _date_block(first_ts, last_ts)
 
-    parts = [label, name]
-    if block:
-        parts.append(block)
+    parts = [name, block]
     title = "; ".join(part for part in parts if part)
     if ordinal and ordinal > 1:
         title = f"{title} #{ordinal}"

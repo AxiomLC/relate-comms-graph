@@ -111,11 +111,46 @@ def test_no_unmarked_thread_exceeds_ordinary_cap(world):
                 assert thread.count <= config.ORDINARY_THREAD_MAX
 
 
-def test_big_threads_present_and_huge_is_opt_in(world):
+def test_big_threads_are_spread_across_the_four_platforms(world):
+    """The count and the platform are rolled once per build, so the world agrees."""
+    import random
+
+    low, high = config.BIG_THREAD_RANGE
+    seen = []
+    for platform in config.PLATFORMS:
+        plan_obj = plan_module.plan(world, platform, random.Random("b"))
+        for thread in plan_obj.threads:
+            if thread.mark == "big_thread":
+                seen.append((platform, thread.count))
+                assert low <= thread.count <= high, thread.count
+
+    assert len(seen) >= config.BIG_THREAD_COUNT[0], seen
+    assert len(seen) <= config.BIG_THREAD_COUNT[1], seen
+    # Every big thread lands on a platform that is allowed to carry one.
+    assert all(platform in config.BIG_THREAD_PLATFORMS for platform, _ in seen)
+    # And the platforms that must not carry one, do not.
+    for platform in ("linkedin", "email", "outlook"):
+        plan_obj = plan_module.plan(world, platform, random.Random("b"))
+        assert not [t for t in plan_obj.threads if t.mark == "big_thread"]
+
+
+def test_big_thread_sizes_favour_the_low_end(world):
+    """`BIG_THREAD_LOW_WEIGHT` must actually bias the draw, not just be declared."""
+    import random
+
+    rng = random.Random("sizes")
+    sizes = [plan_module._big_thread_size(rng) for _ in range(400)]
+    low, high = config.BIG_THREAD_RANGE
+    mid = (low + high) / 2
+    lower = sum(1 for s in sizes if s <= mid)
+    assert lower > len(sizes) * 0.55, f"only {lower}/{len(sizes)} in the low half"
+    assert all(low <= s <= high for s in sizes)
+
+
+def test_huge_thread_is_opt_in(world):
     import random
     normal = plan_module.plan(world, "telegram", random.Random("b"))
-    sizes = {t.count for t in normal.threads if t.mark == "big_thread"}
-    assert sizes == set(config.BIG_THREADS)
+    assert not any(t.mark == "huge_thread" for t in normal.threads)
 
     huge = plan_module.plan(world, "telegram", random.Random("b"), huge=True)
     assert any(t.mark == "huge_thread" for t in huge.threads)

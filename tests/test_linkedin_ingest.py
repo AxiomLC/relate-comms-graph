@@ -19,7 +19,10 @@ from relate_comms import ingest as ingest_module
 from relate_comms import writer
 from relate_comms.adapters import linkedin
 
-REAL = Path.home() / "Downloads" / "Basic_LinkedInDataExport_11-14-2026.zip.zip"
+# The sample world the app generates, committed to `spool/real/` so these tests run on
+# any clone. Not a personal export.
+REAL = (Path(__file__).resolve().parents[1] / "spool" / "real" / "linkedin"
+        / "Basic_LinkedInDataExport_11-01-2026.zip.zip")
 
 COLUMNS = ["CONVERSATION ID", "CONVERSATION TITLE", "FROM", "SENDER PROFILE URL",
            "TO", "RECIPIENT PROFILE URLS", "DATE", "SUBJECT", "CONTENT",

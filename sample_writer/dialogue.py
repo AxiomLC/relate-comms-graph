@@ -303,7 +303,19 @@ def entity_line(world: World, platform: str, rng: random.Random,
     if not pools:
         return None
 
-    kind, names, lines = rng.choice(pools)
+    # **Weighted by pool size times the kind's share.** `len(names)` alone makes every
+    # *item* equally likely, which was the first fix: a uniform pick across kinds gave
+    # each kind a third of the slots, so with unequal pools (254 places, 232 orgs, 184
+    # products) each product was named about half as often as each place.
+    #
+    # `BODY_ENTITY_SHARE` then tilts the *kind*, which pool size cannot express. Places
+    # come down because a tech-heavy corpus names fewer cities than the pool implies;
+    # products come up for the same reason. The two multiply, so the knob means "how much
+    # more often is this kind chosen than its list size alone would give".
+    kind, names, lines = rng.choices(
+        pools,
+        weights=[len(p[1]) * config.BODY_ENTITY_SHARE.get(p[0], 1.0) for p in pools],
+    )[0]
     canonical = rng.choice(names)
     # **Products pick their frames from the product, not the kind.** `the Fanta renewal is
     # due` reads as a bug; `the Fanta bill` does not. Org and place frames are uniform

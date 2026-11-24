@@ -146,9 +146,9 @@ export const THEME = {
     // (opacity 0.3), so it is a soft band rather than a hard line — see `visual` for
     // why a real glow is not possible.
     edge: [
-      { min: 80, width: 4, opacity: 0.3 },
-      { min: 12, width: 0.3, opacity: 1 },
-      { min: 0, width: 0.1, opacity: 1 },
+      { min: 60, width: 4, opacity: 0.3 },
+      { min: 12, width: 0.4, opacity: 1 },
+      { min: 0, width: 0.2, opacity: 1 },
     ],
   },
 

@@ -21,9 +21,14 @@ store instead:
 tools.evidence_counts()          # or: MATCH (n:<Kind>) RETURN count(n)
 ```
 
-> **`outlook` has been reading 0 rows** while `spool/real/outlook/` exists. The `.pst` leg is
-> built and tested; this is a data-presence question, not a code one. Check before trusting
-> any Outlook claim, and treat a flat-0 platform as "not re-ingested", not as a bug.
+> **`outlook` reads 0 rows unless a `.pst` is in `spool/real/outlook/`.** The `.pst` leg is
+> built and tested; this is a data-presence question, not a code one. The sample world now
+> copies `Outlook.pst` there, so a fresh build does carry 6 messages. Treat a flat-0
+> platform as "not re-ingested", not as a bug.
+
+> **Wipe before measuring.** `delta=False` re-processes but does not delete, so a rebuild
+> over an existing store keeps the old world's nodes and every count is inflated. `rm
+> store/graph.rl` first, or use the UI's Truncate.
 
 **Extraction rework landed 2026-11-23** (commit `f782812`). Three structural changes:
 - **`POSSIBLY` is gone.** Fuzzy spelling pairs now fold instead of drawing a guessed edge.
@@ -76,49 +81,42 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 
 ## Next
 
-> **THE NEXT WORK ITEM IS THE ENTITY-LIST LOAD (§0).** Everything else in this section is
-> queued behind it. That job is what closes [`rework_extraction.md`](rework_extraction.md)
-> — the Product line, the three dictionaries, and the per-kind visibility that reads them.
-> AI/LLM wiring (§3) and MCP (§4) remain a standing given; they are not the priority.
->
-> **When §0 lands, `rework_extraction.md`, `entity_list_brief.md` and `temp-lists` are all
-> finished with.** See the note at the bottom of this file.
+> **§0 (entity lists) is DONE.** The three dictionaries are loaded and the extraction bugs
+> it exposed are fixed. What remains in this section is the portable-graph work (§1) and
+> two standing items (LLM §3, MCP §4). `rework_extraction.md` is now one open decision
+> (GLiNER) and a table of what was declined.
 
-### 0. Entity lists — drafted, not yet loaded — **the active job**
+### 0. Entity lists — **DONE** (2026-11-24)
 
-**Three lists are drafted** in [`temp-lists`](temp-lists) (2,126 lines) from the brief in
-[`entity_list_brief.md`](entity_list_brief.md):
+**Loaded, merged not replaced.** The entries already in code were the ones the pipeline was
+tested against, and several (the sample pool `Fargo`/`Bismarck`/`North Dakota`/`Bay Area`)
+exist so a public clone has something to find.
 
-| List | Entries | Current in code |
+| List | Entries | Where |
 |---|---|---|
-| Places | **684** | `PLACE_DICTIONARY` 97 |
-| Organizations | **576** | `ORG_DICTIONARY` 26 |
-| Products | **739** (636 `plain`, 22 `gated`) | `products.INDEX` 92 |
+| Places | **691** | `extract.PLACE_DICTIONARY` |
+| Organizations | **585** | `extract.ORG_DICTIONARY` |
+| Products | **764** | `products.INDEX` (699 plain + 28 gated, minus 16 generics) |
 
-Plus **CONSIDERED AND REJECTED** and **UNSURE — your call** sections, which are the point of
-the brief: they show where the boundary was drawn.
+The drafted file held 658 products, not the 739 the brief claimed; the difference is the
+`CONSIDERED AND REJECTED` section, which is a blocklist, not a list.
 
-**Quality checked, not assumed.** Every generic-noun land mine is either absent or in the
-rejected section with a reason (`Seat`, `Contract`, `Credits`, `Desk`, `Shoes`, `Watch`,
-`Flight`, `Rack`, `Switch`, `Plan` — all zero in `plain`). Only one bare brand slipped
-through as `plain` (`Rolex`), which is defensible. The `gated` entries are the genuinely
-ambiguous middle, each with its reason — `Slack` (*"cut me some slack"*), `Zoom`
-(*"zoom in"*), `Notion`, `Obsidian`, `Asana`, `Confluence`.
+**Three bugs the load exposed, all fixed — and all invisible in a re-ingest:**
 
-**Not loaded yet.** `temp-lists` is not imported by anything. Loading means:
+1. **A short entry truncated a longer name.** `overwrite_ents` on a 691-entry gazetteer cut
+   `Kensington Market` (an `ORG` to the model) to `place:kensington`. 32 organizations and 8
+   products begin with a place name (`London Stock Exchange`, `Canada Goose Expedition
+   Parka`). Fixed by snapshotting the model's spans before the ruler and restoring any span
+   it shortened — the ruler wins where it has a *phrase*, the model keeps a span it found
+   that is *longer*.
+2. **Products were never in the ruler.** Only places and orgs were, so `Toyota Hilux` split
+   into `Toyota` (ORG) + `Hilux` (PRODUCT) and the index could only rescue the single token
+   it was handed. 7 of 724 entries reached the ruler by accident.
+3. **`NORP` was dropped outright.** `Vitra` and `Persian` both come back `NORP`, so
+   `a Persian rug` produced nothing at all. Added to `PRODUCT_RESCUE_LABELS` with `PERSON`.
 
-1. **Places / Organizations** — paste into `extract.PLACE_DICTIONARY` / `ORG_DICTIONARY`.
-   Safe: proper nouns, measured flat per message up to ~2,000 names.
-2. **Products** — `plain` and `gated` into `products._PLAIN` / `_CONTEXT_GATED`; the rejected
-   section into `products.GENERIC`. **Needs care**: a common noun in `plain` mints junk
-   nodes, and `GENERIC` is the only thing that stops it.
-3. **Rebuild** (`delta=False`), then query `MATCH (p:Product) WHERE p.mention_count >= 2`.
-   The canvas is not the instrument — hidden single mentions are still stored.
-
-**`sample_writer` was rebalanced alongside it** (2026-11-24): `PRODUCTS` 100 → **184**,
-tech 75 / durable 89 / food 20, three frame sets, per-section fuzz variants (physical goods
-never hyphenate). The knobs that raise how many entities a body names live in
-`sample_writer/config.py` — `BODY_ENTITY_LINES` is the real ceiling, not pool size.
+Plus: a leading `The ` is stripped when building a ruler pattern — `The North Face Nuptse`
+required the article, so a body writing `North Face Nuptse` never matched.
 
 **Scale is not the constraint; classification is.** Measured on `EntityRuler`: 10,000 names
 costs 0.28 ms/message (load 1.9 s once). The product index is a Python dict, O(1) at any
@@ -485,6 +483,39 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
 
 ## Done — one line each
 
+- **2026-11-24** — **Thread titles lost their platform token.** `WhatsApp; Fred Jones;
+  01-28-2024->` → `Fred Jones; 01-28-2024->`, in the canvas label and the Viewer alike,
+  because the change is in `writer.thread_display_title` (the one place a title is built)
+  rather than in either reader. The platform was already carried twice on screen — the
+  glyph colour and the Viewer's pill. `TECHREADME.md` §3 schema updated.
+- **2026-11-24** — **Entity lists loaded; three extraction bugs fixed.** Places 97 → 691,
+  Organizations 26 → 585, Products 92 → 764, merged not replaced. The load exposed three
+  bugs a re-ingest could not show: a short dictionary entry truncated a longer name
+  (`Kensington Market` → `place:kensington`, and 40 dictionary entries begin with a place
+  name); products were never in the `EntityRuler` at all, so `Toyota Hilux` split into two
+  half-names; and `NORP` was dropped outright, so `a Persian rug` produced nothing. Fixed
+  with a model-span snapshot + restore pass, products added to the ruler, `NORP` added to
+  `PRODUCT_RESCUE_LABELS`, and a leading `The ` stripped from ruler patterns. **Four tests
+  pin the behaviour** — these are exactly the cases invisible in a 700-node graph.
+- **2026-11-24** — **`sample_writer` made less uniform.** `THREADS_PER_PLATFORM` →
+  `AVG_THREADS_PER_PLATFORM` + `THREADS_JITTER` (each platform rolls ±30%, so counts are
+  24–41 instead of a flat 25). Big threads moved from two platforms to four
+  (`BIG_THREAD_PLATFORMS`), randomised 3–7 per world at 150–520 messages with the low half
+  twice as likely, and spread one-per-platform before repeating. New `BODY_ENTITY_SHARE`
+  weights the kind draw (place 0.7, product 1.6) — measured effect: place 33% → 28%,
+  product 33% → 35%. Two bugs found: the §12 contract still demanded a big thread on
+  messenger *and* telegram by name, and the big-thread plan was re-rolled per platform call,
+  giving every platform the identical size.
+- **2026-11-24** — **Tests repointed at the sample world, not personal exports.** Four
+  adapter tests read `~/Downloads` (an 825 MB SMS backup, a real Messenger zip) and skipped
+  on any other machine; they now read `spool/real/`, which is committed and generated. The
+  assertions that were about *that* file were rewritten as properties (a 10–20 message
+  email thread, not `11156` rows). Suite 126 s → 68 s. `tests/README.md` documents the
+  payloads and how to wire a new format.
+- **2026-11-24** — **Ingest modal: one summary line, not a file list.** An email drop is
+  ~190 `.eml` files and a `.pst` is thousands; listing them pushed the rest of the modal
+  off-screen. Now `190 files ready · email ×190`, grouped by platform, with unrecognised
+  files still called out. Per-file detail stays in INGEST LOG.
 - **2026-11-23** — **Extraction rework: Product leg, message-anchored mentions, no
   `POSSIBLY`.** `POSSIBLY` removed (all 6 edges were typo pairs; `r.score` was null on
   every one) — fuzzy is now a fifth rung in `_fold_groups`. `MENTIONS` moved from Thread to
@@ -575,15 +606,13 @@ live (it was a constructor-only option). **Docs:** `CytoGravityRecommend.md` fol
 
 ---
 
-## Root-doc retirement — what goes when §0 lands
+## Root-doc retirement — §0 has landed
 
-The root is carrying too many working documents. The plan, so nobody re-derives it:
-
-| File | Fate once §0 (entity lists) lands |
+| File | Fate |
 |---|---|
-| `entity_list_brief.md` | **Delete.** It is input to a job, not a fact about the app. |
-| `temp-lists` | **Delete.** Its content will live in `extract.py` / `products.py`. |
-| `rework_extraction.md` | **Delete.** Every open item closes with §0; the measurements worth keeping are already in §2 of this file. |
+| `entity_list_brief.md` | **Delete.** Input to a job, not a fact about the app. |
+| `temp-lists` | **Delete.** Its content now lives in `extract.py` / `products.py`. |
+| `rework_extraction.md` | **Kept, shrunk.** One open decision (GLiNER) and the declined table. Delete when that is settled. |
 | `detacheable_graph.md` | Keep until §1 (portable module) is built, then fold into `TECHREADME.md`. |
 
 That leaves the five that earn their place: `README.md` (human overview), `TECHREADME.md`

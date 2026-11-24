@@ -259,21 +259,24 @@ a nickname is resolved into the *key* at write time) and `FOLD_ON_NAME`.
 ### Thread title schema — LOCKED
 
 ```
-<Platform>; <Name>; <MM-DD-YYYY>[-][>][ #n]
+<Name>; <MM-DD-YYYY>[-][>][ #n]
 ```
 
 | Case | Example |
 |---|---|
-| 1:1, single day | `SMS; Bryan Rodgers; 06-02-2026` |
-| 1:1, spans days | `Facebook; Ryan Phillip; 02-13-2025->` |
-| Group | `Whatsapp; Come to Africa; 10-25-2026->` |
-| With subject | `LinkedIn; n8n Hackathon today - log in!🪐; 08-16-2025` |
-| Same person, same start date | `Facebook; Ryan Phillip; 02-13-2025-> #2` |
-| Name contains a date | `LinkedIn; Invoice due 08-16-2025; 08-16-2025` |
-| No messages | `Telegram; Mary Olver` (second `;` omitted) |
+| 1:1, single day | `Bryan Rodgers; 06-02-2026` |
+| 1:1, spans days | `Ryan Phillip; 02-13-2025->` |
+| Group | `Come to Africa; 10-25-2026->` |
+| With subject | `n8n Hackathon today - log in!🪐; 08-16-2025` |
+| Same person, same start date | `Ryan Phillip; 02-13-2025-> #2` |
+| Name contains a date | `Invoice due 08-16-2025; 08-16-2025` |
+| No messages | `Mary Olver` (second `;` omitted) |
 
-**Parse from the outside in:** platform before the **first** `;`, date block after the
-**last** `;`, name between them.
+**Parse from the outside in:** date block after the **last** `;`, name before it.
+
+**No platform token** (removed 2026-11-24). It spent the widest part of a canvas label on
+a fact the node already carries — the glyph is platform-coloured and the Viewer draws a
+platform pill beside the title.
 
 **Why `;`:** measured across 500 real titles — `;` 0 occurrences, `[`/`]` 0, `->` 0, `#` 0,
 `|` 3, `-` 6. `-` collides on day one; `;` does not.
@@ -284,6 +287,7 @@ a nickname is resolved into the *key* at write time) and `FOLD_ON_NAME`.
 **`#n` by date collision only**, ordered by `chat_id`, never ingest order.
 
 **Display only.** Never parse the title for the platform key; query the `platform` property.
+The title no longer contains one at all.
 
 ### Naming — settled
 
@@ -526,7 +530,8 @@ Ports in use: **8000 is taken** by another app — this project uses **8100**.
 |---|---|
 | **Settled UI and visual facts** — glows, colour parsing, stylesheet order, the merged-node template, bags, and what fcose actually honours | [`UIVISUALS.md`](UIVISUALS.md) |
 | What is still moving in extraction, what was measured, what was declined | [`rework_extraction.md`](rework_extraction.md) |
-| The brief the entity lists are built from — the generic block, the three tiers | [`entity_list_brief.md`](entity_list_brief.md) |
+| The sample generator — every knob, the pools, the fuzz axes | [`sample_writer/README.md`](sample_writer/README.md) |
+| The test payloads, and how to wire a new export format | [`tests/README.md`](tests/README.md) |
 | The generator spec — every shape the app has a switch for | [`archive_docs/UNDESIRABLES.md`](archive_docs/UNDESIRABLES.md) |
 | Per-platform export shapes and traps | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) |
 | Ollama on this machine | [`archive_docs/HowToRunOllama.md`](archive_docs/HowToRunOllama.md) |

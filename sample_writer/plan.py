@@ -205,27 +205,88 @@ def _mark_unreplied_1to1(world, platform, rng, observations, used: set[str]) \
     return thread
 
 
+def _big_thread_size(rng: random.Random) -> int:
+    """One big-thread message count, weighted toward the low end.
+
+    `BIG_THREAD_LOW_WEIGHT` is how much more likely the lower half of the range is. A
+    500-message thread is rare and a 150-message one is ordinary, so a uniform draw made
+    every big thread look the same size — which is the one thing a size distribution
+    should not do.
+    """
+    low, high = config.BIG_THREAD_RANGE
+    mid = (low + high) / 2
+    if rng.random() < config.BIG_THREAD_LOW_WEIGHT / (1 + config.BIG_THREAD_LOW_WEIGHT):
+        return rng.randint(low, int(mid))
+    return rng.randint(int(mid) + 1, high)
+
+
+def _big_thread_plan(world) -> list[tuple[str, int]]:
+    """`[(platform, size)]` for the whole world, computed once.
+
+    **One roll for the build, not one per platform.** `_mark_big_threads` is called once
+    per platform, so a plan derived inside it was re-rolled each time and every platform
+    drew the same size — three threads of 313 messages. Keying the RNG on the world seed
+    and building the list here makes every call agree.
+
+    The platform list is shuffled and taken in order, so the first pass is one big thread
+    per platform; only a count above four starts repeating.
+    """
+    rng = random.Random(f"{world.seed}:big-threads")
+    total = rng.randint(*config.BIG_THREAD_COUNT)
+    platforms = list(config.BIG_THREAD_PLATFORMS)
+    rng.shuffle(platforms)
+    return [
+        (platforms[i % len(platforms)], _big_thread_size(rng))
+        for i in range(total)
+    ]
+
+
 def _mark_big_threads(world, platform, rng, observations, used: set[str],
                       huge: bool) -> list[Thread]:
-    """§9. 200 and 500 baked in; 1,600 only with `--huge`."""
-    if platform not in {"messenger", "telegram"}:
+    """§9. A few long-running threads, spread across the platforms that carry them.
+
+    **The count and the platform are both rolled once per build**, not per platform: the
+    world gets `BIG_THREAD_COUNT` big threads in total and each lands on a platform drawn
+    from `BIG_THREAD_PLATFORMS`. Rolling per platform gave every platform the same number,
+    which is the flatness this is here to avoid.
+
+    `--huge` still adds its own 1,600-message thread on top, unchanged.
+    """
+    if platform not in config.BIG_THREAD_PLATFORMS:
         return []
-    sizes = list(config.BIG_THREADS) + (list(config.HUGE_THREADS) if huge else [])
+
+    # The roll is keyed on the world seed so every platform call agrees on the plan.
     made = []
-    for size in sizes:
+    for index, (target, size) in enumerate(_big_thread_plan(world)):
+        if target != platform:
+            continue
         person, _ = _pick_distinct(world, platform, rng, used)
-        mark = "huge_thread" if size >= 1000 else "big_thread"
         made.append(Thread(
-            key=f"{platform}:big-{size}",
+            key=f"{platform}:big-{index}-{size}",
             title=f"{person.name} ({size})",
             platform=platform,
             is_group=False,
             participants=[person],
             count=size,
             start=world.random_time(rng),
-            mark=mark,
+            mark="big_thread",
         ))
         observations.append(f"{platform}: big thread {size}")
+
+    if huge:
+        size = config.HUGE_THREADS[0]
+        person, _ = _pick_distinct(world, platform, rng, used)
+        made.append(Thread(
+            key=f"{platform}:huge-{size}",
+            title=f"{person.name} ({size})",
+            platform=platform,
+            is_group=False,
+            participants=[person],
+            count=size,
+            start=world.random_time(rng),
+            mark="huge_thread",
+        ))
+        observations.append(f"{platform}: huge thread {size}")
     return made
 
 
@@ -394,6 +455,18 @@ def _fill_bodies(world: World, thread: Thread, rng: random.Random) -> None:
 # ---------------------------------------------------------------------------- plan
 
 
+def _thread_count(rng: random.Random) -> int:
+    """How many ordinary threads this platform gets.
+
+    `AVG_THREADS_PER_PLATFORM` is the mean; each platform rolls within ±`THREADS_JITTER`
+    of it. Rolled once per platform, so the count is stable for a given seed and the
+    platform's own shape is what varies — a flat count made every export look stamped.
+    """
+    low = config.AVG_THREADS_PER_PLATFORM * (1 - config.THREADS_JITTER)
+    high = config.AVG_THREADS_PER_PLATFORM * (1 + config.THREADS_JITTER)
+    return max(1, round(rng.uniform(low, high)))
+
+
 def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False) -> Plan:
     observations: list[str] = []
     threads: list[Thread] = []
@@ -401,7 +474,7 @@ def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False)
     if platform == "email":
         threads = _email_boundaries(world, rng, observations)
         used: set[str] = set()
-        for index in range(config.THREADS_PER_PLATFORM - len(threads)):
+        for index in range(_thread_count(rng) - len(threads)):
             person, fresh = _pick_distinct(world, platform, rng, used)
             threads.append(Thread(
                 key=f"email:{person.slug}-{index}",
@@ -423,7 +496,7 @@ def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False)
         # Each gets a distinct person: duplicate titles overwrite each other on the
         # platforms that derive the thread key from the title (WhatsApp).
         used: set[str] = set()
-        for index in range(config.THREADS_PER_PLATFORM):
+        for index in range(_thread_count(rng)):
             person, fresh = _pick_distinct(world, platform, rng, used)
             title = person.name if fresh else f"{person.name} ({index + 1})"
             threads.append(Thread(
@@ -492,8 +565,14 @@ def assert_contract(plans: list[Plan], *, huge: bool = False,
     for platform in by_platform:
         require(platform, "unreplied_1to1", "§8 unreplied 1:1")
         require(platform, "quiet", "§10 quiet thread")
-    for platform in ("messenger", "telegram"):
-        require(platform, "big_thread", "§9 big thread")
+    # §9: the world carries `BIG_THREAD_COUNT` big threads, spread across the platforms
+    # that plausibly hold one. Requiring one on a *named* platform would contradict the
+    # randomised assignment, so the check is on the world total.
+    big = sum(len(plan_obj.marked("big_thread")) for plan_obj in plans)
+    if big < config.BIG_THREAD_COUNT[0]:
+        problems.append(
+            f"§9 big threads: {big} written, expected at least "
+            f"{config.BIG_THREAD_COUNT[0]} across {config.BIG_THREAD_PLATFORMS}")
 
     # §4: all four Messenger folders represented.
     messenger = by_platform.get("messenger")

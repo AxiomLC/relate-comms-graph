@@ -41,7 +41,16 @@ CORRESPONDENTS = (60, 120)       # (min, max) random cast size
 # --------------------------------------------------------------- message volume
 
 # Ordinary threads per platform. Each platform then adds its mandated shapes on top.
-THREADS_PER_PLATFORM = 25
+#
+# **Randomised per platform, not a flat count.** A real mailbox is lumpy: one week you
+# open nine new chats, the next you open two. A flat 25 made every platform's thread
+# count identical, which no real export has and which made the canvas read as generated.
+#
+# The average is the knob; each platform rolls its own count within ±30% of it, so the
+# total stays predictable while the per-platform shape does not. `THREADS_JITTER` is the
+# half-width of that band — 0.3 means 17..32 at an average of 25.
+AVG_THREADS_PER_PLATFORM = 25
+THREADS_JITTER = 0.3
 
 # Message-count weights for ordinary threads. 2-12 dominates; long threads are rare.
 # The mandated shapes (below) are added regardless of this distribution.
@@ -64,7 +73,23 @@ EMAIL_REPLIED_LONG = 12          # §3c
 ZERO_MESSAGE_THREADS = 1         # §6  telegram + whatsapp
 SERVICE_ROW_THREADS = 1          # §7  a live thread that also has service rows
 UNREPLIED_1TO1 = 1               # §8  must survive exclude_silent_groups
-BIG_THREADS = (200, 500)         # §9  baked in
+# §9 — the long-running threads. **Four platforms, not two.**
+#
+# Telegram and Messenger used to be the only platforms that carried a big thread, which
+# made "big" read as a property of the platform rather than of the conversation. In a real
+# export SMS and WhatsApp carry them just as readily: people keep one thread open for
+# years. LinkedIn, email and Outlook do not — LinkedIn is not used for continuous
+# personal comms, and mail starts a new thread per subject.
+BIG_THREAD_PLATFORMS = ("telegram", "messenger", "whatsapp", "sms")
+
+# How many big threads the whole world gets, and where they land.
+BIG_THREAD_COUNT = (3, 7)        # (min, max) rolled once per build
+BIG_THREAD_RANGE = (150, 520)    # (min, max) message count
+
+# **Weighted toward the low end.** A 500-message thread is rare; a 150-message one is
+# ordinary. `BIG_THREAD_LOW_WEIGHT` is how much more likely the lower half is — 2.0 means
+# 150-250 is twice as likely as 250-520. Uniform made every big thread look the same size.
+BIG_THREAD_LOW_WEIGHT = 2.0
 HUGE_THREADS = (1600,)           # §9b opt-in only, `--huge`
 QUIET_THREADS = 1                # §10 per platform
 QUIET_YEARS = 3                  # §10 minimum age gap
@@ -125,6 +150,20 @@ CORR_FUZZY = 0.07            # share spelled one alternate way (uniform per vari
 CORR_MULTI_PLATFORM = 0.08   # share on 2+ platforms; bounds from PLATFORMS
 
 # Bodies: Place, Organization, Product.
+#
+# **How often each kind is chosen for a body line.** This is a *share*, not a count: the
+# draw is weighted by `share x pool size`, so a kind with a bigger list is not penalised
+# for it and a kind with a smaller one is not over-represented.
+#
+# Measured 2026-11-24 on the live store: Place 117, Organization 80, Product 73. A chat
+# corpus names cities and companies more readily than products, but not by this much —
+# the app is for tech people, who talk about tools and gear far more than about geography.
+# So places come down 30% and products come up.
+#
+# Set a kind to 0 to stop bodies naming it at all; the pool stays in the world, so the
+# fuzz report still counts its items.
+BODY_ENTITY_SHARE = {"org": 1.0, "place": 0.7, "product": 1.6}
+
 BODY_FUZZY = 0.15            # raised from .07: only ~1/3 of items reach a body
 BODY_MULTI_MENTION = 0.08    # named 2+ times on ONE platform
 BODY_MULTI_PLATFORM = 0.04   # on 2+ platforms; mention count independent of this
@@ -134,7 +173,7 @@ MENTIONS_MULTI = (2, 4)      # (min, max) mentions for a multi-mention item
 #
 # **This, not the pool size, sets how often a name reaches the corpus.** Every thread gets
 # up to this many entity rows before the random mixing starts, so the total mention slots
-# are `THREADS_PER_PLATFORM x this`, divided across `ORGS` + `PLACES` + `PRODUCTS`.
+# are `AVG_THREADS_PER_PLATFORM x this`, divided across `ORGS` + `PLACES` + `PRODUCTS`.
 #
 # Measured 2026-11-24: at 3 with a 586-item pool, roughly **1 body in 12** names an entity,
 # and only 25 of 184 product names landed in any body at all. Growing a pool without

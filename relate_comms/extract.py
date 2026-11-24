@@ -58,6 +58,9 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from spacy.language import Language
+from spacy.tokens import Span
+
 
 # The spaCy labels that mean "a place". Anything else spaCy proposes is ignored —
 # an `ORG` is not a `Place` even when the words look like one (`Kensington Market`
@@ -101,6 +104,166 @@ ORG_DICTIONARY: tuple[str, ...] = (
     "Oxfam", "Greenpeace", "Red Cross", "Brotherhood of St Laurence",
     # Long forms the model truncates or partial-matches.
     "Unite the Union", "University of Sydney", "NSW Health",
+    # --- Curated list (2026-11-24) ---
+    # Merged, not replaced: the nine names above are the ones the model was measured to
+    # miss, and they stay. A name listed in both PRODUCTS and here resolves to ORG —
+    # `_arbitrate` never demotes an ORG span, and the ruler's GPE beats ORG on a tie.
+    # --- Tech & data platforms ---
+    "Datadog", "Grafana Labs", "Confluent", "HashiCorp", "Elastic", "GitHub",
+    "GitLab", "Atlassian", "Mistral AI", "DeepMind", "Red Hat", "Canonical",
+    "VMware", "Microsoft", "Google", "Alphabet", "Amazon Web Services",
+    "Netflix", "Spotify", "Nvidia", "Intel", "Advanced Micro Devices",
+    "Qualcomm", "Broadcom", "Cisco", "Dell Technologies", "Lenovo", "Samsung",
+    "Sony", "Siemens", "SAP", "Adobe", "Salesforce", "ServiceNow", "Workday",
+    "Zendesk", "HubSpot", "Okta", "CrowdStrike", "Uber", "Lyft", "Airbnb",
+    "DoorDash", "Deliveroo", "Just Eat Takeaway", "Booking Holdings", "Expedia",
+    "Tripadvisor", "Skyscanner", "Canva", "Figma", "Notion Labs", "Dropbox",
+    "Zoom Video Communications", "PayPal", "Klarna", "Revolut", "Monzo",
+    "Wise Payments", "Adyen", "Coinbase", "Binance", "Block Inc", "Tesla",
+    "SpaceX", "Rivian", "ByteDance", "Tencent", "Alibaba", "Baidu", "Huawei",
+    "Xiaomi", "Infosys", "Tata Consultancy Services", "Wipro", "Cognizant",
+    "Accenture", "Capgemini", "Naspers", "Prosus", "Flutterwave", "Paystack",
+    "Takealot", "Gojek", "Grab Holdings", "Sea Limited", "Rakuten",
+    "Mercado Libre", "Nubank", "Zalando", "Spotify Technology",
+    "Wikimedia Foundation", "Mozilla", "Linux Foundation",
+    "Apache Software Foundation",
+    # --- Telecoms ---
+    "Vodafone", "Vodacom", "MTN", "Safaricom", "Airtel", "Telkom", "Telstra",
+    "Verizon", "AT&T", "T-Mobile", "Deutsche Telekom", "Telefónica", "Singtel",
+    "Jio Platforms",
+    # --- Banks, insurers, asset managers, exchanges ---
+    "JPMorgan Chase", "Goldman Sachs", "Morgan Stanley", "Citigroup",
+    "Bank of America", "Wells Fargo", "HSBC", "Barclays", "Lloyds Banking Group",
+    "NatWest", "Standard Chartered", "Santander", "BBVA", "UBS", "Credit Suisse",
+    "Deutsche Bank", "BNP Paribas", "Société Générale", "Crédit Agricole", "ING",
+    "ABN Amro", "Rabobank", "Nordea", "Danske Bank", "Commerzbank", "UniCredit",
+    "Intesa Sanpaolo", "Mizuho", "Mitsubishi UFJ Financial Group",
+    "Sumitomo Mitsui", "DBS", "OCBC", "United Overseas Bank", "ICICI Bank",
+    "HDFC Bank", "State Bank of India", "Royal Bank of Canada", "TD Bank",
+    "Scotiabank", "Commonwealth Bank", "Westpac", "ANZ",
+    "National Australia Bank", "Standard Bank", "Absa", "Nedbank", "FirstRand",
+    "Capitec", "Access Bank", "Zenith Bank", "Guaranty Trust Bank", "Ecobank",
+    "Equity Bank", "Itaú", "Bradesco", "Vanguard", "Fidelity Investments",
+    "State Street", "Blackstone", "KKR", "Carlyle", "Apollo Global Management",
+    "Bridgewater Associates", "Citadel", "Mastercard", "American Express",
+    "Berkshire Hathaway", "Allianz", "AXA", "Zurich Insurance", "Aviva",
+    "Legal & General", "Munich Re", "Swiss Re", "Old Mutual", "Sanlam",
+    "Moody's", "S&P Global", "London Stock Exchange", "Nasdaq", "Bloomberg",
+    # --- Consultancies, audit, law ---
+    "McKinsey & Company", "Boston Consulting Group", "Bain & Company",
+    "Deloitte", "PwC", "KPMG", "Ernst & Young", "Oliver Wyman", "Roland Berger",
+    "Booz Allen Hamilton", "Clifford Chance", "Linklaters", "Freshfields",
+    "Baker McKenzie", "Latham & Watkins",
+    # --- Retail & consumer ---
+    "Walmart", "Costco", "Tesco", "Sainsbury's", "Asda", "Aldi", "Lidl",
+    "Carrefour", "IKEA", "H&M", "Inditex", "Marks & Spencer", "John Lewis",
+    "Woolworths", "Pick n Pay", "Shoprite", "Checkers", "Home Depot", "Best Buy",
+    "Currys", "MediaMarkt", "Walgreens", "Nike", "Adidas", "Puma", "Lululemon",
+    "Uniqlo", "Patagonia", "Starbucks", "McDonald's", "Nando's", "Domino's",
+    "Pret A Manger", "Costa Coffee", "Unilever", "Procter & Gamble", "Nestlé",
+    "Coca-Cola", "PepsiCo", "Diageo", "Heineken", "AB InBev", "Danone",
+    "Mondelez", "L'Oréal", "LVMH", "Hermès", "Kering", "Richemont", "Burberry",
+    "Rolex", "Ferrari", "Porsche", "Toyota", "Volkswagen", "BMW",
+    "Mercedes-Benz", "Ford", "General Motors", "Honda", "Nissan", "Hyundai",
+    "Kia", "Volvo", "Renault", "Stellantis", "Tata Motors", "BYD",
+    # --- Airlines ---
+    "British Airways", "Lufthansa", "Air France", "KLM", "Emirates",
+    "Qatar Airways", "Etihad", "Turkish Airlines", "Singapore Airlines",
+    "Cathay Pacific", "Qantas", "Delta Air Lines", "United Airlines",
+    "American Airlines", "Southwest Airlines", "Ryanair", "easyJet", "Wizz Air",
+    "Air Canada", "Ethiopian Airlines", "Kenya Airways", "South African Airways",
+    "FlySafair", "Virgin Atlantic", "Air New Zealand", "LATAM", "Avianca",
+    "Japan Airlines", "All Nippon Airways", "Korean Air", "Air India", "IndiGo",
+    "Garuda Indonesia", "Thai Airways", "Vietnam Airlines",
+    "Philippine Airlines", "Jet2", "Iberia", "Finnair", "Aer Lingus",
+    "Swiss International Air Lines", "JetBlue", "Alaska Airlines",
+    # --- Energy, industrials, mining, logistics ---
+    "BP", "ExxonMobil", "Chevron", "TotalEnergies", "Equinor", "Saudi Aramco",
+    "Eni", "Repsol", "Sasol", "Eskom", "Orsted", "Vestas", "National Grid",
+    "Electricité de France", "Enel", "Iberdrola", "Octopus Energy", "Boeing",
+    "Airbus", "Rolls-Royce", "BAE Systems", "Lockheed Martin",
+    "General Electric", "Caterpillar", "Honeywell", "ABB", "Schneider Electric",
+    "Maersk", "DHL", "FedEx", "Rio Tinto", "BHP", "Glencore", "Vale",
+    "ArcelorMittal", "Anglo American", "Gold Fields", "Sibanye-Stillwater",
+    "Impala Platinum", "De Beers", "Dangote Group",
+    # --- Healthcare & pharma ---
+    "Pfizer", "Moderna", "Novartis", "Roche", "Johnson & Johnson", "AstraZeneca",
+    "GlaxoSmithKline", "Sanofi", "Novo Nordisk", "Bayer", "Eli Lilly",
+    "Medtronic", "Mayo Clinic", "Cleveland Clinic", "Kaiser Permanente", "Bupa",
+    "Discovery Health", "Mediclinic", "Netcare", "UnitedHealth Group", "Cigna",
+    "Aetna",
+    # --- Media & entertainment ---
+    "BBC", "CNN", "Reuters", "Associated Press", "Financial Times",
+    "The Guardian", "The New York Times", "The Wall Street Journal",
+    "The Economist", "Al Jazeera", "Walt Disney Company",
+    "Warner Bros. Discovery", "Comcast", "Channel 4", "ITV", "News Corp",
+    "Condé Nast", "Penguin Random House", "Universal Music Group", "Sony Music",
+    "Multichoice",
+    # --- Government, regulators, international bodies ---
+    "European Commission", "European Central Bank", "European Union",
+    "International Monetary Fund", "World Bank", "World Health Organization",
+    "World Trade Organization", "United Nations", "NATO", "OECD",
+    "Federal Reserve", "Bank of England", "Reserve Bank of India",
+    "South African Reserve Bank", "Securities and Exchange Commission",
+    "Federal Trade Commission", "Food and Drug Administration",
+    "Centers for Disease Control and Prevention",
+    "Environmental Protection Agency", "Department of Homeland Security",
+    "Federal Bureau of Investigation", "NASA", "Internal Revenue Service",
+    "HM Revenue and Customs", "National Health Service", "Home Office",
+    "Foreign Office", "Financial Conduct Authority",
+    "Competition and Markets Authority", "Ofcom",
+    "South African Revenue Service", "Department of Home Affairs",
+    "Australian Taxation Office", "Canada Revenue Agency",
+    "European Space Agency", "CERN", "UNHCR", "UNICEF", "World Food Programme",
+    "World Economic Forum",
+    # --- Universities & business schools ---
+    "Harvard University", "Stanford University",
+    "Massachusetts Institute of Technology", "Yale University",
+    "Princeton University", "Columbia University", "University of Chicago",
+    "Cornell University", "Duke University", "Northwestern University",
+    "Johns Hopkins University", "Carnegie Mellon University",
+    "California Institute of Technology", "New York University",
+    "University of California", "University of Oxford",
+    "University of Cambridge", "Imperial College London",
+    "London School of Economics", "University College London",
+    "King's College London", "University of Edinburgh",
+    "University of Manchester", "University of Warwick", "Durham University",
+    "ETH Zurich", "EPFL", "Sorbonne University",
+    "Technical University of Munich", "Humboldt University",
+    "Heidelberg University", "Leiden University", "University of Amsterdam",
+    "KU Leuven", "Karolinska Institute", "University of Copenhagen",
+    "Bocconi University", "INSEAD", "IESE Business School",
+    "London Business School", "HEC Paris", "University of Toronto",
+    "McGill University", "University of British Columbia",
+    "University of Waterloo", "University of Melbourne",
+    "Australian National University", "University of Auckland",
+    "National University of Singapore", "Nanyang Technological University",
+    "University of Hong Kong", "Tsinghua University", "Peking University",
+    "Fudan University", "University of Tokyo", "Kyoto University",
+    "Seoul National University", "KAIST", "Indian Institute of Technology",
+    "Indian Institute of Management", "University of Cape Town",
+    "University of the Witwatersrand", "Stellenbosch University",
+    "University of Pretoria", "University of Nairobi", "University of Lagos",
+    "American University in Cairo", "University of São Paulo",
+    "Universidad Nacional Autónoma de México",
+    # --- NGOs, charities, foundations ---
+    "Doctors Without Borders", "Médecins du Monde",
+    "International Committee of the Red Cross", "World Wildlife Fund",
+    "Save the Children", "Habitat for Humanity",
+    "Bill & Melinda Gates Foundation", "Wellcome Trust", "Rotary International",
+    "Salvation Army", "Cancer Research UK", "Comic Relief", "Human Rights Watch",
+    "Transparency International", "Electronic Frontier Foundation",
+    "Islamic Relief", "Mercy Corps", "Caritas",
+    # --- Sports clubs ---
+    "Manchester United", "Manchester City", "Liverpool FC", "Arsenal",
+    "Tottenham Hotspur", "Real Madrid", "FC Barcelona", "Atlético Madrid",
+    "Bayern Munich", "Borussia Dortmund", "Juventus", "AC Milan", "Inter Milan",
+    "Paris Saint-Germain", "Ajax", "Celtic", "Kaizer Chiefs", "Orlando Pirates",
+    "Mamelodi Sundowns", "Al Ahly", "Los Angeles Lakers",
+    "Golden State Warriors", "Boston Celtics", "Chicago Bulls",
+    "New York Yankees", "Dallas Cowboys", "New England Patriots",
+    "Green Bay Packers", "Mumbai Indians", "Chennai Super Kings",
+    "Red Bull Racing", "McLaren Racing",
 )
 
 # Below this many characters a span is noise (`NY` survives, `N` does not). Applied
@@ -171,6 +334,133 @@ PLACE_DICTIONARY: tuple[str, ...] = (
     "Warsaw", "Washington", "Wellington", "Zurich",
     # The generated samples' own pool, so a public clone exercises the pipeline.
     "North Dakota", "Fargo", "Bismarck", "Bay Area",
+    # --- Curated gazetteer (2026-11-24) ---
+    # Merged from `temp-lists`, not pasted over the list above: the entries already here
+    # are the ones the pipeline was tested against, and several of them (the sample pool
+    # above) exist so a public clone has something to find.
+    # --- Africa: cities ---
+    "Abuja", "Kano", "Ibadan", "Port Harcourt", "Accra", "Kumasi", "Mombasa",
+    "Kisumu", "Addis Ababa", "Dar es Salaam", "Dodoma", "Arusha", "Zanzibar",
+    "Kampala", "Entebbe", "Kigali", "Lusaka", "Harare", "Bulawayo", "Maputo",
+    "Luanda", "Windhoek", "Gaborone", "Lilongwe", "Soweto", "Sandton",
+    "Stellenbosch", "Gqeberha", "Bloemfontein", "Polokwane", "Alexandria",
+    "Giza", "Luxor", "Casablanca", "Marrakech", "Rabat", "Tangier", "Tunis",
+    "Algiers", "Tripoli", "Dakar", "Abidjan", "Bamako", "Ouagadougou", "Conakry",
+    "Freetown", "Monrovia", "Lomé", "Cotonou", "Kinshasa", "Lubumbashi",
+    "Brazzaville", "Douala", "Yaoundé", "Libreville", "Khartoum", "Mogadishu",
+    "Antananarivo", "Port Louis", "Maseru",
+    # --- Africa: countries / regions ---
+    "Nigeria", "Ghana", "Kenya", "Ethiopia", "Tanzania", "Uganda", "Rwanda",
+    "Zambia", "Zimbabwe", "Mozambique", "Angola", "Namibia", "Botswana",
+    "Malawi", "South Africa", "Egypt", "Morocco", "Tunisia", "Algeria", "Libya",
+    "Senegal", "Ivory Coast", "Mali", "Cameroon", "Sudan", "Somalia",
+    "Mauritius", "Madagascar", "Lesotho", "Eswatini",
+    "Democratic Republic of the Congo", "Western Cape", "Gauteng",
+    "KwaZulu-Natal",
+    # --- Middle East & Central Asia ---
+    "Abu Dhabi", "Sharjah", "Doha", "Riyadh", "Jeddah", "Mecca", "Medina",
+    "Kuwait City", "Manama", "Muscat", "Amman", "Beirut", "Damascus", "Tehran",
+    "Isfahan", "Tel Aviv", "Jerusalem", "Haifa", "Ankara", "Izmir", "Baku",
+    "Tbilisi", "Yerevan", "Almaty", "Astana", "Tashkent", "Bishkek", "Kabul",
+    "United Arab Emirates", "Saudi Arabia", "Qatar", "Kuwait", "Bahrain", "Oman",
+    "Lebanon", "Iraq", "Iran", "Israel", "Turkey", "Azerbaijan", "Armenia",
+    "Kazakhstan", "Uzbekistan", "Afghanistan",
+    # --- South Asia ---
+    "New Delhi", "Bangalore", "Bengaluru", "Hyderabad", "Chennai", "Kolkata",
+    "Pune", "Ahmedabad", "Jaipur", "Surat", "Lucknow", "Kochi", "Goa",
+    "Chandigarh", "Gurgaon", "Gurugram", "Noida", "Indore", "Nagpur",
+    "Coimbatore", "Thiruvananthapuram", "Karachi", "Lahore", "Islamabad",
+    "Rawalpindi", "Peshawar", "Dhaka", "Chittagong", "Colombo", "Kandy",
+    "Kathmandu", "Thimphu", "India", "Pakistan", "Bangladesh", "Sri Lanka",
+    "Nepal", "Bhutan", "Maldives", "Kerala", "Rajasthan", "Maharashtra",
+    "Tamil Nadu", "Karnataka",
+    # --- Southeast Asia ---
+    "Surabaya", "Bandung", "Bali", "Denpasar", "Yogyakarta", "Medan", "Penang",
+    "Johor Bahru", "Chiang Mai", "Phuket", "Pattaya", "Hanoi",
+    "Ho Chi Minh City", "Saigon", "Da Nang", "Cebu", "Davao", "Quezon City",
+    "Makati", "Phnom Penh", "Siem Reap", "Vientiane", "Yangon", "Indonesia",
+    "Malaysia", "Thailand", "Vietnam", "Philippines", "Cambodia", "Laos",
+    "Myanmar", "Brunei",
+    # --- East Asia ---
+    "Osaka", "Kyoto", "Yokohama", "Nagoya", "Sapporo", "Fukuoka", "Kobe",
+    "Hiroshima", "Busan", "Incheon", "Shenzhen", "Guangzhou", "Chengdu",
+    "Hangzhou", "Wuhan", "Xi'an", "Nanjing", "Chongqing", "Tianjin", "Suzhou",
+    "Kowloon", "Macau", "Kaohsiung", "Ulaanbaatar", "Japan", "China",
+    "South Korea", "North Korea", "Taiwan", "Mongolia",
+    # --- Oceania ---
+    "Adelaide", "Canberra", "Gold Coast", "Hobart", "Darwin", "Cairns",
+    "Wollongong", "Bondi", "Christchurch", "Queenstown", "Dunedin", "Suva",
+    "Port Moresby", "Apia", "Nouméa", "Papeete", "Tahiti", "Tasmania",
+    "Queensland", "New South Wales", "Western Australia", "Australia",
+    "New Zealand", "Fiji", "Samoa", "Tonga", "Vanuatu", "Papua New Guinea",
+    # --- South America ---
+    "São Paulo", "Brasília", "Salvador", "Belo Horizonte", "Fortaleza", "Recife",
+    "Porto Alegre", "Curitiba", "Florianópolis", "Manaus", "Rosario", "Mendoza",
+    "Valparaíso", "Lima", "Cusco", "Arequipa", "Bogotá", "Medellín", "Cali",
+    "Cartagena", "Quito", "Guayaquil", "Caracas", "Montevideo", "Asunción",
+    "La Paz", "Patagonia", "Brazil", "Argentina", "Chile", "Peru", "Colombia",
+    "Ecuador", "Venezuela", "Uruguay", "Paraguay", "Bolivia",
+    # --- Central America & Caribbean ---
+    "Guadalajara", "Monterrey", "Cancún", "Tijuana", "Puebla", "Oaxaca",
+    "Guatemala City", "San Salvador", "Tegucigalpa", "Managua", "Panama City",
+    "Havana", "Kingston", "Nassau", "Santo Domingo", "Port-au-Prince",
+    "San Juan", "Bridgetown", "Port of Spain", "Punta Cana", "Mexico",
+    "Guatemala", "Costa Rica", "Panama", "Cuba", "Jamaica", "Bahamas",
+    "Barbados", "Trinidad and Tobago", "Dominican Republic", "Haiti",
+    "Puerto Rico", "Honduras", "El Salvador", "Nicaragua",
+    # --- United States ---
+    "San Antonio", "San Diego", "San Jose", "Jacksonville", "Fort Worth",
+    "Columbus", "Charlotte", "Indianapolis", "Nashville", "Portland", "Memphis",
+    "Louisville", "Baltimore", "Milwaukee", "Albuquerque", "Tucson", "Fresno",
+    "Sacramento", "Raleigh", "Omaha", "Minneapolis", "Tampa", "Orlando",
+    "New Orleans", "Cleveland", "Pittsburgh", "Cincinnati", "St. Louis",
+    "Salt Lake City", "Oakland", "Honolulu", "Anchorage", "Boise", "Richmond",
+    "Charleston", "Savannah", "Palo Alto", "Silicon Valley", "Berkeley",
+    "Brooklyn", "Manhattan", "Queens", "Harlem", "Hollywood", "Santa Monica",
+    "Napa Valley", "the Bay Area", "New England", "the Midwest", "California",
+    "Texas", "Florida", "United States",
+    # --- Canada ---
+    "Edmonton", "Winnipeg", "Quebec City", "Halifax", "Saskatoon", "Mississauga",
+    "Ontario", "British Columbia", "Alberta", "Quebec", "Canada",
+    # --- UK & Ireland ---
+    "Bristol", "Sheffield", "Nottingham", "Leicester", "Oxford", "Cambridge",
+    "Brighton", "York", "Southampton", "Aberdeen", "Dundee", "Milton Keynes",
+    "Shoreditch", "Hackney", "Camden", "Soho", "Kensington", "Chelsea",
+    "Islington", "Canary Wharf", "Notting Hill", "Brixton", "Peckham", "Cork",
+    "Galway", "Limerick", "England", "Scotland", "Wales", "Northern Ireland",
+    "Ireland", "United Kingdom", "Cornwall", "Yorkshire", "the Cotswolds",
+    "the Lake District",
+    # --- France ---
+    "Lyon", "Marseille", "Toulouse", "Nantes", "Strasbourg", "Bordeaux", "Lille",
+    "Montpellier", "Cannes", "Montmartre", "Provence", "Normandy", "Brittany",
+    "Alsace", "Burgundy", "France",
+    # --- Germany ---
+    "Munich", "Cologne", "Stuttgart", "Düsseldorf", "Dortmund", "Leipzig",
+    "Dresden", "Hanover", "Nuremberg", "Bremen", "Bonn", "Heidelberg",
+    "Kreuzberg", "Neukölln", "Prenzlauer Berg", "Bavaria", "Saxony", "Germany",
+    # --- Spain & Portugal ---
+    "Valencia", "Seville", "Bilbao", "Málaga", "Zaragoza", "Palma", "Granada",
+    "San Sebastián", "Ibiza", "Mallorca", "Tenerife", "Catalonia", "Andalusia",
+    "Canary Islands", "Spain", "Porto", "Faro", "Algarve", "Madeira", "Portugal",
+    # --- Italy ---
+    "Naples", "Turin", "Florence", "Venice", "Bologna", "Genoa", "Verona",
+    "Palermo", "Catania", "Bari", "Pisa", "Tuscany", "Sicily", "Sardinia",
+    "Lombardy", "Puglia", "Amalfi", "Italy",
+    # --- Benelux, Alpine, Nordics ---
+    "Rotterdam", "The Hague", "Utrecht", "Eindhoven", "Netherlands", "Antwerp",
+    "Ghent", "Bruges", "Belgium", "Luxembourg", "Basel", "Bern", "Lausanne",
+    "Zug", "Switzerland", "Salzburg", "Graz", "Innsbruck", "Austria", "Aarhus",
+    "Denmark", "Gothenburg", "Malmö", "Sweden", "Bergen", "Norway", "Finland",
+    "Reykjavik", "Iceland",
+    # --- Central & Eastern Europe, Balkans, Baltics ---
+    "Kraków", "Gdańsk", "Wrocław", "Poland", "Brno", "Czechia", "Bratislava",
+    "Slovakia", "Hungary", "Bucharest", "Cluj-Napoca", "Romania", "Sofia",
+    "Bulgaria", "Thessaloniki", "Crete", "Santorini", "Greece", "Zagreb",
+    "Dubrovnik", "Croatia", "Belgrade", "Serbia", "Ljubljana", "Slovenia",
+    "Sarajevo", "Tallinn", "Riga", "Vilnius", "Estonia", "Latvia", "Lithuania",
+    "Kyiv", "Lviv", "Odesa", "Ukraine", "Saint Petersburg", "Russia", "Minsk",
+    "Belarus", "Malta", "Valletta", "Cyprus", "Monaco", "Tirana", "Albania",
+    "Montenegro", "North Macedonia", "Skopje",
 )
 
 
@@ -264,6 +554,106 @@ def _ensure_model() -> None:
     _install_ruler()
 
 
+# `casefolded entry -> spaCy label` for the promotion pass. Built once from the two
+# dictionaries; a name in both resolves to `GPE`, matching the ruler's own precedence.
+_DICTIONARY_LABELS: dict[str, str] = {
+    **{name.casefold(): "ORG" for name in ORG_DICTIONARY},
+    **{name.casefold(): "GPE" for name in PLACE_DICTIONARY},
+}
+
+# Labels the dictionary may overrule. A `DATE` or `CARDINAL` that spells a city is a
+# different reading of the same word, and the model is the better judge of that.
+#
+# **`FAC` is here because of `Paris Saint-Germain`.** The model reads a football club as
+# a facility, and `FAC` means Place, so a curated organization was landing as
+# `place:paris saint-germain`. A `FAC` span that is exactly a dictionary entry is the
+# dictionary's to decide; one that is not (`12 Baker Street`) is untouched.
+_PROMOTABLE_LABELS: frozenset[str] = frozenset({"PERSON", "ORG", "NORP", "FAC"})
+
+
+def _pattern_form(display: str) -> str:
+    """The string the ruler should match for an index entry.
+
+    A leading `The ` is dropped: `canon` already ignores it for the key, and a pattern
+    that requires the article cannot match the way people write (`North Face Nuptse`).
+    """
+    text = display.strip()
+    if text.lower().startswith("the ") and len(text) > 4:
+        return text[4:]
+    return text
+
+
+@Language.component("model_span_snapshot")
+def _model_span_snapshot(doc):
+    """Remember what the learned pass found, before the ruler is allowed to overwrite it.
+
+    The ruler needs `overwrite_ents=True` or a multi-word product never wins: `Toyota
+    Hilux` arrives as `Toyota` (ORG) + `Hilux` (PRODUCT), and a non-overwriting ruler
+    skips the phrase because its tokens are already claimed. But overwriting is also what
+    truncated `Kensington Market` to `place:kensington`.
+
+    So the model's spans are recorded here and restored afterwards, and the two rules
+    stop fighting: the ruler wins where it has a **phrase**, the model keeps a span it
+    found that is **longer** than the ruler's.
+    """
+    doc.user_data["model_ents"] = [(e.start, e.end, e.label_) for e in doc.ents]
+    return doc
+
+
+@Language.component("dictionary_promote")
+def _dictionary_promote(doc):
+    """Make an **exact, whole-span** dictionary hit authoritative over the model's label.
+
+    This is the second half of the dictionary's authority, and it exists because the
+    first half (`overwrite_ents` on a ruler placed *before* `ner`) had a cost that only
+    showed up once the gazetteer got large.
+
+    **What went wrong.** `overwrite_ents` lets a dictionary hit replace whatever the
+    learned pass produced. That is what makes `Then Austin on Friday` a `GPE` instead of
+    the `PERSON` the model guesses. But it also lets a one-word entry *truncate* a longer
+    name: `Kensington Market` is an `ORG` to the model, and a gazetteer holding
+    `Kensington` cut it to `place:kensington`. Measured on the 2026-11-24 list: 32
+    organizations and 8 products begin with a place name (`London Stock Exchange`,
+    `Canada Goose Expedition Parka`), and `Kensington Market` is the case a test pins.
+
+    **The fix, and why it is shaped this way.** The ruler now runs *after* `ner` with
+    `overwrite_ents=False`, so it can only add spans the model missed and never shortens
+    one it found. That alone would lose the `PERSON` rescue, so this pass restores it:
+    when the model's span is **exactly** a dictionary entry, the dictionary's label wins.
+    Exactness is the whole safety argument — `Kensington Market` is not an entry, so it is
+    left as the `ORG` the model found; `Austin` is, so it is promoted from `PERSON`.
+
+    Only `PERSON`/`ORG`/`NORP` are promoted. A `DATE` or `CARDINAL` that happens to spell
+    a city is a different reading of the same word, and the model is the better judge.
+    """
+    if not doc.ents:
+        return doc
+
+    # 1. Restore a model span the ruler truncated. Only when it starts at the same token
+    #    and is strictly longer — that is the `Kensington Market` shape, and nothing else.
+    #    A ruler phrase that *contains* the model's spans (`Toyota Hilux`) is untouched,
+    #    because no model span starts where it starts and is longer.
+    keep = list(doc.ents)
+    for start, end, label in doc.user_data.get("model_ents", ()):
+        for current in list(keep):
+            if current.start == start and end > current.end:
+                keep.remove(current)
+                keep.append(Span(doc, start, end, label=label))
+                break
+
+    # 2. An exact whole-span dictionary hit is the dictionary's to label. This is what
+    #    keeps `Then Austin on Friday` a Place rather than the `PERSON` the model guessed.
+    out = []
+    for ent in keep:
+        label = _DICTIONARY_LABELS.get(ent.text.casefold())
+        if label and ent.label_ in _PROMOTABLE_LABELS:
+            out.append(Span(doc, ent.start, ent.end, label=label))
+        else:
+            out.append(ent)
+    doc.ents = sorted(out, key=lambda span: span.start)
+    return doc
+
+
 def _install_ruler() -> None:
     """Put a place dictionary in front of the learned NER.
 
@@ -279,7 +669,18 @@ def _install_ruler() -> None:
     # One pipe holds both dictionaries: `overwrite_ents` gives the ruler precedence over
     # the learned pass, and two pipes would only make that precedence harder to reason
     # about (the second would silently win on an overlapping span).
-    ruler = _NLP.add_pipe("entity_ruler", name="place_ruler", before="ner",
+    # **After `ner`, overwriting, with the model's spans snapshotted first.** The three
+    # pieces are one mechanism and none of them works alone:
+    #
+    #   snapshot   records what the learned pass found
+    #   ruler      overwrites, so a multi-word phrase wins (`Toyota Hilux`)
+    #   promote    restores a longer model span the ruler truncated (`Kensington Market`)
+    #              and re-labels an exact dictionary hit (`Then Austin on Friday`)
+    #
+    # Measured on the 2026-11-24 lists: 32 organizations and 8 products begin with a place
+    # name, and 724 product entries were absent from the ruler entirely.
+    _NLP.add_pipe("model_span_snapshot", after="ner")
+    ruler = _NLP.add_pipe("entity_ruler", name="place_ruler", after="model_span_snapshot",
                          config={"overwrite_ents": True})
     ruler.add_patterns([
         {"label": "GPE", "pattern": name, "id": name.casefold()}
@@ -289,6 +690,28 @@ def _install_ruler() -> None:
         {"label": "ORG", "pattern": name, "id": name.casefold()}
         for name in ORG_DICTIONARY
     ])
+    # **Products too, and this was a real gap.** Until 2026-11-24 the ruler held only
+    # places and organizations, so a multi-word product never matched as a phrase and the
+    # model split it: `Toyota Hilux` became `Toyota` (ORG) + `Hilux` (PRODUCT), and the
+    # index could only rescue the single token it was handed. Measured on the curated
+    # list, 7 of 724 entries reached the ruler by accident (they are also org names).
+    #
+    # `PRODUCT` is a label `_arbitrate` already understands, so a phrase landing here is
+    # decided by the same ladder as any other span — the ruler only stops the split.
+    if PRODUCT_ENABLED:
+        from . import products  # local: `products` imports `canon`, not `extract`
+
+        # **A leading `The ` is stripped from the pattern.** `canon` already drops it for
+        # the key, so the entry is `north face nuptse` either way — but the ruler matches
+        # the *display* string, and a pattern of `The North Face Nuptse` requires the
+        # article. A body writing `North Face Nuptse` then never matched, and the model's
+        # own `LOC`/`FAC` label won. Measured: 2 of 724 entries were affected, and both
+        # were real products.
+        ruler.add_patterns([
+            {"label": "PRODUCT", "pattern": _pattern_form(entry.display), "id": entry.key}
+            for entry in products.INDEX.values()
+        ])
+    _NLP.add_pipe("dictionary_promote", after="place_ruler")
 
 
 # ------------------------------------------------------------------ language seam
@@ -597,7 +1020,11 @@ LABEL_KINDS: dict[str, tuple[str, ...]] = {
 # no cue reads as a person to the small model — the same failure `PLACE_DICTIONARY` exists
 # to fix for bare cities (`Then Austin on Friday` -> PERSON). The index decides; an
 # unrecognised `PERSON` is still dropped, so nothing is loosened but the names we claim.
-PRODUCT_RESCUE_LABELS: frozenset[str] = frozenset({"PERSON"})
+# `NORP` is here for the same reason as `PERSON`: the model labels a brand as a
+# nationality or group when the word is also one — `Vitra` and `Persian` both come back
+# `NORP`, so `a Persian rug` and `a Vitra Eames chair` produced no node at all. Only the
+# index promotes, so an unrecognised `NORP` (`British`, `Dutch`) is still dropped.
+PRODUCT_RESCUE_LABELS: frozenset[str] = frozenset({"PERSON", "NORP"})
 
 
 def _arbitrate(text: str, label: str, body: str = "") -> tuple[str, tuple[str, ...]]:

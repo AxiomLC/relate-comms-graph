@@ -7,6 +7,7 @@ Run: python -m pytest tests -q
 """
 from __future__ import annotations
 
+import re
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,9 +16,18 @@ import pytest
 
 from relate_comms.adapters import sms
 
-REAL_EXPORT = Path.home() / "Downloads" / "sms-20261116212209.xml"
+# The sample world the app itself generates, not a personal export. It is a realistic
+# Android `SMS Backup & Restore` download — the same shape a phone produces — and it is
+# committed to `spool/real/`, so these tests run on any clone.
+#
+# **Text only, deliberately.** The generator writes no MMS, so the MMS-specific tests
+# below use synthetic fixtures. That is not a gap: this app stores text, and an MMS
+# attachment is a reference the graph never reads.
+REAL_EXPORT = Path(__file__).resolve().parents[1] / "spool" / "real" / "sms" / "sms-20261101000000.xml"
 _REAL = REAL_EXPORT if REAL_EXPORT.exists() else None
 
+# The sample world's owner is not named in the export (no MMS, so no `<addrs>` to derive
+# it from). `is_self` is still correct because SMS states direction per row.
 OWNER = "+19174004025"
 
 
@@ -389,36 +399,52 @@ def test_window_bounds_are_applied(tmp_path):
 
 # --------------------------------------------------------------------------- real file
 
-@pytest.mark.skipif(_REAL is None, reason="real 825 MB export not present")
+@pytest.mark.skipif(_REAL is None, reason="sample SMS export not present")
 def test_real_export_reconciles_exactly():
     """Every row is either stored or counted. Nothing vanishes silently."""
     result = sms.parse(_REAL)
     stored = len(result.messages)
     skipped = sum(result.skipped.values())
-    assert stored + skipped == 11156, f"{stored} + {skipped} != 11156"
+    # The count comes from the file's own header, so regenerating the world cannot make
+    # this assertion lie — it stays a reconciliation, not a magic number.
+    declared = int(re.search(r'<smses count="(\d+)"', _REAL.read_text(encoding="utf-8")).group(1))
+    assert stored + skipped == declared, f"{stored} + {skipped} != {declared}"
     assert "duplicate within run" not in result.skipped
-    assert result.skipped == {"delivery receipt, not a message": 87}
+    assert result.skipped == {}
 
 
-@pytest.mark.skipif(_REAL is None, reason="real 825 MB export not present")
+@pytest.mark.skipif(_REAL is None, reason="sample SMS export not present")
 def test_real_export_has_no_owner_leakage():
+    """`Me` is the export's own marker for the owner and must never become a participant.
+
+    The sample world names the owner `Me` on every sent row (`contact_name="Me"`), which
+    is exactly the shape a real Android backup produces.
+    """
     result = sms.parse(_REAL)
-    owner = sms._norm_addr(OWNER)
     for chat in result.chats:
-        assert owner not in {sms._norm_addr(n) for n in chat.participant_names}, chat.title
+        assert "me" not in {n.strip().lower() for n in chat.participant_names}, chat.title
 
 
-@pytest.mark.skipif(_REAL is None, reason="real 825 MB export not present")
+@pytest.mark.skipif(_REAL is None, reason="sample SMS export not present")
 def test_real_export_participant_names_are_unique():
     result = sms.parse(_REAL)
     for chat in result.chats:
         assert len(set(chat.participant_names)) == len(chat.participant_names), chat.title
 
 
-@pytest.mark.skipif(_REAL is None, reason="real 825 MB export not present")
-def test_real_export_one_to_one_mms_merges_with_sms():
-    """A 1:1 conversation must not be split across `sms_` and `sms_g_` keys."""
+@pytest.mark.skipif(_REAL is None, reason="sample SMS export not present")
+def test_real_export_direction_is_stated_per_row():
+    """`is_self` comes from the row's `type`, not from an owner guess.
+
+    The sample world carries no MMS, so the owner's number cannot be derived — the
+    adapter says so in `warnings` and still gets every direction right. That is the
+    property worth pinning: a missing owner must not corrupt `is_self`.
+    """
     result = sms.parse(_REAL)
-    mms_chats = {m.chat_id for m in result.messages if m.raw_kind.startswith("mms")}
-    sms_chats = {m.chat_id for m in result.messages if m.raw_kind in ("text", "empty")}
-    assert len(mms_chats & sms_chats) > 90, "1:1 MMS threads did not merge with SMS"
+    assert any("owner's number is unknown" in w for w in result.warnings)
+    # Both directions must be present, and a sent row never carries a sender name —
+    # that is what `is_self` means here. Counts move when the world is regenerated, so
+    # the assertion is on the property, not the number.
+    self_rows = [m for m in result.messages if m.is_self]
+    assert 0 < len(self_rows) < len(result.messages)
+    assert all(m.sender_name == "" for m in self_rows)

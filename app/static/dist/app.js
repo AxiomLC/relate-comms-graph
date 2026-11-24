@@ -14861,8 +14861,8 @@
       // why a real glow is not possible.
       edge: [
         { min: 80, width: 4, opacity: 0.3 },
-        { min: 12, width: 0.3, opacity: 1 },
-        { min: 0, width: 0.1, opacity: 1 }
+        { min: 12, width: 0.4, opacity: 1 },
+        { min: 0, width: 0.2, opacity: 1 }
       ]
     },
     /* ------------------------------------------------------------------- visual */
@@ -18761,6 +18761,16 @@
 
   // app/ui/src/components/modals/IngestModal.jsx
   var import_jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
+  function stagedSummary(items) {
+    const byPlatform = /* @__PURE__ */ new Map();
+    for (const item of items) {
+      const key = item.platform || "unrecognised";
+      byPlatform.set(key, (byPlatform.get(key) || 0) + 1);
+    }
+    const parts = [...byPlatform.entries()].sort((a, b) => b[1] - a[1]).map(([platform, count]) => count > 1 ? `${platform} \xD7${count}` : platform);
+    const total = items.length;
+    return `${total} file${total === 1 ? "" : "s"} ready \xB7 ${parts.join(", ")}`;
+  }
   var WINDOWS = [
     { key: "3m", label: "3 months", months: 3 },
     { key: "6m", label: "6 months", months: 6 },
@@ -19206,27 +19216,7 @@
               children: dropNotice
             }
           ),
-          stagedCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { marginTop: 8 }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("h2", { className: "section", children: [
-              stagedCount,
-              " file(s) ready"
-            ] }),
-            staged.map((item, index) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
-              "div",
-              {
-                className: "result-row",
-                style: { cursor: "default" },
-                children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "result-snippet", style: { color: "var(--blue-glow)" }, children: item.name }),
-                  /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "result-meta", children: [
-                    item.platform,
-                    item.recognised ? "" : " \xB7 not recognised, kept"
-                  ] })
-                ]
-              },
-              index
-            ))
-          ] }),
+          stagedCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { marginTop: 8 }, children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: stagedSummary(staged) }) }),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             TextField,
             {

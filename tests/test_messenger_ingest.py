@@ -17,7 +17,10 @@ from relate_comms import ingest as ingest_module
 from relate_comms import writer
 from relate_comms.adapters import messenger
 
-REAL = Path.home() / "Downloads" / "facebook-davidsartori796-2026-11-14-1G300tUX.zip"
+# The sample world the app generates, committed to `spool/real/` so these tests run on
+# any clone. Not a personal export.
+REAL = (Path(__file__).resolve().parents[1] / "spool" / "real" / "messenger"
+        / "facebook-sampleuser-2026-11-01-1G300tUX.zip")
 
 
 def _section(sender: str, body: str, stamp: str | None) -> str:
@@ -260,8 +263,10 @@ def test_silent_gate_never_drops_a_one_to_one(tmp_path):
 
 @pytest.mark.skipif(not REAL.exists(), reason="no real Messenger export on this machine")
 def test_real_archive_parses_with_stated_senders():
-    result = messenger.parse(REAL, self_id="David Sartori")
-    assert len(result.messages) > 1000
+    result = messenger.parse(REAL, self_id="Mark Jones")
+    # A floor, not a count: the world is regenerated and its size moves with the knobs.
+    # What must hold is that the archive is substantial and every row is well-formed.
+    assert len(result.messages) > 100
     assert result.chats
     # Every row has an aware timestamp and a chattable sender.
     assert all(m.ts_utc.tzinfo is not None for m in result.messages)

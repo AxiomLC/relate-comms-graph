@@ -148,11 +148,28 @@ def test_the_model_product_label_is_frame_sensitive():
 
     The same name in a different frame proposes nothing at all. This is not a bug to fix —
     it is why a dictionary is needed rather than a better prompt.
+
+    **Asserted on the bare model, not on `extract._NLP`.** Since the 2026-11-24 list load
+    the pipeline's ruler holds every product name, so the frame hole is *closed* there and
+    the pipeline finds `Ansible` in both frames. That is the dictionary doing its job; the
+    model's own behaviour is what this test is about, so it is read directly.
     """
-    found = extract._NLP("I've moved everything onto Ansible.").ents
-    missing = extract._NLP("Ansible keeps falling over.").ents
+    import spacy
+
+    model = spacy.load("en_core_web_sm", exclude=["lemmatizer", "attribute_ruler"])
+    found = model("I've moved everything onto Ansible.").ents
+    missing = model("Ansible keeps falling over.").ents
     assert any(e.label_ == "PRODUCT" for e in found)
     assert not any(e.text == "Ansible" for e in missing)
+
+    # And the pipeline closes the hole the model leaves open.
+    both = [
+        m.text for m in extract.extract([
+            ("k1", "p", "I've moved everything onto Ansible."),
+            ("k2", "p", "Ansible keeps falling over."),
+        ]) if m.kind == "product"
+    ]
+    assert both == ["Ansible", "Ansible"]
 
 
 def test_arbitration_needs_the_body_not_just_the_span():

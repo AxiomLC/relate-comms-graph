@@ -379,14 +379,14 @@ def test_a_single_day_thread_has_no_arrow():
     chat = _chat("sms", "c1", "", ("Bryan Rodgers", "Mark Jones"))
     title = writer.thread_display_title(
         chat, "Mark Jones", first_ts=_BASE, last_ts=_BASE + timedelta(hours=2))
-    assert title == "SMS; Bryan Rodgers; 01-01-2026"
+    assert title == "Bryan Rodgers; 01-01-2026"
 
 
 def test_a_thread_spanning_days_gets_an_arrow():
     chat = _chat("messenger", "c1", "", ("Ryan Phillip", "Mark Jones"))
     title = writer.thread_display_title(
         chat, "Mark Jones", first_ts=_BASE, last_ts=_BASE + timedelta(days=20))
-    assert title == "Fcbk Mssgr; Ryan Phillip; 01-01-2026->"
+    assert title == "Ryan Phillip; 01-01-2026->"
 
 
 def test_the_arrow_does_not_drift_with_a_later_end_date():
@@ -404,7 +404,7 @@ def test_a_group_uses_its_own_name_not_a_participant():
                  ("Mark Jones", "Mary Olver", "Owen Lonon"), is_group=True)
     title = writer.thread_display_title(
         chat, "Mark Jones", first_ts=_BASE, last_ts=_BASE)
-    assert title == "WhatsApp; Come to Africa; 01-01-2026"
+    assert title == "Come to Africa; 01-01-2026"
 
 
 def test_a_subject_containing_a_date_is_not_ambiguous():
@@ -412,7 +412,7 @@ def test_a_subject_containing_a_date_is_not_ambiguous():
     chat = _chat("linkedin", "c1", "Invoice due 08-16-2025", ("Mary Olver", "Mark Jones"))
     title = writer.thread_display_title(
         chat, "Mark Jones", first_ts=_BASE, last_ts=_BASE)
-    assert title == "LinkedIn; Invoice due 08-16-2025; 01-01-2026"
+    assert title == "Invoice due 08-16-2025; 01-01-2026"
 
 
 def test_a_collision_gets_an_ordinal():
@@ -425,11 +425,15 @@ def test_a_collision_gets_an_ordinal():
 def test_no_date_means_no_second_separator():
     chat = _chat("telegram", "c1", "", ("Mary Olver", "Mark Jones"))
     title = writer.thread_display_title(chat, "Mark Jones")
-    assert title == "Telegram; Mary Olver"
+    assert title == "Mary Olver"
 
 
-def test_the_platform_token_is_the_display_label():
-    # Never the store key: the UI shows `Fcbk Mssgr`, not `messenger`.
-    assert writer.platform_title_label("messenger") == "Fcbk Mssgr"
-    assert writer.platform_title_label("whatsapp") == "WhatsApp"
-    assert writer.platform_title_label("email") == "Email"
+def test_the_title_carries_no_platform_token():
+    # The platform is the node's own property and the Viewer's pill. Leading the
+    # title with it spent the widest part of a canvas label on a duplicate.
+    for platform in ("sms", "messenger", "whatsapp", "linkedin", "telegram", "email"):
+        chat = _chat(platform, "c1", "", ("Mary Olver", "Mark Jones"))
+        title = writer.thread_display_title(
+            chat, "Mark Jones", first_ts=_BASE, last_ts=_BASE)
+        assert title == "Mary Olver; 01-01-2026", title
+        assert writer.platform_title_label(platform) not in title
