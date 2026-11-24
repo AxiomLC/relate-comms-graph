@@ -125,11 +125,16 @@ Fixed cast: `Mark Jones` (Owner, every platform), `Mary Jones`, `Mary Olver`,
 appear on more than one platform — deliberately sparse, so the graph stays honestly
 disconnected.
 
-> **Known gap: the knob is not what the store shows.** Per-platform pools are small
-> (Telegram 5, SMS 6) against ~30 threads each, so `_pick_distinct` exhausts its pool and
-> falls back to any person in the cast — including people whose `on` set never included
-> that platform. Measured 2026-11-24: 52 of 95 Correspondents merged (55%) against a knob
-> of 8%. The fix is a bigger per-platform cast, not a smaller knob.
+**The cast is 260–340 people, and that is what makes the knob mean anything.** Each
+platform needs one distinct person per thread, so the world demands ~180 person-platform
+slots. At the old 60–120 cast the pools ran dry (Telegram had 14 people for 29 threads) and
+`_pick_distinct` fell back to anyone in the cast — including people whose `on` set never
+included that platform. Measured then: **52 of 95 Correspondents merged (55%) against a
+knob of 8%.** At 260–340 every pool exceeds its thread count, the fallback never fires, and
+the knob is the only thing that creates a merge. Measured now: **13 of 172 (8%)**.
+
+`FIRST_NAME` (460) and `LAST_NAME` (798) are wide for the same reason — a narrow pool
+produced `Mary Olver` and `Mary Jones` as the only two Marys in the world.
 
 ### Long-running threads
 

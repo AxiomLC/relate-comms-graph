@@ -263,6 +263,24 @@ def strip_marks(raw: str) -> str:
     return " ".join(without_marks.casefold().split())
 
 
+def _protect_legal_suffix(text: str) -> str:
+    """Lower-case a trailing legal suffix so `split_camel` cannot break it apart.
+
+    `GmbH`, `PLC` and `LLC` are the shapes that matter: the camel rule splits on a
+    lower-to-upper boundary, so `GmbH` becomes `Gmb H` and the suffix pass — which runs
+    on the last word — then sees `h`. Lower-casing the suffix first makes the split a
+    no-op and leaves the suffix intact for `_strip_legal_suffix`.
+
+    Only the **last** word is touched, and only when it is a known suffix, so a name
+    that merely contains one (`GmbH Holdings`) is unaffected.
+    """
+    words = text.split()
+    if len(words) > 1 and words[-1].rstrip(".,").casefold() in LEGAL_SUFFIXES:
+        words[-1] = words[-1].casefold()
+        return " ".join(words)
+    return text
+
+
 def split_camel(raw: str) -> str:
     """`PeteBromill` -> `Pete Bromill`. A missing space is a formatting accident."""
     return _CAMEL.sub(" ", raw)
@@ -419,8 +437,15 @@ def _canonical_text(text: str, kind: Kind) -> Canonical:
     working = text
 
     # camelCase: a missing space is a formatting accident, not a different name.
-    spaced = split_camel(working)
-    if spaced != working:
+    #
+    # **A legal suffix is protected first.** `GmbH` is `Gmb` + `H` to the camel rule, so
+    # splitting before the suffix pass turned `Pure Storage GmbH` into
+    # `pure storage gmb h` — a different key from `Pure Storage`, and the suffix never
+    # stripped because it no longer ended the string. Measured on the sample world's
+    # `legal_suffix` fuzz variant.
+    protected = _protect_legal_suffix(working)
+    spaced = split_camel(protected)
+    if spaced != protected:
         working, evidence = spaced, "camel"
 
     # Whitespace, case and diacritics in one pass.

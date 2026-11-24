@@ -576,16 +576,25 @@ def noise_lines(count: int, rng: random.Random) -> list[tuple[str, str]]:
 
     noise_count = max(1, int(count * SPAM_GROUP_NOISE_RATIO) + 1)
     noise_count = min(count, noise_count)
-    lines: list[tuple[str, str]] = []
+
+    bodies: list[str] = []
     for index in range(count):
-        sender = f"Member {index % 4 + 1}"
         if index < noise_count:
             phrase = NOISE_PHRASES[index % len(NOISE_PHRASES)]
-            lines.append((sender, phrase.format(name=f"Member {rng.randint(1, 9)}")))
+            bodies.append(phrase.format(name=f"Member {rng.randint(1, 9)}"))
         else:
-            lines.append((sender, rng.choice(ACKS)))
-    rng.shuffle(lines)
-    return lines
+            bodies.append(rng.choice(ACKS))
+    rng.shuffle(bodies)
+
+    # **Senders are assigned round-robin AFTER the shuffle, never before.**
+    #
+    # The Messenger writer coalesces consecutive rows from one sender into a single
+    # `<br>`-joined section, so two adjacent noise rows from `Member 2` become one
+    # section — and the share the adapter sees drops below `SPAM_NOISE_RATIO`. Measured:
+    # 14 planned rows became 11 sections, 57% noise became 45%, and the app's gate did
+    # not fire. Round-robin guarantees no two adjacent rows share a sender, so every row
+    # survives as its own section and the computed share is the share that lands.
+    return [(f"Member {index % 4 + 1}", body) for index, body in enumerate(bodies)]
 
 
 def one_sided(count: int, rng: random.Random) -> list[str]:

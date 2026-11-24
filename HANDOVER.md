@@ -497,6 +497,16 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
   with a model-span snapshot + restore pass, products added to the ruler, `NORP` added to
   `PRODUCT_RESCUE_LABELS`, and a leading `The ` stripped from ruler patterns. **Four tests
   pin the behaviour** — these are exactly the cases invisible in a 700-node graph.
+- **2026-11-24** — **Cast widened; `CORR_MULTI_PLATFORM` finally means something.** 52 of
+  95 Correspondents were merging (55%) against a knob of 8%, because per-platform pools ran
+  dry (Telegram: 14 people, 29 threads) and `_pick_distinct` fell back to anyone — including
+  people whose `on` set never included that platform. Cast 60-120 to **260-340**, names
+  151/133 to **460/798** (common US given names and surnames). Now **13 of 172 (8%)**, so the
+  knob is the only thing creating a merge. Two bugs found on the way: `canon` split `GmbH`
+  into `Gmb H` before the legal-suffix pass, so `Pure Storage GmbH` keyed differently from
+  `Pure Storage`; and the spam-group writer coalesced adjacent same-sender rows into one
+  `<br>` section, dropping the noise share from 57% to 45% and stopping the app's gate from
+  firing.
 - **2026-11-24** — **`sample_writer` made less uniform.** `THREADS_PER_PLATFORM` →
   `AVG_THREADS_PER_PLATFORM` + `THREADS_JITTER` (each platform rolls ±30%, so counts are
   24–41 instead of a flat 25). Big threads moved from two platforms to four

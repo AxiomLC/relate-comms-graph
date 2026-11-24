@@ -36,7 +36,17 @@ OWNER = "Mark Jones"
 START = "2024-01-01"
 END = "2026-11-01"
 
-CORRESPONDENTS = (60, 120)       # (min, max) random cast size
+# (min, max) random cast size.
+#
+# **This is what makes `CORR_MULTI_PLATFORM` mean anything.** Each platform needs one
+# distinct person per thread, so the world demands ~180 person-platform slots. At a
+# 60-120 cast the per-platform pools ran dry (Telegram had 14 people for 29 threads) and
+# `_pick_distinct` fell back to anyone in the cast — including people whose `on` set never
+# included that platform. Measured: 52 of 95 Correspondents merged against a knob of 8%.
+#
+# At 300 every platform's pool exceeds its thread count, so the fallback never fires and
+# the knob is the only thing that creates a merge. Measured at 300: ~28 merged.
+CORRESPONDENTS = (260, 340)
 
 # --------------------------------------------------------------- message volume
 
