@@ -298,8 +298,8 @@ def entity_line(world: World, platform: str, rng: random.Random,
                  if platform in plan.platforms and name not in avoid]
         if names:
             pools.append((kind, names, lines))
-    # `person` is documented-but-unwired (`writer_major_edit.md` §8), so there is no
-    # table to read. Left out rather than half-supported.
+    # `person` is documented-but-unwired — it competes with the Correspondent already on
+    # the thread — so there is no table to read. Left out rather than half-supported.
     if not pools:
         return None
 

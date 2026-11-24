@@ -117,7 +117,7 @@ VARIANTS = {
 #
 # Each percentage is a share of the WHOLE population of that kind, rolled
 # independently. "Fuzzy or otherwise", "multi-platform or not" — a roll never
-# conditions on an earlier one. `writer_major_edit.md` §2-§5 has the reasoning;
+# conditions on an earlier one. See `README.md` §Fuzz for why that matters.
 # **The Owner is never fuzzed.**
 
 # Correspondents: sender display names.
@@ -152,7 +152,7 @@ FUZZ_SENDERS_INTRA_PLATFORMS = ("whatsapp", "telegram", "messenger")
 
 # Which entity kinds a body may name. `person` stays on the list but is documented,
 # NOT wired: a person drawn from a body competes with the Correspondent already on
-# the thread (`writer_major_edit.md` §8).
+# the thread — a merge with a wrong answer that looks right.
 FUZZ_BODY_KINDS = ("org", "place", "product", "person")
 
 # The fuzzy variants per kind. Uniform: each is 1/len(list), so the row is 100% by

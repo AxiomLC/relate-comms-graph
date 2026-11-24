@@ -487,8 +487,7 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
   Two bugs fixed on the way: `abbrev` abbreviated `St`/`Port`/`Saint`, which `canon`
   expands to `south`/`north` and so minted **different places** (`St Paul` → `south paul`);
   and `_assign_labels()` kept its own hardcoded platform list, ignoring `config.PLATFORMS`.
-  Suite **441 passed, 2 skipped**. Design record: `sample_writer/writer_major_edit.md`
-  (superseded); what the generator does now: `sample_writer/README.md`.
+  Suite **441 passed, 2 skipped**. What the generator does: `sample_writer/README.md`.
 - **2026-11-22** — **Organization extraction built** (`canon` article fix, `ORG_LABELS`,
   `ORG_DICTIONARY` 26 names, `TRUNCATION_TAILS`, kind-aware `writer.write_entities`,
   `Organization` in `DRAWABLE_NODE_TYPES`/`EDGE_TYPES`/`nodeTypes`/`nodeLabels`). **The

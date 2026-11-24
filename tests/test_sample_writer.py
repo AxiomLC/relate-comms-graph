@@ -562,7 +562,8 @@ def test_every_variant_list_is_non_empty_and_uniform():
 def test_fuzzy_variants_fold_through_canon(world):
     """Every variant a body can print must converge in the app's own flattener.
 
-    Two deliberate exceptions, both stated in `writer_major_edit.md` §5:
+    Two deliberate exceptions, and they are the reason this test names them rather than
+    asserting "everything folds":
 
     * `acronym` — `IBM` and `International Business Machines` are two keys on purpose.
     * `drop_letter` / `swap` — a mistyping is not a fold. `canon` cannot know
@@ -730,8 +731,8 @@ def test_body_fuzz_reaches_the_payloads(generated, world):
 def test_fuzzy_variants_are_written_in_volume(generated, world):
     """The point of `BODY_FUZZY=0.15` is ~30 variants actually reaching the corpus.
 
-    At the slot supply measured in `writer_major_edit.md` §1 only about a third of the
-    items a share flags are ever named, which is why the knob is not 0.07.
+    A body names an entity in roughly 1 message in 12, so only about a third of the
+    items a share flags are ever named — which is why the knob is not 0.07.
     """
     import zipfile
 

@@ -643,7 +643,8 @@ class World:
         earlier roll — "fuzzy or otherwise", "multi-mention or not". That is what makes
         the four combinations independent and all of them reachable.
 
-        `person` is deliberately absent: see `writer_major_edit.md` §8.
+        `person` is deliberately absent: it competes with the Correspondent already on
+        the thread.
         """
         platforms = self.cast_platforms()
         if not platforms:
