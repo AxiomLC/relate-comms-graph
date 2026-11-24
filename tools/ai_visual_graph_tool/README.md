@@ -2,8 +2,9 @@
 
 Headless geometry instrument for the canvas. The IDE agent runs it; the numbers it
 prints replace screenshots for every "is the geometry right" question. See
-`CytoGravityRecommend.md` §0 for why this exists and what it is not (it never
-replaces the owner's eye for "does it look right").
+`UIVISUALS.md` §12 for the fcose facts it exists to measure, and for what it cannot
+do (it never replaces the owner's eye for "does it look right", and it cannot see
+render-pipeline breakage).
 
 ## What it does
 

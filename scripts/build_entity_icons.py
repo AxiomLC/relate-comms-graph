@@ -52,6 +52,10 @@ MERGED_COLORS = {
     # The extracted `Person` glyph, kept apart from the Correspondent's `person-*`
     # files so the two kinds never share artwork.
     "person-extracted": "#8a97a8",
+    # Product is the one merged entity that takes BLUE, not grey or yellow. It is the
+    # rarer, more deliberate find of the four, and the glow already says "merged" — a
+    # second grey glyph would read as "a weaker Place", which it is not.
+    "product": "#4c8dff",
 }
 
 
@@ -81,21 +85,72 @@ def _body(inner: str, fill: str) -> str:
     body = body[body.find(">") + 1:]           # drop the opening <svg ...>
     body = body[:body.rfind("</svg>")] if "</svg>" in body else body
 
-    # Stroke-only artwork (`map-pin-alt`) has no fill to set. A hollow outline reads as
-    # mush at the 8px the canvas draws, and every other node glyph is a solid
-    # silhouette, so the stroke is converted to a fill rather than recoloured.
-    if "stroke=" in body and "fill=" not in body:
-        body = re.sub(r'stroke="#[0-9a-fA-F]{3,8}"', f'fill="{fill}"', body)
-        body = re.sub(r'\s*stroke-width="[^"]*"', "", body)
-        body = re.sub(r'\s*stroke-linecap="[^"]*"', "", body)
-        body = re.sub(r'\s*stroke-linejoin="[^"]*"', "", body)
+    # An invisible full-canvas spacer rect (`fill="#FFFFFF" fill-opacity="0.01"`) is
+    # scaffolding from the SVG Repo export, not artwork. Tinting it would paint the
+    # whole glyph box; dropping it is the only correct move.
+    body = re.sub(r'<\w+[^>]*fill-opacity="0\.[01]+"[^>]*/?>', "", body)
+
+    # Stroke-only artwork (this cube, `map-pin-alt`) keeps its STROKES. It must not be
+    # converted to fill: the design is an outline PLUS interior detail lines, so filling
+    # every shape solid produces a plate with solid bars on it — the detail is there but
+    # the same colour as the face, so nothing reads as a line. Recolouring the stroke is
+    # both correct and much simpler.
+    #
+    # The test looks at the DRAWABLE elements, not at `body`: every SVG Repo export wraps
+    # its content in `<g fill="none" stroke="none">`, so a substring test on the whole
+    # body always finds a `fill=` and wrongly takes the filled branch.
+    elements = re.findall(r"<(?:path|line|polygon|polyline|rect|circle|ellipse|g)\b[^>]*>", body)
+    strokes = [el for el in elements if 'stroke="#' in el]
+    if strokes and not any('fill="#' in el for el in elements if not _is_spacer(el)):
+        body = re.sub(r'stroke="#[0-9a-fA-F]{3,8}"', f'stroke="{fill}"', body)
+        # `stroke-width` is scaled UP: this artwork is drawn for 800px and lands on a
+        # node a few dozen pixels across, where a 1.5px stroke would be sub-pixel.
+        body = re.sub(
+            r'stroke-width="([0-9.]+)"',
+            lambda m: f'stroke-width="{float(m.group(1)) * _STROKE_WEIGHT:g}"',
+            body,
+        )
+        # `linecap`/`linejoin` are kept deliberately: they are what makes the corners of
+        # an outline join cleanly, and round caps are what stop the interior lines
+        # ending in a blunt notch.
         return body
 
-    # `fill="none"` is structural (a spacer rect), so it must survive.
+    # `fill="none"` is structural (a group wrapper), so it must survive.
     body = re.sub(r'fill="#[0-9a-fA-F]{3,8}"', f'fill="{fill}"', body)
     body = re.sub(r'fill="(?!none)[a-zA-Z]+"', f'fill="{fill}"', body)
+    # **Non-graphic elements are dropped.** `<title>`, `<desc>` and `<defs>` carry no
+    # artwork, and a `<g>` that inherits its fill is only honoured reliably when the
+    # colour is on the shape itself — some rasterisers (Cytoscape's background-image
+    # among them) draw the image through a canvas and disagree about inheritance across
+    # a nested `<g>` carrying editor metadata.
+    body = re.sub(r"<title[^>]*>.*?</title>", "", body, flags=re.S)
+    body = re.sub(r"<desc[^>]*>.*?</desc>", "", body, flags=re.S)
+    body = re.sub(r"<defs[^>]*>.*?</defs>", "", body, flags=re.S)
+    # Editor namespaces (`sketch:type`) mean nothing to a rasteriser and some parsers
+    # reject an undeclared prefix outright.
+    body = re.sub(r'\s+sketch:[a-zA-Z]+="[^"]*"', "", body)
+    # Every drawable shape gets the colour explicitly, so no shape depends on inheriting
+    # through a wrapper the export left as `fill="none"`.
+    body = re.sub(
+        r"<(path|polygon|rect|circle|ellipse)\b([^>]*?)/?>",
+        lambda m: m.group(0)
+        if 'fill="' in m.group(2)
+        else f'<{m.group(1)}{m.group(2)} fill="{fill}"/>',
+        body,
+    )
     # Anything with no explicit fill inherits from the wrapping <g>.
     return f'<g fill="{fill}">{body}</g>'
+
+
+def _is_spacer(element: str) -> bool:
+    """A full-canvas rect with near-zero opacity, left over from the export."""
+    return 'fill-opacity="0.' in element
+
+
+# Multiplier on stroke-artwork's drawn width. These sources are authored for 800px and
+# land on a node ~30px across; a 1.5px stroke would be sub-pixel at that size, so the
+# outline would vanish entirely and the glyph would be invisible.
+_STROKE_WEIGHT = 1.6
 
 
 def build(kind: str, source: Path) -> None:
@@ -144,3 +199,4 @@ if __name__ == "__main__":
     build("place", source(".tmp_pin.svg", "place.svg"))
     build("organization", source(".tmp_org.svg", "organization.svg"))
     build("person-extracted", source(".tmp_person.svg", "person.svg"))
+    build("product", source(".tmp_product.svg", "product.svg"))

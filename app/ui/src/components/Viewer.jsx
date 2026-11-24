@@ -53,6 +53,26 @@ function platformsOf(entry) {
   return entry?.platform ? [entry.platform] : [];
 }
 
+/**
+ * Is there a live text selection right now?
+ *
+ * **This is the copy/paste guard.** The message body, the thread title and every result
+ * row are click targets that also hold text a user wants to copy. A click at the end of
+ * a drag-select still fires `onClick`, so without this test selecting a phone number
+ * navigated away and destroyed the selection before it could be copied.
+ *
+ * The test is the selection itself rather than a timer: it covers drag-select,
+ * double-click-a-word and triple-click-a-line, and it never delays a genuine click.
+ * `anchorNode !== focusNode` (a drag across elements) is included because some browsers
+ * collapse a cross-element selection to a caret before the click lands.
+ */
+function hasTextSelection() {
+  const selection = window.getSelection?.();
+  if (!selection) return false;
+  if (selection.toString().length > 0) return true;
+  return selection.anchorNode !== selection.focusNode;
+}
+
 export default function Viewer({
   entry,
   theme,
@@ -88,13 +108,23 @@ export default function Viewer({
         <ThreadView entry={entry} onOpen={onOpen} />
       )}
       {entry?.kind === "node" && entry.nodeType === "Correspondent" && (
-        <CorrespondentView entry={entry} onOpen={onOpen} />
+        <CorrespondentView
+          entry={entry}
+          onOpen={onOpen}
+          onHalo={onHalo}
+          onFocus={onFocus}
+        />
       )}
       {entry?.kind === "node" && entry.nodeType === "Message" && (
         <MessageView entry={entry} onOpen={onOpen} />
       )}
       {entry?.kind === "node" && ENTITY_TYPES.has(entry.nodeType) && (
-        <EntityView entry={entry} onOpen={onOpen} />
+        <EntityView
+          entry={entry}
+          onOpen={onOpen}
+          onHalo={onHalo}
+          onFocus={onFocus}
+        />
       )}
     </>
   );
@@ -437,6 +467,9 @@ function ThreadView({ entry, onOpen }) {
             <span>{thread.correspondents.slice(0, 3).join(", ")}</span>
           )}
         </div>
+        {entry.notDrawn && (
+          <div className="viewer-warn">This node is not visible on the canvas.</div>
+        )}
         <Arc thread={thread} histogram={histogram} />
       </div>
 
@@ -530,7 +563,12 @@ function MessageRow({ message, onOpen, first }) {
       </div>
       <div
         className={`msg-body${isKind && !message.body ? " kind" : ""}`}
-        onClick={onOpen}
+        onClick={() => {
+          // The same copy/paste guard as the result rows: a click that ends a
+          // drag-select must not navigate, or the selection is destroyed.
+          if (hasTextSelection()) return;
+          onOpen?.();
+        }}
         style={{ cursor: "pointer" }}
         title="Open this message"
       >
@@ -614,7 +652,7 @@ function Sparkline({ rows }) {
 
 /* ---------------------------------------------------------- correspondent */
 
-function CorrespondentView({ entry, onOpen }) {
+function CorrespondentView({ entry, onOpen, onHalo, onFocus }) {
   const [rows, setRows] = useState(null);
   const [error, setError] = useState(null);
 
@@ -645,6 +683,20 @@ function CorrespondentView({ entry, onOpen }) {
     };
   }, [entry.id]);
 
+  const openThread = (row) => {
+    onHalo?.(row.key);
+    // `onFocus` returns false when the thread is not drawn on the canvas.
+    const drawn = onFocus?.(row.key);
+    onOpen?.({
+      kind: "node",
+      nodeType: "Thread",
+      id: row.key,
+      label: row.label,
+      platform: row.platform,
+      notDrawn: drawn === false,
+    });
+  };
+
   return (
     <>
       <div className="viewer-head">
@@ -672,6 +724,9 @@ function CorrespondentView({ entry, onOpen }) {
           {isPlaceholder(entry.label) && <span className="pill">placeholder account</span>}
         </div>
 
+        {entry.notDrawn && (
+          <div className="viewer-warn">This node is not visible on the canvas.</div>
+        )}
       </div>
 
       <div className="pane-body tight">
@@ -682,15 +737,10 @@ function CorrespondentView({ entry, onOpen }) {
           <button
             key={row.key}
             className="result-row"
-            onClick={() =>
-              onOpen?.({
-                kind: "node",
-                nodeType: "Thread",
-                id: row.key,
-                label: row.label,
-                platform: row.platform,
-              })
-            }
+            onClick={() => {
+              if (hasTextSelection()) return;
+              openThread(row);
+            }}
           >
             <div className="result-snippet">{row.label || row.key}</div>
             <div className="result-meta">
@@ -709,11 +759,17 @@ function CorrespondentView({ entry, onOpen }) {
 /**
  * Person / Place / Organization / Product — a name found in a message body.
  *
- * These hold zero rows until body-entity extraction lands, so the thread list is
- * usually empty. The query is written anyway: it is the same `MENTIONS` edge the
- * canvas draws, and it starts working the moment the writer exists.
+ * **The list is the threads the entity CAME FROM, and reaching them needs a hop.**
+ * `MENTIONS` is Message-anchored (`Message-[:MENTIONS]->Entity`), not Thread-anchored —
+ * a Thread never mentions anything directly. The query below therefore reads a message,
+ * follows it to its thread, and groups. Messages stay invisible; they are the join, not
+ * the result.
+ *
+ * Ordering is FIRST APPEARANCE, oldest thread first — the same order the platform pills
+ * use. "Most recent first" hid the origin of a long-running relationship at the bottom
+ * of the list, which is the one thing this view exists to show.
  */
-function EntityView({ entry, onOpen }) {
+function EntityView({ entry, onOpen, onHalo, onFocus, onMissing }) {
   const [rows, setRows] = useState(null);
   const [error, setError] = useState(null);
   const meta = NODE_TYPES[entry.nodeType] || {};
@@ -726,11 +782,12 @@ function EntityView({ entry, onOpen }) {
       .search({
         mode: "cypher",
         query:
-          "MATCH (t:Thread)-[:MENTIONS]->(e {key: $k}) " +
-          "OPTIONAL MATCH (t)<-[:IN]-(m:Message) " +
+          "MATCH (m:Message)-[:MENTIONS]->(e {key: $k}) " +
+          "MATCH (m)-[:IN]->(t:Thread) " +
           "RETURN t.key AS key, t.title AS label, t.platform AS platform, " +
-          "       count(m) AS n, max(m.ts_utc) AS last_ts " +
-          "ORDER BY last_ts DESC",
+          "       count(DISTINCT m) AS n, min(m.ts_utc) AS first_ts, " +
+          "       max(m.ts_utc) AS last_ts " +
+          "ORDER BY first_ts ASC",
         params: { k: entry.id },
         limit: 200,
       })
@@ -744,6 +801,21 @@ function EntityView({ entry, onOpen }) {
       cancelled = true;
     };
   }, [entry.id]);
+
+  const openThread = (row) => {
+    const node = {
+      kind: "node",
+      nodeType: "Thread",
+      id: row.key,
+      label: row.label,
+      platform: row.platform,
+    };
+    // Halo + camera FIRST, then switch the Viewer: `focus` is a no-op for a node the
+    // canvas does not hold, and it reports that so the Viewer can say so.
+    onHalo?.(row.key);
+    const drawn = onFocus?.(row.key);
+    onOpen?.(drawn === false ? { ...node, notDrawn: true } : node);
+  };
 
   return (
     <>
@@ -771,6 +843,10 @@ function EntityView({ entry, onOpen }) {
             </span>
           )}
         </div>
+
+        {entry.notDrawn && (
+          <div className="viewer-warn">This node is not visible on the canvas.</div>
+        )}
       </div>
 
       <div className="pane-body tight">
@@ -785,20 +861,17 @@ function EntityView({ entry, onOpen }) {
           <button
             key={row.key}
             className="result-row"
-            onClick={() =>
-              onOpen?.({
-                kind: "node",
-                nodeType: "Thread",
-                id: row.key,
-                label: row.label,
-                platform: row.platform,
-              })
-            }
+            onClick={(event) => {
+              if (hasTextSelection()) return;
+              void event;
+              openThread(row);
+            }}
           >
             <div className="result-snippet">{row.label || row.key}</div>
             <div className="result-meta">
-              {formatCount(row.n)} messages
-              {row.last_ts ? ` · last ${formatDate(row.last_ts)}` : ""}
+              {formatCount(row.n)} message{row.n === 1 ? "" : "s"}
+              {row.first_ts ? ` · first ${formatDate(row.first_ts)}` : ""}
+              {row.platform ? ` · ${platformLabel(row.platform)}` : ""}
             </div>
           </button>
         ))}

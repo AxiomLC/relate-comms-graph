@@ -218,7 +218,7 @@ other than their first-by-date one, so the two fields carry different informatio
 
 **They are not a layout input.** A merged node is pulled **equally** by every platform
 it touches; the dominance leash was designed and then withdrawn. See
-[`CytoGravityRecommend.md`](CytoGravityRecommend.md) §2.
+[`UIVISUALS.md`](UIVISUALS.md) §8.
 
 **`graph_slice` also returns `merged`** (the `:Merged` label as a boolean) on every
 Correspondent. The canvas uses it as the bag-membership test, inverted.
@@ -524,10 +524,9 @@ Ports in use: **8000 is taken** by another app — this project uses **8100**.
 
 | Topic | File |
 |---|---|
-| **Settled UI and visual facts** — glows, colour parsing, stylesheet order, the merged-node template | [`UIVISUALS.md`](UIVISUALS.md) |
+| **Settled UI and visual facts** — glows, colour parsing, stylesheet order, the merged-node template, bags, and what fcose actually honours | [`UIVISUALS.md`](UIVISUALS.md) |
 | What is still moving in extraction, what was measured, what was declined | [`rework_extraction.md`](rework_extraction.md) |
 | The brief the entity lists are built from — the generic block, the three tiers | [`entity_list_brief.md`](entity_list_brief.md) |
-| Canvas layout working log — what fcose actually honours, and the traps that cost time | [`CytoGravityRecommend.md`](CytoGravityRecommend.md) |
 | The generator spec — every shape the app has a switch for | [`archive_docs/UNDESIRABLES.md`](archive_docs/UNDESIRABLES.md) |
 | Per-platform export shapes and traps | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) |
 | Ollama on this machine | [`archive_docs/HowToRunOllama.md`](archive_docs/HowToRunOllama.md) |

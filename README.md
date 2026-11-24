@@ -181,8 +181,7 @@ semantic search (Relate supports vector indexes; none exists in this store yet).
 |---|---|
 | [`TECHREADME.md`](TECHREADME.md) | Module map, key functions, commands, Relate/Neo4j references — written for an AI |
 | [`HANDOVER.md`](HANDOVER.md) | Short, dated, newest at the bottom — what is next |
-| [`UIVISUALS.md`](UIVISUALS.md) | Settled UI and visual facts: glows, colour parsing, stylesheet order, the merged-node template |
-| [`CytoGravityRecommend.md`](CytoGravityRecommend.md) | Working log for the canvas layout investigation — what fcose actually honours, and the traps. Superseded by `UIVISUALS.md` as facts settle |
+| [`UIVISUALS.md`](UIVISUALS.md) | Settled UI and visual facts: glows, colour parsing, stylesheet order, the merged-node template, bags, and what fcose actually honours |
 | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) | How to get each platform's export |
 | [`archive_docs/HowToRunOllama.md`](archive_docs/HowToRunOllama.md) | Local model setup on this machine |
 

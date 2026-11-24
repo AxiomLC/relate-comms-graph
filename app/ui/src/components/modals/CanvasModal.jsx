@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useState } from "react";
 
 import { api } from "../../lib/api.js";
 import { NODE_TYPES, PLATFORM_LABELS, platformColor } from "../../config/nodeTypes.js";
@@ -53,6 +53,39 @@ const SORTS = [
 const LIMITS = [500, 1000, 2000, 5000, 10000, 20000];
 
 /**
+ * The rows of the "Show node types" grid.
+ *
+ * **Three mutually exclusive states per row**, one radio group each:
+ *
+ *   all    — merged and single-platform nodes of this kind.
+ *   merged — only the cross-platform ones (the `bag:merged` population).
+ *   hide   — none of this kind, merged or not.
+ *
+ * There is no "singles only": the useful axis is everything / the strong
+ * cross-platform claims / nothing. And it is a radio group precisely because the
+ * states contradict each other — two checkboxes could express "neither", which no
+ * reader could interpret.
+ *
+ * `Correspondent` and `Person` are placeholders: the row exists so the control reads
+ * as a complete list, but it is greyed and disabled. Correspondent is the largest drawn
+ * population and is deliberately left alone until the other three have been lived with;
+ * `Person` has no rows until its extractor lands.
+ */
+const SHOW_ROWS = [
+  { type: "Correspondent", label: "Correspondent", placeholder: true },
+  { type: "Place", label: "Place" },
+  { type: "Product", label: "Product" },
+  { type: "Organization", label: "Organization" },
+  { type: "Person", label: "Person", placeholder: true },
+];
+
+const VISIBILITY_MODES = [
+  { value: "all", label: "show all" },
+  { value: "merged", label: "merged only" },
+  { value: "hide", label: "hide" },
+];
+
+/**
  * Is this platform drawn?
  *
  * An empty `platforms` list means "not chosen yet", which is every platform on — so
@@ -66,33 +99,37 @@ function isPlatformOn(chosen, platform, rows) {
 
 export default function CanvasModal({
   theme,
-  onChange,
   onClose,
-  onRerunLayout,
+  onApply,
   graph,
-  onReload,
   platforms,
 }) {
   const [draft, setDraft] = useState(() => cloneTheme(theme));
   const types = useFetch(() => api.types(), []);
 
-  // Push every edit straight through. The canvas re-styles; the layout only re-runs
-  // when the user asks, because a graph that keeps bobbing looks like a physics toy.
-  useEffect(() => {
-    onChange(draft);
-  }, [draft, onChange]);
+  // **Nothing here is pushed live.** The draft is local until "Re-run layout" is
+  // pressed, and then `onApply` saves it, fetches the slice it describes and re-solves
+  // — the Gravity modal's model exactly. An edit to the draft never touches `theme`, so
+  // it cannot trigger a rebuild or a fetch on its own.
+  const apply = () => {
+    onApply?.(draft);
+    // **Stays open**, like the Gravity modal. Re-running the layout is something you
+    // watch happen; closing the panel hid the result and forced a reopen to adjust
+    // again.
+  };
 
   const set = (group, key) => (value) =>
     setDraft((prev) => ({ ...prev, [group]: { ...prev[group], [key]: value } }));
 
-  const toggleType = (type) =>
-    setDraft((prev) => {
-      const current = prev.filter.nodeTypes;
-      const next = current.includes(type)
-        ? current.filter((value) => value !== type)
-        : [...current, type];
-      return { ...prev, filter: { ...prev.filter, nodeTypes: next } };
-    });
+  /** Set one kind's three-way state. Radio, so this replaces rather than merges. */
+  const setVisibility = (type, mode) =>
+    setDraft((prev) => ({
+      ...prev,
+      filter: {
+        ...prev.filter,
+        nodeVisibility: { ...prev.filter.nodeVisibility, [type]: mode },
+      },
+    }));
 
   /**
    * Toggle one platform, materialising the "all on" default first.
@@ -130,7 +167,7 @@ export default function CanvasModal({
           <button className="ghost" onClick={onClose}>
             Close
           </button>
-          <button className="primary" onClick={onRerunLayout}>
+          <button className="primary" onClick={apply}>
             Re-run layout
           </button>
         </>
@@ -154,7 +191,6 @@ export default function CanvasModal({
                 ...prev,
                 filter: { ...prev.filter, sort: sort.key },
               }));
-              onReload?.({ sort: sort.key });
             }}
           >
             {sort.label}
@@ -179,7 +215,6 @@ export default function CanvasModal({
                 ...prev,
                 filter: { ...prev.filter, limit: value },
               }));
-              onReload?.({ limit: value });
             }}
           >
             {value.toLocaleString()}
@@ -194,23 +229,61 @@ export default function CanvasModal({
         </div>
       )}
 
-      <h2 className="section">Node types</h2>
-      {/* Two columns, because six single-line rows cost the modal more vertical space
-          than the content deserves. `gridTemplateColumns: 1fr 1fr` keeps the DOM order
-          (a11y and tab order unchanged) and only changes placement. */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 10px" }}>
-        {Object.entries(NODE_TYPES).map(([type, meta]) => {
+      <h2 className="section">Show node types</h2>
+      {/* One radio group per row. The three states are one population described three
+          ways, so they cannot be multi-selected: "hide" plus "merged only" is not a
+          preference, it is a contradiction. */}
+      <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
+        Merged nodes are the ones spanning platforms — they live in the central bag.
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 76px 76px 56px",
+          gap: "2px 6px",
+          alignItems: "center",
+        }}
+      >
+        <span />
+        {VISIBILITY_MODES.map((mode) => (
+          <span
+            key={mode.value}
+            className="empty"
+            style={{ textAlign: "center", paddingBottom: 2 }}
+          >
+            {mode.label}
+          </span>
+        ))}
+        {SHOW_ROWS.map(({ type, label, placeholder }) => {
           const count = types.data?.node_types?.find((entry) => entry.type === type)?.count;
+          const current = placeholder
+            ? "all"
+            : draft.filter.nodeVisibility?.[type] || "all";
           return (
-            <Check
-              key={type}
-              label={`${meta.label}${count != null ? ` (${count.toLocaleString()})` : ""}${
-                meta.drawable ? "" : " — not drawable"
-              }`}
-              checked={draft.filter.nodeTypes.includes(type)}
-              onChange={() => toggleType(type)}
-              hint={meta.hint}
-            />
+            <Fragment key={type}>
+              <span
+                style={{
+                  opacity: placeholder ? 0.4 : 1,
+                  cursor: placeholder ? "not-allowed" : "default",
+                }}
+                title={placeholder ? "Placeholder — not wired" : NODE_TYPES[type]?.hint}
+              >
+                {label}
+                {count != null ? ` (${count.toLocaleString()})` : ""}
+                {placeholder ? " — placeholder" : ""}
+              </span>
+              {VISIBILITY_MODES.map((mode) => (
+                <input
+                  key={mode.value}
+                  type="radio"
+                  name={`visibility-${type}`}
+                  disabled={!!placeholder}
+                  checked={!placeholder && current === mode.value}
+                  onChange={() => setVisibility(type, mode.value)}
+                  style={{ justifySelf: "center" }}
+                />
+              ))}
+            </Fragment>
           );
         })}
       </div>
@@ -249,20 +322,6 @@ export default function CanvasModal({
         }
         hint="View only. A thread you never replied in is often a broadcast or a group you were added to — hidden here, still searchable."
         note="A thread you never replied in is usually a broadcast or a group you were added to."
-      />
-
-      <h2 className="section">Extracted entities</h2>
-      <Check
-        label="Hide Place, Person, Org mentioned only once"
-        checked={!!draft.filter.hideSingleMentions}
-        onChange={(value) =>
-          setDraft((prev) => ({
-            ...prev,
-            filter: { ...prev.filter, hideSingleMentions: value },
-          }))
-        }
-        hint="View only. A node seen on two platforms is shown regardless — that is two independent sightings, not one."
-        note="Shows cross-platform merged nodes."
       />
     </Modal>
   );

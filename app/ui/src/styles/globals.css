@@ -563,6 +563,24 @@ textarea::placeholder {
   word-break: break-word;
   font-size: 12.5px;
   line-height: 1.5;
+  /* Message text is the whole point of this pane, and it is click-to-open. Without
+     this the browser will not let a drag start on it at all, so nothing could ever be
+     copied. The click handler carries the selection guard. */
+  user-select: text;
+  cursor: pointer;
+}
+
+/* Shown when a clicked row points at a node the canvas is not drawing — cut by the
+   node limit, or hidden by a platform/visibility filter. Without it the click looks
+   half-broken: the Viewer switches but the camera never moves. */
+.viewer-warn {
+  margin: 6px 0 0;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--orange-text, #f0a35e);
+  background: rgb(240 163 94 / 0.10);
+  border: 1px solid rgb(240 163 94 / 0.30);
 }
 
 .msg-body.kind {

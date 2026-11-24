@@ -60,6 +60,25 @@ export const THEME = {
     // until everything is visible, which at this node count puts neighbours
     // closer than a node's own diameter.
     wheelSensitivity: 1.8, // default 1.0 is genuinely slow (1.047x per notch)
+    // **Overlap removal, after the solver.** fcose's own anti-overlap pass measures a
+    // leaf node's BODY box only, so anything the glyph draws outside it is invisible to
+    // the solver — the reason no slider ever fixed nodes sitting on each other.
+    //
+    // Labels are excluded on purpose: they are far wider than the marks, and letting
+    // them drive separation would spread one cluster across the canvas. Label density is
+    // handled separately.
+    declutter: {
+      enabled: true,
+      // Passes over every pair. Each pass re-reads the boxes, so this is the budget for
+      // how much movement is allowed to cascade — 24 is enough for the dense clusters and
+      // still converges long before it becomes a frame-rate problem.
+      iterations: 24,
+      // Extra clearance kept between glyphs, in px. 0 lets marks touch edge to edge.
+      padding: 4,
+      // Fraction of a full separation applied per pass. 1.0 resolves each pair in one
+      // move but shakes the whole layout; 0.6 converges smoothly.
+      step: 0.6,
+    },
   },
 
   /* ------------------------------------------------------------------- labels
@@ -226,6 +245,10 @@ export const THEME = {
     // it — jitter would mean one image per node.
     iconScale: 0.72, // fraction of the node's diameter the thread glyph fills
     correspondentIconScale: 0.86, // a person silhouette is narrow, so it needs more
+    // Per-KIND multiplier for the extracted entity glyphs. Empty means every entity kind
+    // draws at `correspondentIconScale`; a kind that reads too small at canvas scale can
+    // be enlarged here without touching the others.
+    entityIconScale: {},
     // Per-platform multiplier on `iconScale`, for glyphs whose own artwork sits
     // smaller or larger inside its 24x24 viewBox. The SVGs were normalised to the
     // same box, but a wide envelope and a compact speech bubble do not read as the
@@ -305,21 +328,28 @@ export const THEME = {
     // appears without the user having to tick it.
     platforms: [],
     hideSilent: false, // hide threads the owner never sent a message in
-    // Hide an extracted entity mentioned only once, unless it spans two platforms.
+    // **One tri-state per kind**, mutually exclusive: `all` | `merged` | `hide`.
     //
-    // **Negative form, and the default is OFF.** A node is data the store holds; hiding
-    // it must be something the user asked for, not a silent default. The earlier
-    // `showSingleMentions` was a positive toggle defaulting to false, which hid the
-    // long tail without the user having chosen it.
+    //   all    — draw merged and single-platform nodes alike.
+    //   merged — draw ONLY the `bag:merged` population; single-platform nodes go.
+    //   hide   — draw none of this kind, merged or not.
     //
-    // `:Merged` overrides the count, and that is the whole point of the rule: one
-    // mention on Telegram is one sighting, but the same name on Telegram AND on email is
-    // two independent ones. A rare contact must not be hidden for being quiet.
+    // **There is no "singles only".** Nobody wants the long tail without the strong
+    // claims; the axis that matters is "everything / the cross-platform facts / none".
     //
-    // The key changed name as well as polarity. `relate.graphStyle.overrides` stores a
-    // diff, so an old `showSingleMentions` in someone's localStorage no longer matches
-    // any default and is therefore ignored rather than misread as `hideSingleMentions`.
-    hideSingleMentions: false,
+    // Radio, not checkboxes. The three states describe one node population, so any two
+    // are contradictory — the earlier two-boolean version could express "neither",
+    // which read as a broken control.
+    //
+    // A node is merged purely by BAG MEMBERSHIP, so `merged` is the same test the
+    // canvas already uses to place a node in `bag:merged`. `hideSingleMentions` and
+    // `hideMerged` are gone; their saved diffs no longer match a default key and are
+    // ignored rather than misread.
+    nodeVisibility: {
+      Place: "all",
+      Product: "all",
+      Organization: "all",
+    },
     sort: "messages", // messages | recent | quiet
     limit: 2000, // nodes drawn; the canvas reports the real total beside it
   },

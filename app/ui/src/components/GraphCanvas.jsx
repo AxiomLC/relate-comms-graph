@@ -121,6 +121,11 @@ const bagId = (platform) => `bag:${platform}`;
  */
 const MERGED_BAG_ID = "bag:merged";
 
+// The zoom `focus()` never goes BELOW. Above it the camera keeps the user's own level,
+// so a deliberate close-up is not pulled back out; below it (a wide overview) a hop
+// would otherwise barely move.
+const FOCUS_ZOOM = 1.15;
+
 const GraphCanvas = forwardRef(function GraphCanvas(
   { data, theme, onNodeClick, onBackgroundClick, onLayoutDone },
   ref,
@@ -128,6 +133,9 @@ const GraphCanvas = forwardRef(function GraphCanvas(
   const hostRef = useRef(null);
   const cyRef = useRef(null);
   const revealTimer = useRef(null);
+  // Set by `rerunLayout()` and consumed by the elements effect, so a layout requested
+  // while a fetch is landing solves the NEW elements rather than the old ones.
+  const pendingLayout = useRef(false);
 
   // Sizes come from the tier tables, so the theme needs no derived data any more.
   const themeRef = useRef(theme);
@@ -161,11 +169,17 @@ const GraphCanvas = forwardRef(function GraphCanvas(
   // and referencing it there throws `hideSilent is not defined` on every render —
   // which blanks the whole app.
   const hideSilent = !!theme.filter.hideSilent;
-  // Same rule as `hideSilent` above, and the same trap: it is read inside the elements
-  // memo AND listed in its dependency array, so it must live in the enclosing scope.
-  // Declaring it inside the callback (the obvious place) throws
-  // "hideSingles is not defined" on every render and blanks the app.
-  const hideSingles = !!theme.filter.hideSingleMentions;
+  // The per-kind tri-state (`all` | `merged` | `hide`), serialised so a theme clone
+  // that changed nothing visible does not rebuild the elements.
+  const visibility = theme.filter.nodeVisibility || {};
+  const visibilityKey = Object.keys(visibility)
+    .sort()
+    .map((kind) => `${kind}:${visibility[kind]}`)
+    .join("|");
+  // The drawable kinds the user has ticked, hoisted because it is read inside the
+  // elements memo AND listed in its deps. The joined string is the dep, not the array —
+  // the array is rebuilt by `cloneTheme` on every edit.
+  const requestedKey = (theme.filter.nodeTypes || []).join("|");
   const elements = useMemo(() => {
     const theme = themeRef.current; // eslint-disable-line no-shadow
     if (!data) return [];
@@ -188,21 +202,32 @@ const GraphCanvas = forwardRef(function GraphCanvas(
         ? node.platforms
         : [node.platform];
     const chosen = theme.filter.platforms || [];
-    // `hideSingleMentions` hides an extracted entity seen in exactly one message,
-    // UNLESS it is `:Merged` — two platforms is two independent sightings and outranks
-    // a count of one. Threads and Correspondents are unaffected: this is about
-    // extraction evidence, and neither is extracted.
+    const requested = new Set(requestedKey ? requestedKey.split("|") : []);
+    // **One tri-state per kind.** `merged` is decided by BAG MEMBERSHIP, not by a count:
+    // a `:Merged` node is exactly the one that will be parented to `bag:merged` below,
+    // so testing the same rule here keeps the filter and the drawing from disagreeing.
     //
-    // **Off by default.** Nothing is hidden unless the user asks. See `theme.filter`.
-    // `hideSingles` is hoisted above the memo — see the note there.
+    //   all    -> everything
+    //   merged -> only nodes that span platforms
+    //   hide   -> nothing of this kind
+    //
+    // A kind absent from `nodeVisibility` (Correspondent, Person, Thread) is not
+    // controlled by this and is always `all`.
+    const isMergedNode = (node) =>
+      !!node.merged || platformsOf(node).length > 1;
+    const hiddenByVisibility = (node) => {
+      const mode = visibility[node.type];
+      if (!mode || mode === "all") return false;
+      if (mode === "hide") return true;
+      // `merged`
+      return !isMergedNode(node);
+    };
     const allNodes = (data.nodes || []).filter((node) => {
       if (chosen.length && !platformsOf(node).some((p) => chosen.includes(p))) {
         return false;
       }
-      if (hideSingles && isExtractedKind(node.type) && !node.merged) {
-        const mentions = Number(node.mention_count) || 0;
-        if (mentions <= 1) return false;
-      }
+      if (NODE_TYPES[node.type]?.drawable && !requested.has(node.type)) return false;
+      if (hiddenByVisibility(node)) return false;
       // A thread the owner never spoke in. `message_count` is the only signal the
       // canvas has, so a thread with no messages is not hidden by this — it is
       // already invisible for other reasons.
@@ -413,12 +438,13 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     // cluster, hiding a silent thread or turning bags on must rebuild the elements;
     // the rest of the theme stays out of it so a slider move does not throw away the
     // layout.
-    // `hideSingleMentions` hides a node on data, not on style, so it must rebuild the
-    // elements — the same reason `hideSilent` is a dependency. Listed below, not just
-    // mentioned here: a missing dependency is exactly how the `hideSilent` toggle once
-    // changed the theme and nothing on screen.
+    //
+    // **`singlesKey` / `mergedKey` are serialised, not the objects themselves.** The
+    // `visibilityKey` / `requestedKey` are serialised strings, not the objects: the
+    // theme is deep-cloned by `cloneTheme` on every edit, so an object dependency
+    // re-ran this memo on every keystroke in the modal even when nothing changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, sizeKey, platformKey, hideSilent, bagsOn, hideSingles]);
+  }, [data, sizeKey, platformKey, hideSilent, bagsOn, visibilityKey, requestedKey]);
 
   /* ------------------------------------------------------------------- create */
 
@@ -502,6 +528,20 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     cy.style().fromJson(stylesheet).update();
   }, [stylesheet]);
 
+  // **`wheelSensitivity` is applied HERE, not only at creation.** Cytoscape takes it as
+  // a constructor option, and passing it in `window.cytoscape({...})` sets it once and
+  // never again — so the Gravity slider moved the theme value and nothing else. The
+  // live instance is the only place a new value can land, and it is writable.
+  //
+  // It gets its own effect because `physics` is not part of the stylesheet: hanging this
+  // off `[stylesheet]` would leave the slider dead until some unrelated style change.
+  const wheelSensitivity = theme.physics?.wheelSensitivity;
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy || !Number.isFinite(wheelSensitivity)) return;
+    cy.wheelSensitivity = wheelSensitivity;
+  }, [wheelSensitivity]);
+
   /* --------------------------------------------------------------------- data */
 
   useEffect(() => {
@@ -513,12 +553,38 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       revealTimer.current = null;
     }
 
+    // **A rebuild is not a re-layout.** Toggling a filter in the Canvas modal changes
+    // which nodes exist, and that must be reflected — but it must NOT restart the
+    // physics. The user drives layout with the "Re-run layout" button; anything else
+    // moving every node looks like the whole graph reloaded.
+    //
+    // So: remember where each node currently sits, remove, re-add, and put the
+    // survivors back where they were. A node the filter newly revealed is the only
+    // one without a position, and it is dropped next to a neighbour that has one.
+    const placed = new Map();
+    cy.nodes().forEach((node) => {
+      const position = node.position();
+      if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+        placed.set(node.id(), position);
+      }
+    });
+    const hadLayout = placed.size > 0;
+
     cy.elements().remove();
     if (!elements.length) return;
 
     cy.add(elements);
 
-    runLayout(cy, themeRef.current, () => {
+    // Put back everything that was already on screen before touching the layout, so
+    // the interrupted rebuild is a no-op for the nodes the user is looking at.
+    if (hadLayout) {
+      cy.nodes().forEach((node) => {
+        const position = placed.get(node.id());
+        node.position(position || seedPosition(cy, node));
+      });
+    }
+
+    const report = () => {
       // Synthetic nodes (bags) are not data. Counting them would make the readout
       // claim nodes the store does not hold — the same class of lie `Merged` would
       // tell in `types_present()` if it were not filtered there.
@@ -526,8 +592,27 @@ const GraphCanvas = forwardRef(function GraphCanvas(
         nodes: cy.nodes().not(".synthetic").length,
         edges: cy.edges().not(".synthetic").length,
       });
-      startReveal(cy, themeRef.current, revealTimer);
-    });
+    };
+
+    // First paint has nothing to preserve, so it lays out. Every later rebuild keeps
+    // its positions and only reports.
+    const forced = pendingLayout.current;
+    pendingLayout.current = false;
+    if (!hadLayout || forced) {
+      runLayout(cy, themeRef.current, () => {
+        report();
+        startReveal(cy, themeRef.current, revealTimer);
+      });
+    } else {
+      // Bags still need their ring, or they drift away from their children while no
+      // layout is running to hold them.
+      const layout = themeRef.current.layout;
+      if (layout.bagRing) placeBagsOnRing(cy, layout.bagRingSpread);
+      cy.elements().not(".synthetic").removeClass("reveal-hidden");
+      report();
+      // Nothing was laid out, so there is nothing to re-fit: a fit here would jerk the
+      // viewport on every checkbox click.
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [elements]);
 
@@ -546,20 +631,24 @@ const GraphCanvas = forwardRef(function GraphCanvas(
         node.select();
       },
 
-      /** Halo + camera. Used by a result row only. */
+      /** Halo + camera. Returns false when the canvas does not hold that node. */
       focus(id) {
         const cy = cyRef.current;
-        if (!cy) return;
+        if (!cy) return false;
         const node = cy.getElementById(id);
-        if (!node || node.empty()) return;
+        if (!node || node.empty()) return false;
         cy.elements().unselect();
         node.select();
-        // Multiply the CURRENT zoom rather than setting an absolute level, so the
-        // motion is proportional wherever the user already is.
+        // Zoom to a FLOOR, not a multiple of wherever the camera happens to be. The old
+        // `cy.zoom() * 1.3` barely moved from a wide view and overshot from close up,
+        // so repeated hops felt inconsistent. Centring and zooming in one animation
+        // also stops it reading as two separate moves.
+        const target = Math.max(cy.zoom(), FOCUS_ZOOM);
         cy.animate(
-          { center: { eles: node }, zoom: cy.zoom() * 1.3 },
+          { center: { eles: node }, zoom: target },
           { duration: 400 },
         );
+        return true;
       },
 
       clearHalo() {
@@ -574,7 +663,17 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       rerunLayout() {
         const cy = cyRef.current;
         if (!cy) return;
-        runLayout(cy, themeRef.current, () => onLayoutDone?.({}));
+        // A fetch triggered by the modal's apply resolves BEFORE React re-renders, so
+        // laying out here would solve the elements that are about to be replaced. Set
+        // a one-shot flag and let the elements effect honour it, where the new
+        // elements exist. If no rebuild follows (nothing actually changed), a microtask
+        // fallback runs the layout anyway so the button is never inert.
+        pendingLayout.current = true;
+        Promise.resolve().then(() => {
+          if (!pendingLayout.current) return;
+          pendingLayout.current = false;
+          runLayout(cy, themeRef.current, () => onLayoutDone?.({}));
+        });
       },
 
       zoomBy(factor) {
@@ -763,28 +862,38 @@ function buildStylesheet(theme) {
     // has its OWN artwork; `icon.entity` alone could not tell a pin from a building.
     ...Object.entries(NODE_TYPES)
       .filter(([, meta]) => meta.iconKind === "entity")
-      .flatMap(([type]) =>
-        Object.entries(PLATFORM_COLORS).map(([platform]) => ({
+      .flatMap(([type]) => {
+        // A kind may enlarge its own artwork without touching the others: a map pin
+        // draws thin and reads smaller than a solid building at the same scale.
+        const scale = Math.round(
+          visual.correspondentIconScale * (visual.entityIconScale?.[type] ?? 1) * 100,
+        );
+        return Object.entries(PLATFORM_COLORS).map(([platform]) => ({
           selector: `node.icon[type = "${type}"][platform = "${platform}"]`,
           style: {
             "background-image": `url("${entityIcon(type, platform)}")`,
-            "background-width": `${Math.round(visual.correspondentIconScale * 100)}%`,
-            "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`,
+            "background-width": `${scale}%`,
+            "background-height": `${scale}%`,
           },
-        })),
-      ),
+        }));
+      }),
     // A MERGED entity, after the per-platform rules for the same reason as persons: a
     // merged node keeps a real `platform`, so it matches its own platform rule too.
     ...Object.entries(NODE_TYPES)
       .filter(([, meta]) => meta.iconKind === "entity")
-      .map(([type]) => ({
-        selector: `node.icon[type = "${type}"].merged`,
-        style: {
-          "background-image": `url("${entityIcon(type, "merged", true)}")`,
-          "background-width": `${Math.round(visual.correspondentIconScale * 100)}%`,
-          "background-height": `${Math.round(visual.correspondentIconScale * 100)}%`,
-        },
-      })),
+      .map(([type]) => {
+        const scale = Math.round(
+          visual.correspondentIconScale * (visual.entityIconScale?.[type] ?? 1) * 100,
+        );
+        return {
+          selector: `node.icon[type = "${type}"].merged`,
+          style: {
+            "background-image": `url("${entityIcon(type, "merged", true)}")`,
+            "background-width": `${scale}%`,
+            "background-height": `${scale}%`,
+          },
+        };
+      }),
     // Shape and glow are generated from `NODE_TYPES`, so a new kind is a config
     // entry rather than a rule. Both are static literals — never `data()` — because
     // a mapper that fails to parse takes the whole stylesheet down with it.
@@ -1154,6 +1263,42 @@ function rgbToHex(r, g, b) {
  * `position()` is ABSOLUTE even for a child (Cytoscape's `relativePosition()` is the one
  * that subtracts the parent), so an absolute delta is correct here.
  */
+/**
+ * Where to put a node that has never been on screen.
+ *
+ * A filter rebuild keeps every surviving node where it was, so the only nodes without a
+ * position are the ones just revealed. Dropping them on a neighbour that DOES have a
+ * position keeps them near the thing that connects them, instead of at the origin or
+ * scattered at random. A node with no placed neighbour (an isolate) goes near the
+ * centroid of everything placed, offset a little so a batch of them does not stack.
+ */
+function seedPosition(cy, node) {
+  const neighbours = node.neighborhood().nodes();
+  for (let i = 0; i < neighbours.length; i += 1) {
+    const other = neighbours[i];
+    const position = other.position();
+    if (Number.isFinite(position.x) && Number.isFinite(position.y)) {
+      // A small deterministic offset, so several new nodes on the same neighbour fan out
+      // rather than landing exactly on top of each other.
+      const angle = (node.id().length * 37) % 360;
+      const radians = (angle * Math.PI) / 180;
+      return {
+        x: position.x + Math.cos(radians) * 40,
+        y: position.y + Math.sin(radians) * 40,
+      };
+    }
+  }
+
+  const placed = cy.nodes().filter((other) => {
+    const position = other.position();
+    return Number.isFinite(position.x) && Number.isFinite(position.y);
+  });
+  if (!placed.length) return { x: 0, y: 0 };
+  const box = placed.boundingBox();
+  const jitter = (node.id().length * 13) % 80;
+  return { x: box.x1 + jitter, y: box.y1 + jitter };
+}
+
 function moveBagTo(bag, target) {
   const children = bag.children();
   if (!children.length) return false;
@@ -1260,6 +1405,116 @@ function setSmartEdgeLength(enabled) {
   return targets.length > 0;
 }
 
+/**
+ * Push apart node glyphs that overlap, after the layout has settled.
+ *
+ * **Why this is needed at all.** fcose already has an overlap branch —
+ * `layout-base.js`'s `calcRepulsionForce` calls `calcSeparationAmount` when
+ * `rectA.intersects(rectB)`. But the rect comes from `layoutDimensions()`, and for a leaf
+ * node that is the BODY box. Two overlapping circles are pushed apart; anything the
+ * glyph actually draws outside its body radius is not measured, and the two-node
+ * separation only fires on true intersection, never on "too close to read".
+ *
+ * So this is the same idea, re-run where the real boxes can be read. It is a relaxation:
+ * repeat until nothing overlaps, or the iteration budget runs out.
+ *
+ * **Labels are excluded deliberately** (`includeLabels: false`). Label boxes are far
+ * wider than the marks, and letting them drive the separation would turn one dense
+ * cluster into a sparse sheet. Labels are handled separately.
+ *
+ * Pairs are pushed along their **axis of least penetration**, which is the smallest
+ * change that resolves the overlap and keeps the overall shape closest to what the solver
+ * produced. `step` below 1 damps the motion so the pass converges instead of jittering.
+ */
+function declutter(cy, physics) {
+  const options = physics.declutter || {};
+  if (options.enabled === false) return 0;
+
+  const iterations = Math.max(1, options.iterations ?? 24);
+  const pad = options.padding ?? 4;
+  const step = options.step ?? 0.6;
+
+  // Bags are compound parents whose box is the union of their children; moving them here
+  // would fight `placeBagsOnRing` and drag their children with them.
+  const nodes = cy.nodes().not(".synthetic").toArray();
+  if (nodes.length < 2) return 0;
+
+  let totalMoves = 0;
+
+  for (let pass = 0; pass < iterations; pass += 1) {
+    // Boxes are re-read every pass: moving one pair changes what the next pair sees.
+    // Reading them once per pass (not per pair) keeps this O(n) reads, O(n^2) compares.
+    const boxes = nodes.map((node) => {
+      const box = node.boundingBox({
+        includeLabels: false,
+        includeNodes: true,
+        includeOverlays: false,
+        includeUnderlays: false,
+      });
+      const valid = [box.x1, box.y1, box.x2, box.y2].every(Number.isFinite);
+      // A node with no measurable box (hidden, or not yet laid out) must never be pushed:
+      // a NaN or zero-size box would overlap everything and thrash the whole pass.
+      if (!valid || box.w <= 0 || box.h <= 0) return null;
+      return {
+        x1: box.x1 - pad,
+        y1: box.y1 - pad,
+        x2: box.x2 + pad,
+        y2: box.y2 + pad,
+      };
+    });
+
+    const deltas = nodes.map(() => ({ x: 0, y: 0 }));
+    let moved = 0;
+
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const a = boxes[i];
+        const b = boxes[j];
+        if (!a || !b) continue;
+        // Overlap in each axis; positive means the boxes intersect on that axis.
+        const overlapX = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
+        const overlapY = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+        if (overlapX <= 0 || overlapY <= 0) continue;
+
+        const pa = nodes[i].position();
+        const pb = nodes[j].position();
+
+        // Push along the axis that needs the SMALLER move: less distortion per fix.
+        if (overlapX < overlapY) {
+          // Fall back to an alternating direction when centres share an x, which happens
+          // when two nodes land on the same column and `sign(0)` is 0.
+          const dir = Math.sign(pb.x - pa.x) || (i % 2 ? 1 : -1);
+          const push = (overlapX / 2) * step;
+          deltas[i].x -= dir * push;
+          deltas[j].x += dir * push;
+        } else {
+          const dir = Math.sign(pb.y - pa.y) || (i % 2 ? 1 : -1);
+          const push = (overlapY / 2) * step;
+          deltas[i].y -= dir * push;
+          deltas[j].y += dir * push;
+        }
+        moved += 1;
+      }
+    }
+
+    if (!moved) break;
+
+    // One batch for the whole pass, so nothing renders a half-moved frame.
+    cy.batch(() => {
+      nodes.forEach((node, index) => {
+        const delta = deltas[index];
+        if (!delta.x && !delta.y) return;
+        const position = node.position();
+        node.position({ x: position.x + delta.x, y: position.y + delta.y });
+      });
+    });
+
+    totalMoves += moved;
+  }
+
+  return totalMoves;
+}
+
 function runLayout(cy, theme, done) {
   const { physics, layout } = theme;
 
@@ -1301,6 +1556,13 @@ function runLayout(cy, theme, done) {
     // The ring is applied AFTER the solver, as a translation. See `placeBagsOnRing`
     // for why it cannot be a `fixedNodeConstraint`.
     if (layout.bagRing) placeBagsOnRing(cy, layout.bagRingSpread);
+    // **Overlap removal, after the solver and before the fit.** fcose measures "node
+    // overlap" against a box built from `layoutDimensions()`, which for a leaf node is
+    // its body alone — so its own anti-overlap pass never sees anything but the circle.
+    // This is the same separation idea run outside the layout, where the real glyph
+    // boxes can be read. Labels are deliberately EXCLUDED (`includeLabels: false`): the
+    // owner wants the marks separated and will handle label density separately.
+    declutter(cy, physics);
     // STEP 2 BLANKED THE CANVAS (2026-11-21) — read-before-write did NOT fix it.
     // Disabled again. Next suspect is the mutation itself inside `layoutstop`;
     // step 3 will schedule the pull one tick after finish() via rAF.

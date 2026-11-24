@@ -1,8 +1,7 @@
 # UIVISUALS.md
 
 **Settled UI and visual facts.** Not a log, not a plan — only what has been built, seen in a
-browser, and would cost real time to rediscover. Anything still being tuned lives in
-[`CytoGravityRecommend.md`](CytoGravityRecommend.md) until it stops moving.
+browser, and would cost real time to rediscover.
 
 Backend reference: [`TECHREADME.md`](TECHREADME.md). What is next: [`HANDOVER.md`](HANDOVER.md).
 
@@ -226,8 +225,8 @@ at the centre. The same applies to `Person`, `Organization` and `Product` when t
 — nothing needs changing for them, because the rule keys on `merged` and the platform count,
 never on the node kind.
 
-Layout mechanics — the ring, `fixedNodeConstraint`, and what fcose actually honours — stay in
-[`CytoGravityRecommend.md`](CytoGravityRecommend.md) until that work is finished.
+Layout mechanics — the ring, `fixedNodeConstraint`, and what fcose actually honours — are in
+§12 below.
 
 ---
 
@@ -280,3 +279,102 @@ cy.nodes()[0].pstyle("underlay-gradient-stop-colors").value;
 It cannot tell you whether a glow looks right, and it cannot catch render-pipeline breakage.
 Anything that mutates positions or touches the render path needs a browser refresh as part of
 the change itself.
+
+---
+
+## 12. Layout — what fcose actually honours
+
+Read from the **vendored** source (`app/static/vendor/`), never from documentation. Several
+of these contradict the sliders' own hints, and two cost a full day each before they were
+proved.
+
+### The overlap problem, and the pass that fixes it
+
+fcose has an overlap branch — `layout-base.js`'s `calcRepulsionForce` calls
+`calcSeparationAmount` when `rectA.intersects(rectB)`. **But the rect comes from
+`layoutDimensions()`, which for a leaf node is the BODY box only.** The solver sees a 28px
+circle, draws it, and has no idea the glyphs are touching. No slider on earth fixes that:
+they all tune a force operating on a box the mark has already escaped.
+
+`declutter()` in `GraphCanvas.jsx` closes the gap. It runs after the solver and before the
+fit, and pushes apart overlapping pairs using `boundingBox({ includeLabels: false })` — the
+box fcose refuses to measure. Knobs live in `theme.physics.declutter`:
+`enabled` / `iterations` (24) / `padding` (4) / `step` (0.6). Set `enabled: false` to revert.
+Each pass re-reads the boxes in one `cy.batch()`; convergence is fast because a pass with no
+overlaps exits immediately.
+
+### Knobs that do nothing
+
+| Knob | Reality |
+|---|---|
+| `nodeSeparation` | Scales the **initial spectral BFS distances** only (`cytoscape-fcose.js:1119`). It does not space a settled layout. |
+| `packComponents` | Gated on `cy.layoutUtilities`, a plugin that is **not vendored**. Always a no-op here. |
+| `nodeOverlap` | Does not exist in fcose. It belongs to core `cose` only. |
+| `tile` / `tiling*` | Applies to **zero-degree nodes only** (`cose-base.js:1125-1132`). Threads and Correspondents have `WITH` edges, so it never fires. |
+| `uniformNodeDimensions` | Uses rect centres instead of clip points. Cheaper, no clustering effect. |
+
+### Gravity — the eligibility rule nobody expects
+
+`calculateNodesToApplyGravitationTo` (`cose-base.js:885-903`) loops over **every graph**,
+including each compound's child graph, and keeps the nodes of any that is internally
+disconnected:
+
+```js
+graph.updateConnected();
+if (!graph.isConnected) nodeList = nodeList.concat(graph.getNodes());
+```
+
+So the rule is **per bag, not global**. Measured on the live store: each platform bag's
+children form **25–30 separate islands** (a Thread hangs off one Correspondent with nothing
+joining it to its neighbours), so every bag qualifies and `gravityCompound` genuinely
+engages. It looked inert for months because it was assumed to need a globally disconnected
+graph.
+
+`gravityCompound` must **never be 0** — exactly 0 stalls fcose's compound tiling. The slider
+floor is 0.05.
+
+### Why spokes sprawl
+
+`layout-base.js:3491` — a node feels repulsion only from nodes within
+`2 × (level+1) × idealEdgeLength`. A spoke pushed outward by its one neighbour drifts with
+nothing pulling it back. That is the mess inside a platform, and it is why
+`gravityCompound` + `gravityRangeCompound` are the levers that actually move it.
+
+| Attempt | Result |
+|---|---|
+| `idealEdgeLength` 60 → 22 | no visible change |
+| `smartEdgeLength: false` | no visible change |
+| `bagRingSpread` 1.35 → 1.0 | slightly tighter ring |
+| `gravityCompound` / `gravityRangeCompound` | **do work** — per-bag disconnection, see above |
+| `nodeRepulsion` | effectively inert |
+
+Useful and verified: `nestingFactor` adds length to every **inter-graph** edge
+(`layout-base.js:3426-3440`), so `0` stops cross-bag lengthening. `idealEdgeLength` accepts a
+**per-edge function** (`cytoscape-fcose.js:477`), e.g.
+`e => e.data('kind') === 'WITH' ? 25 : 60` — but its average also sets
+`MIN_REPULSION_DIST`, so it is a coupled knob.
+
+### Traps
+
+**Never put a bag in a `fixedNodeConstraint`.** `spectralLayout` builds `nodeIndexes` with
+`if (!nodes[i].isParent())`, so a compound is never in it; the handler reads `undefined` and
+the Procrustes transform turns every coordinate into `NaN` — blank canvas. The ring is a
+post-layout translation instead.
+
+**Post-layout position mutation is dangerous.** A `pullBridgesToRing()` pass measured correct
+headless and **blanked the canvas in the browser** (reproduced on a clean profile). The
+headless probe validates geometry, not render-pipeline integration. Anything that moves
+nodes needs a browser refresh as part of the change.
+
+**The measurement probe** lives in `tools/ai_visual_graph_tool/` (probe.js + run.py +
+baseline.json). All four vendored UMDs must load into **one shared vm context** in script
+order (`layout-base` → `cose-base` → `cytoscape-fcose`) with `window`/`global`/`self`
+pointing at it and **no** `module`/`exports`/`define` — those steer the UMD to a CommonJS
+branch whose inner `require` cannot resolve.
+
+### Open data issue
+
+Two `POSSIBLY` fuzzy pairs are **data, not physics**: `person:dimitri whitfield` ↔
+`person:dimitir whitfield`, and `person:sahfi hassan` ↔ `person:shafi hassan`. Each variant
+sits in a different platform bag, so the unfolded pair stretches an edge across the ring. The
+fix belongs in `relate_comms/link.py` fold rules, not in layout.

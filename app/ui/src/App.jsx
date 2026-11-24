@@ -123,17 +123,45 @@ export default function App() {
     };
   }, []);
 
-  // Re-fetch when the node types, sort or limit change. All three are view-only, so
-  // this is the only thing they touch.
-  const filterKey = [
-    theme.filter.nodeTypes.join(","),
-    theme.filter.sort,
-    theme.filter.limit,
-  ].join("|");
+  // The one automatic fetch: the first paint. It reads the saved filter from
+  // `loadTheme()`, so a returning user sees the canvas they left. Nothing after this
+  // re-fetches without the user pressing a button.
+  const booted = useRef(false);
   useEffect(() => {
-    loadGraph(theme.filter.nodeTypes);
+    if (booted.current) return;
+    booted.current = true;
+    loadGraph(theme.filter.nodeTypes, {
+      sort: theme.filter.sort,
+      limit: theme.filter.limit,
+    });
+    // Mount only. `theme` is read, not watched — a dependency here would restore the
+    // exact re-fetch-on-every-edit behaviour this block replaced.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterKey]);
+  }, []);
+
+  // **No effect watches the filter any more.** Sort, limit and the per-kind
+  // visibility are VIEW settings, and the canvas is a window onto the store — search,
+  // the Viewer and the AI chat read `graph.rl` directly and are unaffected by any of
+  // them. So nothing here re-fetches on a theme change.
+  //
+  // The Canvas modal holds its edits until the user presses "Re-run layout", which
+  // calls `applyCanvas` below: fetch the slice the new settings describe, then let the
+  // canvas re-solve. That is exactly how the Gravity modal works, and it is why a
+  // filter can now be changed without the graph jumping.
+  //
+  // The earlier `filterKey` effect was a bug even under the old model: the modal also
+  // called `onReload` itself, so one press of a sort button fetched twice.
+  const applyCanvas = useCallback(
+    async (nextTheme) => {
+      const filter = nextTheme?.filter || theme.filter;
+      await loadGraph(filter.nodeTypes, { sort: filter.sort, limit: filter.limit });
+      // Re-solve AFTER the new elements land. The canvas skips its own layout for a
+      // rebuild that preserves positions, so the button has to ask explicitly —
+      // otherwise "Re-run layout" would apply the filter without re-running anything.
+      canvasRef.current?.rerunLayout();
+    },
+    [loadGraph, theme.filter],
+  );
 
   /* ---------------------------------------------------------------- actions */
 
@@ -169,10 +197,13 @@ export default function App() {
   const onResultRow = useCallback(
     (node) => {
       canvasRef.current?.halo(node.id);
-      canvasRef.current?.focus(node.id);
-      openNode(node);
+      const drawn = canvasRef.current?.focus(node.id);
+      // A node outside the current slice (cut by `limit`, or filtered out) cannot be
+      // flown to. The Viewer still switches, so it says why the camera did not move
+      // rather than looking half-broken.
+      viewer.push(drawn === false ? { kind: "node", ...node, notDrawn: true } : { kind: "node", ...node });
     },
-    [openNode],
+    [openNode, viewer.push],
   );
 
   const onBack = useCallback(() => {
@@ -361,12 +392,15 @@ export default function App() {
           theme={theme}
           onChange={updateTheme}
           onClose={() => setModal(null)}
-          onRerunLayout={() => canvasRef.current?.rerunLayout()}
+          /* "Re-run layout" is the ONLY apply path: it saves the draft, fetches the
+             slice the new settings describe, then re-solves. Until it is pressed the
+             canvas is untouched, exactly like the Gravity modal's sliders. */
+          onApply={(next) => {
+            updateTheme(next);
+            applyCanvas(next);
+          }}
           graph={graph}
           platforms={platformRows}
-          onReload={(overrides) =>
-            loadGraph(theme.filter.nodeTypes, overrides)
-          }
         />
       )}
       {modal === "gravity" && (

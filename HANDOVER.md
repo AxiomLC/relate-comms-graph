@@ -10,14 +10,20 @@ Durable facts: [`TECHREADME.md`](TECHREADME.md). UI and visual facts:
 
 ## Where it stands
 
-`pytest tests -q` → **479 passed, 2 skipped**. App runs: `start.bat` → `127.0.0.1:8100`.
+`pytest tests -q` → green, 2 skipped. App runs: `start.bat` → `127.0.0.1:8100`.
 
-**Live store: rebuilt 2026-11-23** after the extraction rework. **2,117 messages · 175
-threads · 94 correspondents · 98 Places · 113 Organizations · 22 Products.**
-**Default canvas load: 502 nodes / 572 edges** — Thread + Correspondent + Place +
-Organization + Product, with `WITH` and 118+ `MENTIONS_*` edges.
-Per platform: telegram 831 · messenger 661 · linkedin 228 · sms 139 · email 128 ·
-whatsapp 92 · outlook 6.
+**No store counts are recorded here on purpose.** The spool is re-ingested constantly, so any
+number written down is stale by the next run and invites false "regression" alarms. Ask the
+store instead:
+
+```python
+# one query per kind; labels are Message, Thread, Correspondent, Place, Organization, Product
+tools.evidence_counts()          # or: MATCH (n:<Kind>) RETURN count(n)
+```
+
+> **`outlook` has been reading 0 rows** while `spool/real/outlook/` exists. The `.pst` leg is
+> built and tested; this is a data-presence question, not a code one. Check before trusting
+> any Outlook claim, and treat a flat-0 platform as "not re-ingested", not as a bug.
 
 **Extraction rework landed 2026-11-23** (commit `f782812`). Three structural changes:
 - **`POSSIBLY` is gone.** Fuzzy spelling pairs now fold instead of drawing a guessed edge.
@@ -70,7 +76,15 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 
 ## Next
 
-### 0. Entity lists — drafted, not yet loaded
+> **THE NEXT WORK ITEM IS THE ENTITY-LIST LOAD (§0).** Everything else in this section is
+> queued behind it. That job is what closes [`rework_extraction.md`](rework_extraction.md)
+> — the Product line, the three dictionaries, and the per-kind visibility that reads them.
+> AI/LLM wiring (§3) and MCP (§4) remain a standing given; they are not the priority.
+>
+> **When §0 lands, `rework_extraction.md`, `entity_list_brief.md` and `temp-lists` are all
+> finished with.** See the note at the bottom of this file.
+
+### 0. Entity lists — drafted, not yet loaded — **the active job**
 
 **Three lists are drafted** in [`temp-lists`](temp-lists) (2,126 lines) from the brief in
 [`entity_list_brief.md`](entity_list_brief.md):
@@ -106,15 +120,24 @@ tech 75 / durable 89 / food 20, three frame sets, per-section fuzz variants (phy
 never hyphenate). The knobs that raise how many entities a body names live in
 `sample_writer/config.py` — `BODY_ENTITY_LINES` is the real ceiling, not pool size.
 
-### 0b. Per-kind single-mention visibility
+**Scale is not the constraint; classification is.** Measured on `EntityRuler`: 10,000 names
+costs 0.28 ms/message (load 1.9 s once). The product index is a Python dict, O(1) at any
+size. The ceiling is how many entries can be classified correctly.
 
-`theme.filter.hideSingleMentions` exists, defaults **off**, and `:Merged` overrides it. Proposal:
-split it per kind (Place / Organization / Product) so a large product list can be read once
-and stay invisible until something is actually mentioned more than once.
+### 0b. Per-kind single-mention visibility — **DONE**
 
-**It does not replace the generic block.** Hiding works on mention count; blocking works on
-what the word *is*. `seat` is mentioned *more* often than a rare product, so a mention floor
-promotes junk instead of suppressing it.
+`theme.filter.hideSingleMentions` is now a **per-kind tri-state map**
+(`nodeVisibility: { Place, Product, Organization }`), rendered in the Canvas modal as one
+radio group per row: **show all / merged only / hide**. Mutually exclusive; there is no
+"singles only". Correspondent and Person are greyed placeholders, not wired.
+
+A merged node is decided by **bag membership**, the same rule that parents it to
+`bag:merged`, so the filter and the drawing cannot disagree. `hideMerged` and
+`singlesCountKey` are gone; their saved overrides no longer match a key and are ignored.
+
+**It still does not replace the generic block.** Hiding works on mention count; blocking
+works on what the word *is*. `seat` is mentioned *more* often than a rare product, so a
+mention floor promotes junk instead of suppressing it.
 
 **Judging a list:** the canvas is not the instrument. Hidden single mentions are still stored,
 counted and searchable — query `MATCH (p:Product) WHERE p.mention_count >= 2`.
@@ -291,13 +314,13 @@ Dragging a folder replaces them; the path-paste field remains as the escape hatc
 and that message lands in INGEST LOG **below** the dropzone — off-screen at normal modal
 height, so a correct drop can look like nothing happened.
 
-### 3. The local LLM
+### 3. The local LLM — **standing, not the priority**
 
 Chat is wired into the UI. Never exercised end to end on a real conversation. Needs a check
 that `MAX_TOOL_CHARS` truncation is **reported** rather than silent. `think: false` is a 28×
 speedup on this box and must stay applied. Not involved in entity extraction (§2) — chat only.
 
-### 4. MCP wiring
+### 4. MCP wiring — **standing, not the priority**
 
 `app/mcp/__init__.py` is a docstring. When built it must **not** gain a `.env` read — that
 is the guarantee the IMAP credentials rely on. Every capability is already a plain function
@@ -519,6 +542,22 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
   `build:css`, because `npm run build` alone never rewrote `static/dist/app.css` and a new
   rule would have silently never reached the browser.
 
+- **2026-11-24** — **Canvas modal rebuilt around the apply button.** Sort, limit, radios and
+toggles are held in the modal and applied only on **Re-run layout**, which fetches then
+re-solves and keeps the panel open — the Gravity modal's model. Killed a double-fetch bug
+(`App.jsx` watched the filter *and* the modal called `onReload`). Node types became one
+**tri-state radio group per kind** (show all / merged only / hide) on the three wired kinds.
+**Declutter pass** added after the solver: fcose measures a leaf node's BODY box only, so its
+own anti-overlap branch never sees the glyph — `declutter()` pushes apart the real boxes
+(`includeLabels: false`). **Product glyph** replaced (gift box) with a blue merged halo;
+Organization moved to `C/E/F` and light-blue halo, lines 25% thicker; Place kept yellow and
+`B/D/E`. **Viewer:** entity views now hop `Message → Thread` (the `Thread-[:MENTIONS]->`
+query they used had **zero edges** and always returned nothing), ordered by first appearance;
+rows now halo + fly-to + switch, not Viewer-only; orange "not visible on canvas" note; a
+text-selection guard so copy/paste no longer navigates. `wheelSensitivity` finally applies
+live (it was a constructor-only option). **Docs:** `CytoGravityRecommend.md` folded into
+`UIVISUALS.md` §12 and deleted.
+
 - **2026-11-21** — Merged bag built and centred; merged nodes styled (grey glyph + orange
   radial underlay); `UIVISUALS.md` written; theme persistence changed to **overrides-only**
   (removes the `THEME_VERSION` bump); edge tiers re-spread; `shadow-*`/`underlay-*`/
@@ -533,3 +572,27 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
   wired into the Correspondent write (Owner is no longer a Correspondent); thread titles
   `Platform; Name; MM-DD-YYYY->`; store wiped and rebuilt; Viewer cleanup; WhatsApp dedupe +
   HTML correspondents; `.eml` mailboxes discoverable.
+
+---
+
+## Root-doc retirement — what goes when §0 lands
+
+The root is carrying too many working documents. The plan, so nobody re-derives it:
+
+| File | Fate once §0 (entity lists) lands |
+|---|---|
+| `entity_list_brief.md` | **Delete.** It is input to a job, not a fact about the app. |
+| `temp-lists` | **Delete.** Its content will live in `extract.py` / `products.py`. |
+| `rework_extraction.md` | **Delete.** Every open item closes with §0; the measurements worth keeping are already in §2 of this file. |
+| `detacheable_graph.md` | Keep until §1 (portable module) is built, then fold into `TECHREADME.md`. |
+
+That leaves the five that earn their place: `README.md` (human overview), `TECHREADME.md`
+(durable facts), `UIVISUALS.md` (rendering facts), `HANDOVER.md` (now and next), and
+`archive_docs/`.
+
+**Before deleting anything, check nothing links to it:**
+```bash
+grep -rn "<filename>" --include=*.md . | grep -v node_modules
+```
+A dangling link in `TECHREADME.md` §12 or `README.md`'s doc table is the usual casualty —
+both were updated when `CytoGravityRecommend.md` was folded in.
