@@ -147,8 +147,8 @@ export const THEME = {
     // why a real glow is not possible.
     edge: [
       { min: 60, width: 4, opacity: 0.3 },
-      { min: 12, width: 0.4, opacity: 1 },
-      { min: 0, width: 0.2, opacity: 1 },
+      { min: 12, width: 0.7, opacity: 1 },
+      { min: 0, width: 0.4, opacity: 1 },
     ],
   },
 

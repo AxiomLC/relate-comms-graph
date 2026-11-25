@@ -60,7 +60,7 @@ CORRESPONDENTS = (260, 340)
 # total stays predictable while the per-platform shape does not. `THREADS_JITTER` is the
 # half-width of that band — 0.3 means 17..32 at an average of 25.
 AVG_THREADS_PER_PLATFORM = 25
-THREADS_JITTER = 0.3
+THREADS_JITTER = 0.4
 
 # Message-count weights for ordinary threads. 2-12 dominates; long threads are rare.
 # The mandated shapes (below) are added regardless of this distribution.
@@ -157,7 +157,7 @@ VARIANTS = {
 
 # Correspondents: sender display names.
 CORR_FUZZY = 0.07            # share spelled one alternate way (uniform per variant)
-CORR_MULTI_PLATFORM = 0.08   # share on 2+ platforms; bounds from PLATFORMS
+CORR_MULTI_PLATFORM = 0.15  # share on 2+ platforms; bounds from PLATFORMS
 
 # Bodies: Place, Organization, Product.
 #
@@ -175,9 +175,9 @@ CORR_MULTI_PLATFORM = 0.08   # share on 2+ platforms; bounds from PLATFORMS
 BODY_ENTITY_SHARE = {"org": 1.0, "place": 0.7, "product": 1.6}
 
 BODY_FUZZY = 0.15            # raised from .07: only ~1/3 of items reach a body
-BODY_MULTI_MENTION = 0.08    # named 2+ times on ONE platform
-BODY_MULTI_PLATFORM = 0.04   # on 2+ platforms; mention count independent of this
-MENTIONS_MULTI = (2, 4)      # (min, max) mentions for a multi-mention item
+BODY_MULTI_MENTION = 0.07    # named 2+ times on ONE platform
+BODY_MULTI_PLATFORM = 0.06   # on 2+ platforms; mention count independent of this
+MENTIONS_MULTI = (2, 5)      # (min, max) mentions for a multi-mention item
 
 # How many entity lines are forced into the opening of every thread.
 #
