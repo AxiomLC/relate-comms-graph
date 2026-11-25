@@ -552,6 +552,11 @@ class World:
     # Rows the world could not satisfy — a fuzzy item no variant would apply to. Printed
     # by `fuzz_lines()`, never raised: one stubborn name is not a build failure.
     fuzz_misses: list[str] = field(default_factory=list)
+    # name -> platforms that already have a thread for that person. Filled by `plan()`
+    # and read by `_pick_distinct`, which prefers a multi-platform person who is still
+    # missing one of their platforms. Without it `CORR_MULTI_PLATFORM` only marked
+    # presence and never produced a merge.
+    covered: dict[str, set[str]] = field(default_factory=dict)
 
     # --- construction ------------------------------------------------------------
 

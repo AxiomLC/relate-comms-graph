@@ -79,16 +79,30 @@ def _pick_distinct(world: World, platform: str, rng: random.Random,
     A real export cannot hold two 1:1 threads with the same title, and on WhatsApp the
     title IS the thread key — a repeated name silently overwrites a file. When the pool
     runs out the caller disambiguates the title instead.
+
+    **A multi-platform person is preferred until they have a thread on every platform
+    they are on.** `CORR_MULTI_PLATFORM` used to mean "this person is *present* on two
+    platforms", but presence alone never produced a merge: with ~300 people and ~25
+    threads per platform, the same person almost never got picked on both, so the knob
+    measured nothing (tested 0.08-0.22 — merges stayed flat at 13-19, pure noise).
+    Preferring them here is what makes the flag mean what its name says.
     """
     pool = [p for p in world.for_platform(platform) if p.name not in used]
     if not pool:
         pool = [p for p in world.people if p.name not in used]
-    if pool:
-        chosen = pool[rng.randrange(len(pool))]
-        used.add(chosen.name)
-        return chosen, True
-    chosen = world.people[rng.randrange(len(world.people))]
-    return chosen, False
+    if not pool:
+        chosen = world.people[rng.randrange(len(world.people))]
+        return chosen, False
+
+    # `world.covered` is filled by `plan()` as threads are made: name -> platforms that
+    # already have a thread for them. A multi-platform person who is still missing one
+    # of their platforms is preferred, which is what turns the flag into a real merge.
+    owed = [p for p in pool
+            if len(p.on) > 1 and not p.on.issubset(world.covered.get(p.name, set()))]
+    chosen = (owed or pool)[rng.randrange(len(owed or pool))]
+    used.add(chosen.name)
+    world.covered.setdefault(chosen.name, set()).add(platform)
+    return chosen, True
 
 
 def _ordinary_count(rng: random.Random) -> int:

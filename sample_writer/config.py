@@ -141,7 +141,7 @@ PLACEHOLDER_THREADS = {"messenger": 3, "linkedin": 1}
 
 # Correspondents: sender display names.
 CORR_FUZZY = 0.07               # share spelled one alternate way
-CORR_MULTI_PLATFORM = 0.15      # share appearing on 2+ platforms
+CORR_MULTI_PLATFORM = 0.18      # share appearing on 2+ platforms
 
 # Bodies: how often each kind is chosen for a body line. A share, not a count — the draw
 # is weighted by share x pool size, so a bigger list is not penalised. 0 stops that kind
@@ -149,7 +149,7 @@ CORR_MULTI_PLATFORM = 0.15      # share appearing on 2+ platforms
 BODY_ENTITY_SHARE = {"org": 1.0, "place": 0.7, "product": 1.6}
 
 BODY_FUZZY = 0.15               # share of items spelled an alternate way
-BODY_MULTI_MENTION = 0.07       # share named 2+ times on ONE platform
+BODY_MULTI_MENTION = 0.13       # share named 2+ times on ONE platform
 BODY_MULTI_PLATFORM = 0.06      # share named on 2+ platforms
 MENTIONS_MULTI = (2, 5)         # (min, max) mentions for a multi-mention item
 
