@@ -24,14 +24,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# ---------------------------------------------------------------- 1. FOLDERS
+# 1. FOLDERS ---------------------------------------------------------------
 
 HERE = Path(__file__).resolve().parent
 IN_DIR = HERE / "in"            # real downloads to imitate; read-only, gitignored
 OUT_DIR = HERE / "out"          # generated fake downloads; drop into Ingest
 SCHEMA_DIR = HERE / "schemas"   # captured shape references; committed
 
-# ---------------------------------------------------------------- 2. WORLD CONTRACT
+# 2. WORLD CONTRACT --------------------------------------------------------
 
 SEED = 20261114                 # default world; --seed overrides
 OWNER = "Mark Jones"            # the account holder; never fuzzed, never a Correspondent
@@ -45,7 +45,7 @@ END = "2026-11-01"              # set to a past date, then `append`, to test del
 # people who are not on that platform and CORR_MULTI_PLATFORM stops meaning anything.
 CORRESPONDENTS = (260, 340)     # (min, max) people in the world
 
-# ---------------------------------------------------------------- 3. PLATFORMS
+# 3. PLATFORMS -------------------------------------------------------------
 
 # Written in this order. Dropping a name skips that platform entirely.
 PLATFORMS = (
@@ -72,7 +72,7 @@ VARIANTS = {
     "outlook": ("copy",),
 }
 
-# ---------------------------------------------------------------- 4. MESSAGE VOLUME
+# 4. MESSAGE VOLUME --------------------------------------------------------
 
 # Ordinary threads per platform, before the mandated shapes are added. Each platform rolls
 # its own count within ±THREADS_JITTER, because a real mailbox is lumpy.
@@ -92,13 +92,13 @@ BODY_SENTENCES_WEIGHTS = {1: 55, 2: 30, 3: 15}
 # No ordinary thread above this, so the big ones stay identifiable by size.
 ORDINARY_THREAD_MAX = 60
 
-# ---------------------------------------------------------------- 5. THREAD TIMING
+# 5. THREAD TIMING ---------------------------------------------------------
 
 # Messages arrive in bursts with long silences between them, never evenly spaced.
 TIMING_BURSTS = (1, 5)          # (min, max) bursts of activity in one thread
 TIMING_SPAN_DAYS = 730          # how far after START the last burst may land
 
-# ---------------------------------------------------------------- 6. MANDATED SHAPES
+# 6. MANDATED SHAPES -------------------------------------------------------
 
 # Each is a count. 0 disables the shape; the contract check reports it rather than
 # failing silently, so a disabled shape is visible in the build log.
@@ -123,7 +123,7 @@ BIG_THREAD_RANGE = (150, 520)   # (min, max) message count
 BIG_THREAD_LOW_WEIGHT = 2.0     # lower half of the range is this much more likely
 HUGE_THREADS = (1600,)          # §9b opt-in only, via --huge
 
-# ---------------------------------------------------------------- 7. PLACEHOLDER SENDERS
+# 7. PLACEHOLDER SENDERS ---------------------------------------------------
 
 # Names real exports contain that are not people. Each writer drops these in as senders;
 # messenger also uses them as thread titles.
@@ -134,7 +134,7 @@ PLACEHOLDER_NAMES = {
 }
 PLACEHOLDER_THREADS = {"messenger": 3, "linkedin": 1}
 
-# ---------------------------------------------------------------- 8. FUZZ
+# 8. FUZZ ------------------------------------------------------------------
 
 # Every percentage is a share of the WHOLE population of that kind, rolled independently.
 # A roll never conditions on an earlier one. The Owner is never fuzzed.
@@ -178,7 +178,7 @@ FUZZ_VARIANTS = {
     "product_food": ["lower", "upper", "drop_letter", "swap"],
 }
 
-# ---------------------------------------------------------------- 9. APPEND
+# 9. APPEND ----------------------------------------------------------------
 
 # `append` re-runs the same world with a later END, reusing the clock saved beside out/ so
 # every existing message keeps its timestamp and therefore its key. Two rolls decide what
@@ -187,7 +187,7 @@ APPEND_THREAD_SHARE = 0.25      # share of EXISTING threads that gain messages
 APPEND_NEW_THREAD_SHARE = 0.15  # share of NEW threads added to the world
 APPEND_MESSAGES = (1, 4)        # (min, max) messages a thread that grows gains
 
-# ---------------------------------------------------------------- 10. FLAVOUR TOGGLES
+# 10. FLAVOUR TOGGLES ------------------------------------------------------
 
 WRITE_MESSY_VARIANTS = True     # wrong filename / double extension variants
 INCLUDE_MEDIA_ROWS = True       # `<Media omitted>`, photo rows alongside text
