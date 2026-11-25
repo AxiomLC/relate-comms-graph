@@ -145,12 +145,36 @@ def _chat(thread: Thread, world: World, rng: Random, start_id: int) -> tuple[dic
     }, msg_id
 
 
+def _single_thread(plan: Plan):
+    """The one chat `ChatExport_` writes, and `DataExport_` must therefore skip.
+
+    **The two variants are alternative shapes of ONE account, not two exports to
+    ingest together.** `ChatExport_` is what Telegram writes when you export a single
+    chat; `DataExport_` is the whole account. A user has one or the other.
+
+    `build` writes both into `out/` so both shapes can be tested, which means the same
+    chat used to appear in both — with different message ids (`90000` vs `100000`), so
+    the app's `platform:chat_id:message_id` key did not collide and the conversation
+    landed twice. Measured: 3 duplicate messages in a 2,281-message store.
+
+    Splitting them fixes it without losing either shape: the bulk export carries every
+    thread except this one, and the single export carries only this one. Ingested
+    together they cover the whole plan exactly once.
+    """
+    return next((t for t in plan.threads if t.count > 1 and not t.is_group),
+                plan.threads[0])
+
+
 def write_bulk(plan: Plan, world: World, out_dir: Path, rng: Random,
                 filer) -> Path:
     folder = out_dir / "Telegram Desktop" / f"DataExport_{world.export_date()}"
     folder.mkdir(parents=True, exist_ok=True)
     chats, next_id = [], 100000
+    # The single export owns one thread; writing it here too would duplicate it.
+    skip = _single_thread(plan) if "single" in config.VARIANTS[KIND] else None
     for thread in plan.threads:
+        if thread is skip:
+            continue
         chat, next_id = _chat(thread, world, rng, next_id)
         chats.append(chat)
     document = {
@@ -169,8 +193,7 @@ def write_single(plan: Plan, world: World, out_dir: Path, rng: Random,
                  filer) -> Path:
     folder = out_dir / "Telegram Desktop" / f"ChatExport_{world.export_date()}"
     folder.mkdir(parents=True, exist_ok=True)
-    thread = next((t for t in plan.threads if t.count > 1 and not t.is_group),
-                  plan.threads[0])
+    thread = _single_thread(plan)
     chat, _ = _chat(thread, world, rng, 90000)
     document = {"name": chat["name"], "type": chat["type"], "id": chat["id"],
                 "messages": chat["messages"]}
