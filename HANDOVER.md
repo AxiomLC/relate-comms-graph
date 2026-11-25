@@ -30,16 +30,23 @@ tools.evidence_counts()          # or: MATCH (n:<Kind>) RETURN count(n)
 > over an existing store keeps the old world's nodes and every count is inflated. `rm
 > store/graph.rl` first, or use the UI's Truncate.
 
-**Extraction rework landed 2026-11-23** (commit `f782812`). Three structural changes:
-- **`POSSIBLY` is gone.** Fuzzy spelling pairs now fold instead of drawing a guessed edge.
-- **`MENTIONS` hangs off the Message, not the Thread.** `Thread → Entity` is a read-time
-  projection in `tools._EDGE_QUERIES`. `mention_count` is message-based.
-- **`Product` is a live kind** (`extract.PRODUCT_ENABLED = True`), backed by
-  `relate_comms/products.py` — 92 entries in three tiers with a four-rule ladder.
+**Extraction is done.** All three body kinds are live and drawing: Place, Organization,
+Product. The vocabulary is loaded — `PLACE_DICTIONARY` 691, `ORG_DICTIONARY` 585,
+`products.INDEX` 764 — and `extract.PRODUCT_ENABLED = True`. Detail: `TECHREADME.md` §5.
 
-**Rebuild needed after any extractor change:** `delta=False` (the UI's **Full re-process**).
-A delta run keeps everything already stored, which is exactly wrong after the reading of
-bodies changes.
+**`sample_writer` was revamped 2026-11-25.** It now has an `append` command that extends a
+world's clock, so incremental ingest is testable: write a world ending in the past, ingest
+it, move `END` forward, `append`, ingest again — the delta drops the old stretch and writes
+only the new one. Measured: 3,270 messages then 315, with 3,884 dropped as already stored.
+The clock lives in `.schedule.json` beside `out/`; every write replaces it. See
+`sample_writer/README.md` §"append".
+
+**GLiNER is optional and not needed now.** Unmeasured here; the residual recall hole is
+names nobody listed, which is small. Next work is the local LLM chat wired into the UI.
+
+**Rebuild needed after any extractor change:** truncate, then re-ingest. A delta run keeps
+everything already stored, which is exactly wrong after the reading of bodies changes.
+`delta=False` still exists at the API for a scripted re-extract; the UI control is gone.
 
 > **Restart the server, not just the ingest.** Modules are cached in the running process; a
 > rebuild through a stale server writes a store that matches neither the old code nor the
@@ -68,6 +75,11 @@ ingesting more than one per platform stores every message twice. Ingest one of:
 `linkedin/linkedin_zip`, `messenger/messenger_zip`, `outlook/outlook_copy`, `sms/sms_xml`,
 `telegram/telegram_bulk`, `whatsapp/whatsapp_html`, `email/email_eml`.
 
+> **Telegram is the exception, and it is now safe.** `ChatExport_` and `DataExport_` are
+alternative shapes of one account, so `write_bulk` skips the chat `write_single` owns.
+Ingesting both covers the plan exactly once. Fixed 2026-11-25; before that the same chat
+landed twice with different message ids.
+
 **One queue.** `spool/sample/`, `store/spool/` and `paths.sample_dir()` are gone. A sample
 is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 
@@ -81,10 +93,12 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 
 ## Next
 
-> **§0 (entity lists) is DONE.** The three dictionaries are loaded and the extraction bugs
-> it exposed are fixed. What remains in this section is the portable-graph work (§1) and
-> two standing items (LLM §3, MCP §4). `rework_extraction.md` is now one open decision
-> (GLiNER) and a table of what was declined.
+> **Extraction is closed.** All three body kinds are live and drawing; the lists are loaded
+> (691 / 585 / 764) and the bugs the load exposed are fixed. `rework_extraction.md` is a
+> retired stub — GLiNER is the only thing left in it, and it is optional.
+>
+> **Next: wire the local LLM chat into the UI.** The portable-graph work (§1) and MCP (§4)
+> remain standing, not urgent.
 
 ### 0. Entity lists — **DONE** (2026-11-24)
 
@@ -173,8 +187,8 @@ would accept — keep it that way, and do not let `_EDGE_QUERIES` become the sch
 
 **The dictionaries are the feature, not a stopgap.** `en_core_web_sm` has no gazetteer — it
 is a neural net guessing from sentence shape. It labels `Austin` a person, `Grafana` a
-person, and `Databricks` a place. `PLACE_DICTIONARY` (97), `ORG_DICTIONARY` (26) and
-`products.py` (92) run *before* the model and win.
+person, and `Databricks` a place. `PLACE_DICTIONARY` (691), `ORG_DICTIONARY` (585) and
+`products.py` (764) run *before* the model and win.
 
 **`PRODUCT_ENABLED` is ON** as of 2026-11-23. The flag still exists and still gates
 `MENTIONS_PRODUCT` in `DRAWABLE_*`; turning it off returns the graph to Place+Org without a
@@ -193,7 +207,7 @@ licence concept and the other is furniture.
 `extract.language_guess()` warns on the report and never gates the write.
 
 Full design history: [`archive_docs/locking_in_node_extraction.md`](archive_docs/locking_in_node_extraction.md);
-what is still open: [`rework_extraction.md`](rework_extraction.md).
+the retired extraction stub: [`rework_extraction.md`](rework_extraction.md).
 
 **`canon` cannot substitute for extraction.** It normalises a name it is handed; it cannot
 decide a span *is* a place. Running capitalised words through `canonical(kind="place")`
@@ -265,10 +279,11 @@ empty store) keeps everything; a message with no timestamp is kept.
 | delta | 2.6 s |
 | **speedup** | **10×** |
 
-**`delta=False`** is the escape hatch, exposed in the UI as the **Full re-process**
-checkbox (the control is inverted so the fast path is the one nobody has to think about).
-Required after an extractor change, and the only way to re-derive Places for rows written
-before extraction existed.
+**`delta=False`** is the escape hatch. It is **no longer a UI control** — the "Full
+re-process" checkbox was removed because truncating first achieves the same thing with no
+extra cost, and a toggle that needed a paragraph of explanation was a toggle nobody read.
+The capability stays at the API for a scripted re-extract, and is required after an
+extractor change.
 
 **Known limit, documented in `tests/test_delta.py`:** a message carrying an older
 timestamp than the watermark is indistinguishable from one already stored, so a genuinely
@@ -531,9 +546,9 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
   every one) — fuzzy is now a fifth rung in `_fold_groups`. `MENTIONS` moved from Thread to
   Message; `Thread → Entity` became a projection (measured 1.2 ms vs 2.5 ms). `<br>` bodies
   fragment before extraction (28 → 33 mentions, junk spans gone). `Product` is a live kind
-  behind `extract.PRODUCT_ENABLED`, backed by `relate_comms/products.py` (92 entries, three
-  tiers, four-rule ladder, no weights). **22 Product nodes, 22/22 correct, 0 false
-  positives.** Three bugs found on the way: `union()` dropped the absorbed root's reason;
+  behind `extract.PRODUCT_ENABLED`, backed by `relate_comms/products.py` (then 92 entries,
+  three tiers, four-rule ladder, no weights; **764 as of 2026-11-24**). **22 Product nodes,
+  22/22 correct, 0 false positives.** Three bugs found on the way: `union()` dropped the absorbed root's reason;
   `PERSON` spans were dropped outright so the index could never rescue `Grafana`; and
   `DRAWABLE_NODE_TYPES` was a hardcoded list, so Products existed with **zero edges drawn**.
   **Correction:** `en_core_web_sm` *does* emit `PRODUCT` — rarely and frame-sensitively;
@@ -622,7 +637,7 @@ live (it was a constructor-only option). **Docs:** `CytoGravityRecommend.md` fol
 |---|---|
 | `entity_list_brief.md` | **Delete.** Input to a job, not a fact about the app. |
 | `temp-lists` | **Delete.** Its content now lives in `extract.py` / `products.py`. |
-| `rework_extraction.md` | **Kept, shrunk.** One open decision (GLiNER) and the declined table. Delete when that is settled. |
+| `rework_extraction.md` | **Retired stub.** Extraction is closed; only GLiNER (optional) is left. Kept so old links resolve. |
 | `detacheable_graph.md` | Keep until §1 (portable module) is built, then fold into `TECHREADME.md`. |
 
 That leaves the five that earn their place: `README.md` (human overview), `TECHREADME.md`

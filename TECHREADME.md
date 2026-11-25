@@ -24,10 +24,10 @@ Ingest path — three more, not interchangeable: **Download** (the user's file, 
 **Export** (`IngestResult.export_path`, the copy in `spool/` that gets parsed), **Spool**
 (`paths.real_dir()`, **one queue** — a sample is just a file dropped in it).
 
-**Not terms yet:** `Person`, `Place`, `Organization`, `Product` name a future extraction
-step — the queries exist (§4) but no writer fills them, so they hold zero rows.
-`resolution.collect/merge` **are** called and their counts land in the report, then the
-result is discarded.
+**Extracted kinds are live.** `Place`, `Organization` and `Product` are written by the
+pipeline and drawn on the canvas (§5). `Person` is extracted but **not wired** — a person
+drawn from a body competes with the Correspondent already on the thread, which is a merge
+with a wrong answer that looks right.
 
 **The kind names are the node type names, lowercased.** `canon.KINDS` is
 `("person", "organization", "place", "product")` and `tools.ENTITY_KINDS` is derived
@@ -81,8 +81,8 @@ back; importing the library must not pull in FastAPI.
 | `ingest.py` | The pipeline: `_parser_for()`, `detect_platform()`, `discover()`, `parse_batches()`, `ingest()`, `preview()`, `stage()`, `_drop_spam_threads()`. Extraction runs at the end of each batch; `delta=True` is the default. |
 | `writer.py` | Cypher writer. `write()` (UNWIND 500), `write_correspondents()` + `_reconcile()` + `_contact_ids()`, `write_entities()`, `thread_display_title()`, `verify_present()`, `handles_from()`, `_ENTITY_WRITE_KINDS`. |
 | `canon.py` | The flattening pipe. `canonical(raw, kind=…)` → `Canonical`; `KINDS`, `NICKNAMES`, `candidates()`, `nickname_form()`, `score()`, `fuzzy_available()`. Knobs `NICKNAME_ENABLED`, `FOLD_ON_NAME`, `FUZZY_REPORT`. |
-| `extract.py` | **Entity extraction — proposes spans, decides no merge.** `extract()`, `places()`, `organizations()`, `fragments()`, `_arbitrate()`, `Mention` (with `candidates`), `PLACE_DICTIONARY`, `ORG_DICTIONARY`, `PRODUCT_ENABLED`, `DOCUMENT_CHARS`. |
-| `products.py` | **The product vocabulary.** `INDEX` (92 entries), `GENERIC` block list, `lookup()`, `has_context()`, `decide()` — the four-rule ladder. `canon` folds spellings; this decides whether a spelling is a name. |
+| `extract.py` | **Entity extraction — proposes spans, decides no merge.** `extract()`, `places()`, `organizations()`, `fragments()`, `_arbitrate()`, `Mention` (with `candidates`), `PLACE_DICTIONARY` (691), `ORG_DICTIONARY` (585), `PRODUCT_ENABLED`, `PRODUCT_RESCUE_LABELS`, `DOCUMENT_CHARS`. |
+| `products.py` | **The product vocabulary.** `INDEX` (764 entries), `GENERIC` block list, `lookup()`, `has_context()`, `decide()` — the four-rule ladder. `canon` folds spellings; this decides whether a spelling is a name. |
 | `link.py` | **Cross-connect.** `link(conn)` — union-find fold over phone / email / name / fuzzy. Runs once at the end of `ingest()`. Owns `merged_by`. |
 | `scrub.py` | `Verdict` (keep/hide/block), `AliasMap` (memory-only), Luhn check. |
 | `identity.py` · `manifest.py` | Who the **Owner** is (with `tz_offsets`) · what has been ingested (sampled fingerprint, a shortcut never the authority). |
@@ -314,7 +314,14 @@ net guessing from sentence shape. It labels `Austin` a person, `Grafana` a perso
 `Databricks` a place, and `"Ansible keeps falling over."` as nothing at all while
 `"I've moved everything onto Ansible."` is a `PRODUCT`. It *does* have a `PRODUCT` label;
 it is just frame-sensitive and mostly absent. So three hand-written lists run **before**
-the model and win: `PLACE_DICTIONARY` (97), `ORG_DICTIONARY` (26), `products.INDEX` (92).
+the model and win: `PLACE_DICTIONARY` (691), `ORG_DICTIONARY` (585), `products.INDEX`
+(764).
+
+**Three bugs the list load exposed, all fixed:** a short entry truncated a longer name
+(`Kensington Market` → `place:kensington`); products were never in the ruler, so
+`Toyota Hilux` split into an ORG and a PRODUCT; and `NORP` was dropped outright, so
+`a Persian rug` produced nothing. `NORP` now sits in `PRODUCT_RESCUE_LABELS` beside
+`PERSON`.
 
 **`products.decide()` is four rules, first match, no weights:**
 
@@ -394,9 +401,22 @@ junk Organization we ever saw. Reported as a warning, never an error.
 preview deliberately does **not** count messages; that needs the full parse it exists to
 avoid.
 
-**Modal, top to bottom:** Truncate (double confirm) → drop box (file or folder, one or
-many) → IMAP fields → separator → window / tz / groups / email spam / prune → Ingest → log
-(newest first).
+**Modal, top to bottom:** Truncate (double confirm) → drop box (files or a folder, one or
+many) → **ready list** → IMAP fields → separator → window / tz / groups / email spam →
+Ingest → log (newest first).
+
+**The ready list** is one line per top-level folder picked, with a shortened path
+(`C:…\out\telegram\Telegram Desktop`), in orange. A root goes **red** when it is already
+ingested or unrecognised. It clears the moment Ingest starts — it describes what is
+waiting, not what is stored.
+
+**Media is never copied.** No adapter reads it, so the upload route drops it before a byte
+is written and `stage()` excludes it from `copytree`. Attachment *metadata* lives in the
+export file, so nothing a message needs is lost. The modal reports the count skipped.
+
+**The spool line** (`spool contains 4 exports: email, linkedin, …`) is an inventory, not a
+warning. It used to read "N files are already ingested" in orange, which fired on every
+open because the spool still holds what you just ingested.
 
 | Gate | Scope | Default | Threshold |
 |---|---|---|---|
@@ -422,6 +442,14 @@ anything unknown. Outlook/O365 killed basic auth — the modal points at the `.p
 **A failed leg** halts with the error named and offers *Exclude and continue* or *Cancel*.
 Cancel does not roll back and does not need to — `MERGE` makes a re-run idempotent.
 
+**The log is summaries, not per-file.** One line per platform (`email: 1,204 msgs · 88
+attachments`), failures in red, one green verdict. A mailbox is 190 batches and a Messenger
+export is 29; a line each turned the log into a wall nobody read.
+
+**The canvas re-lays out after an ingest.** `onIngested` sets the same one-shot flag the
+Re-run layout button uses, so the solver runs on the new nodes. Without it the new nodes
+kept their seed positions and every edge to a bag stretched across the canvas.
+
 **No hard cap, and size is a warning.** A cap fires after the work is done, and thread count
 does not track cost. Measured: 200,000 messages writes in 42 s; point lookups stay at 2 ms,
 thread traversal at 15 ms. Only full scans grow (a window query went 27 ms at 50k to 153 ms
@@ -439,9 +467,12 @@ python -m relate_comms ingest --email hostinger --tz-offset -5
 python -m relate_comms ingest "C:/Users/me/Downloads/chat.zip" --tz-offset -5
 
 python -m sample_writer                  # fake downloads -> sample_writer/out/
+python -m sample_writer --seed 5         # wipe & write, seed 5
 python -m sample_writer add --seed 5     # write alongside out/, no clobber
+python -m sample_writer append           # same world, later END (delta testing)
+python -m sample_writer clean            # wipe out/
 
-python -m pytest tests -q        # 400 passed, 2 skipped
+python -m pytest tests -q        # 478 passed, 10 skipped, 1 known failure (canon camelCase)
 
 npm install && npm run build     # -> app/static/dist/app.js
 npm run watch                    # rebuild on save, no server
@@ -529,8 +560,8 @@ Ports in use: **8000 is taken** by another app — this project uses **8100**.
 | Topic | File |
 |---|---|
 | **Settled UI and visual facts** — glows, colour parsing, stylesheet order, the merged-node template, bags, and what fcose actually honours | [`UIVISUALS.md`](UIVISUALS.md) |
-| What is still moving in extraction, what was measured, what was declined | [`rework_extraction.md`](rework_extraction.md) |
-| The sample generator — every knob, the pools, the fuzz axes | [`sample_writer/README.md`](sample_writer/README.md) |
+| Extraction's closed record — retired stub, kept so old links resolve | [`rework_extraction.md`](rework_extraction.md) |
+| The sample generator — every knob, the pools, the fuzz axes, and the `append` cycle | [`sample_writer/README.md`](sample_writer/README.md) |
 | The test payloads, and how to wire a new export format | [`tests/README.md`](tests/README.md) |
 | The generator spec — every shape the app has a switch for | [`archive_docs/UNDESIRABLES.md`](archive_docs/UNDESIRABLES.md) |
 | Per-platform export shapes and traps | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) |

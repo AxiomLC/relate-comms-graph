@@ -168,12 +168,14 @@ Messenger 655 · Email 151 · SMS 139 · WhatsApp 108 · LinkedIn 93 · Outlook 
 correspondents merged across platforms**, 7 `POSSIBLY` edges.
 
 **Built:** seven file adapters + live IMAP, parallel parse → resolve → scrub → serialised
-write → verify → prune, 12-tool layer, FastAPI, and the UI.
+write → verify → prune, body-entity extraction (Place, Organization, Product), 12-tool
+layer, FastAPI, and the UI.
 
-**Not built:** body-entity extraction (`Person`, `Place`, `Organization`, `Product`),
-semantic search (Relate supports vector indexes; none exists in this store yet).
+**Not built:** semantic search (Relate supports vector indexes; none exists in this store
+yet).
 
-`pytest tests -q` → **400 passed, 2 skipped**.
+`pytest tests -q` → **478 passed, 10 skipped, 1 known failure** (`canon` camelCase split,
+pre-existing).
 
 ## Docs
 
