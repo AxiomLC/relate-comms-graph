@@ -15,7 +15,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from . import config, dialogue
+from . import config, dialogue, schedule
 from .world import Person, World
 
 
@@ -79,16 +79,30 @@ def _pick_distinct(world: World, platform: str, rng: random.Random,
     A real export cannot hold two 1:1 threads with the same title, and on WhatsApp the
     title IS the thread key — a repeated name silently overwrites a file. When the pool
     runs out the caller disambiguates the title instead.
+
+    **A multi-platform person is preferred until they have a thread on every platform
+    they are on.** `CORR_MULTI_PLATFORM` used to mean "this person is *present* on two
+    platforms", but presence alone never produced a merge: with ~300 people and ~25
+    threads per platform, the same person almost never got picked on both, so the knob
+    measured nothing (tested 0.08-0.22 — merges stayed flat at 13-19, pure noise).
+    Preferring them here is what makes the flag mean what its name says.
     """
     pool = [p for p in world.for_platform(platform) if p.name not in used]
     if not pool:
         pool = [p for p in world.people if p.name not in used]
-    if pool:
-        chosen = pool[rng.randrange(len(pool))]
-        used.add(chosen.name)
-        return chosen, True
-    chosen = world.people[rng.randrange(len(world.people))]
-    return chosen, False
+    if not pool:
+        chosen = world.people[rng.randrange(len(world.people))]
+        return chosen, False
+
+    # `world.covered` is filled by `plan()` as threads are made: name -> platforms that
+    # already have a thread for them. A multi-platform person who is still missing one
+    # of their platforms is preferred, which is what turns the flag into a real merge.
+    owed = [p for p in pool
+            if len(p.on) > 1 and not p.on.issubset(world.covered.get(p.name, set()))]
+    chosen = (owed or pool)[rng.randrange(len(owed or pool))]
+    used.add(chosen.name)
+    world.covered.setdefault(chosen.name, set()).add(platform)
+    return chosen, True
 
 
 def _ordinary_count(rng: random.Random) -> int:
@@ -467,7 +481,14 @@ def _thread_count(rng: random.Random) -> int:
     return max(1, round(rng.uniform(low, high)))
 
 
-def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False) -> Plan:
+def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False,
+         saved: dict | None = None) -> Plan:
+    """One platform's threads.
+
+    `saved` is the previous run's clock (`schedule.load`). When given, a thread that
+    already exists keeps its recorded times and only gains new ones — that is what makes
+    `append` produce a prefix rather than a re-roll.
+    """
     observations: list[str] = []
     threads: list[Thread] = []
 
@@ -521,19 +542,194 @@ def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False)
         if platform == "messenger":
             _messenger_folders(threads, rng)
 
+    # **`append` can add brand-new threads.** A week of real life starts conversations
+    # as well as continuing them, so `APPEND_NEW_THREAD_SHARE` of the existing thread
+    # count is added, drawn from people who are not already on this platform. They are
+    # ordinary threads, so every other knob (length, entities, mentions) applies.
+    if saved:
+        threads.extend(_append_new_threads(world, platform, rng, threads, used))
+
     for thread in threads:
         _fill_bodies(world, thread, rng)
 
     for thread in threads:
         if thread.silent:
             continue
-        # Message times are decided once, here, so every writer renders the same clock.
-        # They arrive in bursts with long silences between them (`world.message_times`),
-        # not spread evenly — an even spread made every thread look machine-generated.
-        thread.times = world.message_times(thread.start, thread.count, rng)
+        # **A recorded clock wins.** `append` passes the previous run's schedule in, so
+        # a thread that already exists keeps its exact times and only gains new ones.
+        # Without this the draw is re-rolled and the old week's keys change, which is
+        # what made an incremental ingest see every message as new.
+        recorded = schedule.times_for(saved, thread.key)
+        if recorded:
+            # **`append` grows a thread, it does not just re-time it.** A recorded
+            # thread keeps its exact times and gains new messages on top, drawn after
+            # the last recorded moment. Without the growth the second run would write
+            # the same messages again and the delta would have nothing to accept.
+            target = thread.count + _append_extra(recorded, rng)
+            thread.times = _extend(recorded, target, world, rng)
+            # The body list has to match: the writers index `times` by `count`.
+            if len(thread.times) > thread.count:
+                _grow_bodies(world, thread, len(thread.times), rng)
+            elif len(thread.times) < thread.count:
+                thread.count = len(thread.times)
+                del thread.lines[thread.count:]
+                del thread.group_lines[thread.count:]
+        else:
+            # Message times are decided once, here, so every writer renders the same
+            # clock. They arrive in bursts with long silences between them
+            # (`world.message_times`), not spread evenly — an even spread made every
+            # thread look machine-generated.
+            thread.times = world.message_times(thread.start, thread.count, rng)
+
+        # **The window can cut a thread short.** `message_times` drops anything past the
+        # world's end rather than clamping it, so a thread that planned 339 messages may
+        # come back with 156. The count and the body list have to shrink with it: the
+        # writers index `thread.times` by `thread.count`, and a mismatch sends them down
+        # their even-split fallback — the flat shape the burst schedule exists to avoid.
+        #
+        # **A mandated shape is exempt.** §12 requires exact counts (`EMAIL_BOUNDARY_KEPT`
+        # is 10, not "about 10"), and truncating one silently breaks the contract —
+        # measured: the boundary thread came back with 3. Those threads are short and
+        # their start is drawn from the same window, so they are not the ones cut; if one
+        # ever is, the contract check reports it rather than the count quietly changing.
+        if not thread.mark and len(thread.times) < thread.count:
+            thread.count = len(thread.times)
+            del thread.lines[thread.count:]
+            del thread.group_lines[thread.count:]
         thread.end = thread.times[-1] if thread.times else thread.start
 
     return Plan(platform=platform, threads=threads, observations=observations)
+
+
+def _append_new_threads(world: World, platform: str, rng: random.Random,
+                        existing: list[Thread], used: set[str]) -> list[Thread]:
+    """New conversations that started during the appended stretch.
+
+    `APPEND_NEW_THREAD_SHARE` of the existing thread count, rounded down. Each is an
+    ordinary thread with a fresh person, so it exercises the same code path as a build
+    — nothing about it is append-specific except that it did not exist before.
+
+    The start time is drawn from the world's window like any other thread, so a new
+    conversation can begin anywhere the world allows rather than being pinned to the
+    appended week.
+    """
+    share = config.APPEND_NEW_THREAD_SHARE
+    if share <= 0 or not existing:
+        return []
+    wanted = int(len(existing) * share)
+    made: list[Thread] = []
+    for index in range(wanted):
+        person, fresh = _pick_distinct(world, platform, rng, used)
+        title = person.name if fresh else f"{person.name} ({index + 1})"
+        made.append(Thread(
+            key=f"{platform}:{person.slug}-new-{index}",
+            title=title,
+            platform=platform,
+            is_group=False,
+            participants=[person],
+            count=min(config.ORDINARY_THREAD_MAX, _ordinary_count(rng)),
+            # **A new thread starts in the appended stretch.** Drawn from anywhere in
+            # the world it could begin in 2025, which is not a conversation that started
+            # during the new week — and its messages would then be older than the
+            # store's watermark, so the delta would drop them.
+            start=world.random_time(rng, after=world.append_from),
+        ))
+    return made
+
+
+def _append_extra(recorded: list[datetime], rng: random.Random) -> int:
+    """How many messages `append` adds to a thread that already exists.
+
+    **A flat dice roll, no staleness test.** A thread that went quiet 13 months ago can
+    still get a message — people do come back to old conversations, and inventing an
+    "alive" window meant a config knob that decided which threads were real. The only
+    question is whether this thread is one of the ones that grew.
+
+    `APPEND_THREAD_SHARE` is the share of existing threads that gain messages; each one
+    that does rolls `APPEND_MESSAGES` for how many. Everything else about the new
+    messages — length, entities, mentions — comes from the normal knobs, because they
+    are generated by the same dialogue path as the originals.
+    """
+    if not recorded:
+        return 0
+    if rng.random() >= config.APPEND_THREAD_SHARE:
+        return 0
+    low, high = config.APPEND_MESSAGES
+    return rng.randint(low, high)
+
+
+def _grow_bodies(world: World, thread: Thread, target: int,
+                 rng: random.Random) -> None:
+    """Extend a thread's body list to `target`, keeping the existing lines.
+
+    The new lines come from the same dialogue generator as the originals, so an
+    appended week reads like the rest of the thread rather than a different voice.
+    """
+    extra = target - thread.count
+    if extra <= 0:
+        return
+    if thread.is_group:
+        thread.group_lines = list(thread.group_lines) + dialogue.group_chatter(
+            world, thread.participants, extra, rng, owner_name=world.owner,
+            platform=thread.platform)
+    else:
+        thread.lines = list(thread.lines) + dialogue.turn_pairs(
+            world, thread.participants[0], extra, rng,
+            owner_replies=thread.owner_replies, platform=thread.platform)
+    thread.count = target
+
+
+def _extend(recorded: list[datetime], count: int, world: World,
+            rng: random.Random) -> list[datetime]:
+    """Keep a thread's recorded times and add any the new window allows.
+
+    Three cases, and the first is the one that matters:
+
+    * **The thread already has `count` messages** — return the record untouched. This is
+      the common case and the whole point: identical times mean identical keys, so the
+      delta skips them.
+    * **The record is longer than `count`** — truncate. A shorter window can plan fewer
+      messages than the record holds.
+    * **The record is shorter** — draw new moments in the APPENDED STRETCH, up to
+      `world.end`. This is what `append` adds.
+
+    **The new messages land in the new time, not right after the old last message.**
+    They used to crawl forward in burst gaps (20 seconds to 4 hours), which meant a
+    thread whose last message was 60 days before the old `END` would need thousands of
+    messages to reach the new week — so `append` added 1-4 messages that were still
+    older than the store's watermark and the delta dropped every one. Measured: an
+    append produced zero new rows in the graph.
+
+    `world.append_from` is the previous run's `END`; new moments are drawn between it
+    and the new `END`, so they are genuinely new. Inside that stretch the burst shape is
+    kept (minutes apart), so an appended week does not read as a different generator.
+    """
+    if len(recorded) >= count:
+        return recorded[:count]
+
+    moments = list(recorded)
+    # Where the new messages may start. Falls back to the last recorded moment when the
+    # caller did not supply a boundary (a plain build never reaches here).
+    floor = world.append_from or moments[-1]
+    if floor <= moments[-1]:
+        floor = moments[-1]
+    if floor >= world.end:
+        return moments
+
+    # A burst inside the new stretch: pick a start in the window, then step forward.
+    cursor = floor + timedelta(
+        seconds=rng.uniform(0, max(0.0, (world.end - floor).total_seconds())))
+    while len(moments) < count:
+        if cursor > world.end:
+            # The window is closed. Stop rather than clamp: a clamped tail would give
+            # several messages the same instant, and the caller shrinks the thread.
+            break
+        moments.append(cursor)
+        gap = (timedelta(seconds=rng.randint(20, 600))
+               if rng.random() < 0.55
+               else timedelta(minutes=rng.randint(10, 240)))
+        cursor = cursor + gap
+    return moments
 
 
 # ------------------------------------------------------------------ contract check

@@ -14758,9 +14758,9 @@
       // is what squeezes a bag's children toward its own centre — NOT `gravity`, which
       // pulls everything toward the middle of the screen and would crush all seven bags
       // into one ball. 1.0 is fcose's default; raise it if a big bag sprawls.
-      gravityCompound: 0.3,
+      gravityCompound: 3,
       // 0.5 = loose bag, 2.0 = tight ball
-      gravityRangeCompound: 0.15,
+      gravityRangeCompound: 0.5,
       // how far the compound pull reaches, in bag radii
       // Labels are part of a node's layout box. Without this a 120px label sits on a
       // 18px node and the solver has no idea it is there — which is most of the
@@ -16650,6 +16650,18 @@
             pendingLayout.current = false;
             runLayout(cy, themeRef.current, () => onLayoutDone?.({}));
           });
+        },
+        /**
+         * Lay out the NEXT data that arrives, with no fallback.
+         *
+         * `rerunLayout()` cannot be used after an ingest: its microtask fallback fires
+         * before the graph fetch resolves, so it would solve the OLD elements and clear
+         * the flag — leaving the new ones exactly as unlaid-out as before. This sets the
+         * flag and nothing else, so the elements effect is the only thing that consumes
+         * it, once the new nodes exist.
+         */
+        layoutOnNextData() {
+          pendingLayout.current = true;
         },
         zoomBy(factor) {
           const cy = cyRef.current;
@@ -19298,17 +19310,15 @@
               hint: "One per line. For a folder export (Telegram writes a directory) or a file too large to upload. Files are COPIED into spool/real/<platform>/, chosen by content, never by filename."
             }
           ),
-          preview && preview.duplicates > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
-            "div",
-            {
-              className: "pager-info",
-              style: { color: "var(--orange-text)", margin: "8px 0 4px" },
-              children: [
-                preview.duplicates,
-                " file(s) in the spool are already ingested and will be skipped."
-              ]
-            }
-          ),
+          preview && (preview.legs || []).length > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "pager-info", style: { margin: "8px 0 4px" }, children: [
+            "spool contains ",
+            (preview.legs || []).length,
+            " export",
+            (preview.legs || []).length === 1 ? "" : "s",
+            ":",
+            " ",
+            [...new Set((preview.legs || []).map((leg) => leg.platform || "unrecognised"))].sort().join(", ")
+          ] }),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "IMAP mailbox" }),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
             "For web email incl. Gmail. Outlook.com/O365 need a ",
@@ -19898,6 +19908,7 @@
     const onIngested = (0, import_react14.useCallback)(() => {
       api.stats().then(setStats).catch(() => {
       });
+      canvasRef.current?.layoutOnNextData?.();
       loadGraph(theme.filter.nodeTypes);
     }, [loadGraph, theme.filter.nodeTypes]);
     const onPlatformsChanged = (0, import_react14.useCallback)(

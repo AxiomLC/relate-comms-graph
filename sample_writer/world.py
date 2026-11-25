@@ -552,6 +552,15 @@ class World:
     # Rows the world could not satisfy — a fuzzy item no variant would apply to. Printed
     # by `fuzz_lines()`, never raised: one stubborn name is not a build failure.
     fuzz_misses: list[str] = field(default_factory=list)
+    # name -> platforms that already have a thread for that person. Filled by `plan()`
+    # and read by `_pick_distinct`, which prefers a multi-platform person who is still
+    # missing one of their platforms. Without it `CORR_MULTI_PLATFORM` only marked
+    # presence and never produced a merge.
+    covered: dict[str, set[str]] = field(default_factory=dict)
+    # The previous run's END, set by `append`. New messages and new threads are drawn
+    # between this and `end`, so they land in the newly-added stretch rather than
+    # anywhere in the world. `None` on a plain build.
+    append_from: datetime | None = None
 
     # --- construction ------------------------------------------------------------
 
@@ -897,10 +906,19 @@ class World:
         """
         return self.end.strftime(fmt)
 
-    def random_time(self, rng: random.Random | None = None) -> datetime:
+    def random_time(self, rng: random.Random | None = None,
+                    after: datetime | None = None) -> datetime:
+        """A moment in the world's window, used as a thread's start.
+
+        `after` restricts the draw to the stretch after that moment — `append` uses it
+        so a NEW thread begins in the newly-added time rather than anywhere in the
+        world. Without it an appended thread could start in 2025, which is not a
+        conversation that began during the new week.
+        """
         rng = rng or self.rng
-        span = (self.end - self.start).total_seconds()
-        moment = self.start + timedelta(seconds=rng.uniform(0, span))
+        low = after if after is not None and after > self.start else self.start
+        span = max(0.0, (self.end - low).total_seconds())
+        moment = low + timedelta(seconds=rng.uniform(0, span))
         # Working-ish hours bias; some night owls, because real exports have them.
         if rng.random() < 0.85:
             moment = moment.replace(
@@ -960,11 +978,15 @@ class World:
         while sum(sizes) < count:
             sizes[sizes.index(min(sizes))] += 1
 
-        span_days = max(1.0, float(config.TIMING_SPAN_DAYS))
-        # Never run past the world's end: 730 days from a 2025 start reached 2027, which
-        # put messages outside the export window the app is told about.
+        # **The window is the world's own calendar: `END - START`.**
+        #
+        # There used to be a `TIMING_SPAN_DAYS` cap here, which was a leftover that
+        # silently truncated the world: with START 2024-06-01 and a 730-day span,
+        # messages stopped at 2026-06-01 while END said 2026-11-25 — five months of
+        # empty calendar, and `append` had nothing to extend into. START and END are
+        # the definition of the world; nothing else may shorten it.
         room = max(0.0, (self.end - start).total_seconds() / 86400)
-        span_days = min(span_days, room) or 0.0
+        span_days = room
         # Burst starts, sorted, each somewhere in the window after `start`.
         offsets = sorted(rng.uniform(0, span_days) for _ in range(len(sizes))) if span_days else [0.0] * len(sizes)
         # A thread's first burst IS its start time, so the earliest is pinned to day 0.
@@ -987,10 +1009,23 @@ class World:
                            if rng.random() < 0.55
                            else timedelta(minutes=rng.randint(10, 240)))
                     cursor = cursor + gap
-                moments.append(min(cursor, self.end))
+                # **Append the drawn moment, never a clamped copy.**
+                #
+                # This used to be `min(cursor, self.end)`, which pinned every message
+                # past the window onto the same instant. Measured on seed 6: the
+                # 339-message SMS thread had **183 messages at one timestamp**, so the
+                # adapter's ordinal fallback minted 183 near-identical keys and the
+                # canvas showed a wall of same-second rows. A burst that runs off the
+                # end is now dropped by the filter below instead.
+                moments.append(cursor)
         # No re-stamping of `moments[0]` here: the first burst already begins at
         # `start`, and forcing it afterwards put a late hour in front of an earlier
         # one, which made some threads end before they began (span -1).
+        #
+        # **Drop, do not clamp.** Anything past the world's end is discarded, so the
+        # surviving moments are exactly as drawn and a shorter window yields a prefix
+        # rather than a pile-up. The caller shrinks the thread to match — see `plan()`.
+        moments = [moment for moment in moments if moment <= self.end]
         moments.sort()
         return moments[:count]
 

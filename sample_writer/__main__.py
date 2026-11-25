@@ -9,7 +9,9 @@ from collections.abc import Callable
 from pathlib import Path
 from random import Random
 
-from . import config, plan as plan_module, world as world_module
+from datetime import datetime
+
+from . import config, plan as plan_module, schedule, world as world_module
 from .uniquify import Filer
 from .writers import MODULES
 
@@ -23,7 +25,8 @@ def _make_world(seed: int | None, say: Callable[[str], None]):
 
 def build(seed: int | None = None, platforms: list[str] | None = None,
           clean: bool = True, huge: bool = False, filer: Filer | None = None,
-          log: Callable[[str], None] | None = None) -> list[str]:
+          log: Callable[[str], None] | None = None,
+          append: bool = False) -> list[str]:
     """Write the chosen platforms into `out/<platform>/`.
 
     `clean=True` (the default) wipes each chosen platform before writing — this replaces
@@ -34,7 +37,40 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
     started = time.perf_counter()
     filer = filer or Filer(False)
 
+    # **`append` reuses the previous run's clock.** The seed comes from the saved
+    # schedule, because that is the world `out/` already holds — extending a different
+    # seed would put two worlds in one folder.
+    #
+    # `--seed` is therefore a GUARD, not a selector: passing one that disagrees with the
+    # saved world is refused rather than ignored, so a typo cannot silently extend the
+    # wrong world. Omitting it is the normal case.
+    saved = schedule.load(config.OUT_DIR) if append else None
+    if append:
+        if saved is None:
+            say("append     no .schedule.json beside out/ — nothing to extend.\n"
+                "           run a plain build first (e.g. python -m sample_writer --seed 5)")
+            return []
+        saved_seed = int(saved.get("seed", config.SEED))
+        if seed is not None and seed != saved_seed:
+            say(f"append     REFUSED: out/ holds seed {saved_seed}, but --seed {seed} "
+                "was given.\n"
+                "           Append extends the world already in out/. To build a "
+                "different world,\n"
+                "           delete .schedule.json and run a plain build.")
+            return []
+        seed = saved_seed
+        say(f"append     extending seed={seed} from {saved.get('end', '?')}")
+
     world = _make_world(seed, say)
+    # **Where the new stretch begins.** Everything `append` adds — messages on existing
+    # threads, and brand-new threads — is drawn between the previous run's END and this
+    # run's END. Without it the additions landed anywhere in the world, so they were
+    # older than the store's watermark and the delta dropped every one.
+    if saved is not None:
+        try:
+            world.append_from = datetime.fromisoformat(str(saved.get("end")))
+        except (TypeError, ValueError):
+            world.append_from = None
     chosen = platforms or [p for p in config.PLATFORMS if p in MODULES]
 
     if clean:
@@ -48,7 +84,7 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
     for name in chosen:
         module = MODULES[name]
         rng = Random(f"{world.seed}:{name}:plan")
-        plan_obj = plan_module.plan(world, name, rng, huge=huge)
+        plan_obj = plan_module.plan(world, name, rng, huge=huge, saved=saved)
         plans.append(plan_obj)
 
         threads = len(plan_obj.threads)
@@ -78,6 +114,13 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
     notes = plan_module.assert_contract(plans, huge=huge, world=world)
     for note in notes:
         say(f"{'':<10} - {note}")
+
+    # The clock is written LAST, after the contract passed: a failed build must not
+    # leave a schedule that a later `append` would extend from.
+    clock = {t.key: t.times for plan_obj in plans for t in plan_obj.threads if t.times}
+    target = schedule.save(config.OUT_DIR, seed=world.seed, start=world.start,
+                           end=world.end, threads=clock)
+    say(f"{'':<10} clock -> {target.name} ({len(clock)} threads)")
 
     elapsed = time.perf_counter() - started
     say(f"done       {len(written)} files, "
@@ -111,7 +154,7 @@ def clean() -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sample_writer")
     parser.add_argument("command", nargs="?", default="build",
-                        choices=["build", "add", "clean", "capture", "knobs"])
+                        choices=["build", "add", "append", "clean", "capture", "knobs"])
     parser.add_argument("--seed", type=int, default=None,
                         help="world seed (default: config.SEED)")
     parser.add_argument("--default", action="store_true",
@@ -148,6 +191,11 @@ def main(argv: list[str] | None = None) -> int:
             # build is the wipe->write command; the default of `clean=True` replaces
             # the chosen platforms as a set.
             build(seed=args.seed, platforms=args.platforms, huge=args.huge, log=print)
+        elif args.command == "append":
+            # Same world, later clock. Reuses the saved schedule so the old week is
+            # byte-identical and only the new messages are new.
+            build(seed=args.seed, platforms=args.platforms, huge=args.huge, log=print,
+                  append=True)
         else:  # add
             add(seed=args.seed, platforms=args.platforms, huge=args.huge, log=print)
     except AssertionError as error:

@@ -776,17 +776,22 @@ export default function IngestModal({ onClose, onIngested }) {
         hint="One per line. For a folder export (Telegram writes a directory) or a file too large to upload. Files are COPIED into spool/real/<platform>/, chosen by content, never by filename."
       />
 
-      {/* What is already in the spool. No list: the user does not need to read their own
-          folder back. The ONLY thing worth showing is that something in there is already
-          ingested and will not be read again — flagged in orange, because silently
-          skipping a file is indistinguishable from a failed ingest. */}
-      {preview && preview.duplicates > 0 && (
-        <div
-          className="pager-info"
-          style={{ color: "var(--orange-text)", margin: "8px 0 4px" }}
-        >
-          {preview.duplicates} file(s) in the spool are already ingested and will be
-          skipped.
+      {/* What is already in the spool — a plain inventory, not a warning.
+
+          This used to say "N file(s) are already ingested and will be skipped" in
+          orange, which fired on every modal open because the spool still holds what
+          you just ingested. That reads as an error immediately after a successful run.
+
+          The duplicate warning belongs on the thing you DROP, not on the spool's
+          contents: the ready list above already marks a root red when it is already
+          ingested. Here we only say what is waiting. */}
+      {preview && (preview.legs || []).length > 0 && (
+        <div className="pager-info" style={{ margin: "8px 0 4px" }}>
+          spool contains {(preview.legs || []).length} export
+          {(preview.legs || []).length === 1 ? "" : "s"}:{" "}
+          {[...new Set((preview.legs || []).map((leg) => leg.platform || "unrecognised"))]
+            .sort()
+            .join(", ")}
         </div>
       )}
 
