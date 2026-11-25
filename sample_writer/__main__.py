@@ -35,16 +35,28 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
     started = time.perf_counter()
     filer = filer or Filer(False)
 
-    # **`append` reuses the previous run's clock.** The seed is taken from the saved
-    # schedule, not the flag, so a mismatched `--seed` cannot silently produce a
-    # different world on top of the old one.
+    # **`append` reuses the previous run's clock.** The seed comes from the saved
+    # schedule, because that is the world `out/` already holds — extending a different
+    # seed would put two worlds in one folder.
+    #
+    # `--seed` is therefore a GUARD, not a selector: passing one that disagrees with the
+    # saved world is refused rather than ignored, so a typo cannot silently extend the
+    # wrong world. Omitting it is the normal case.
     saved = schedule.load(config.OUT_DIR) if append else None
     if append:
         if saved is None:
-            say("append     no .schedule.json in out/ — nothing to extend; "
-                "run a plain build first")
+            say("append     no .schedule.json beside out/ — nothing to extend.\n"
+                "           run a plain build first (e.g. python -m sample_writer --seed 5)")
             return []
-        seed = int(saved.get("seed", seed or config.SEED))
+        saved_seed = int(saved.get("seed", config.SEED))
+        if seed is not None and seed != saved_seed:
+            say(f"append     REFUSED: out/ holds seed {saved_seed}, but --seed {seed} "
+                "was given.\n"
+                "           Append extends the world already in out/. To build a "
+                "different world,\n"
+                "           delete .schedule.json and run a plain build.")
+            return []
+        seed = saved_seed
         say(f"append     extending seed={seed} from {saved.get('end', '?')}")
 
     world = _make_world(seed, say)

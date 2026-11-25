@@ -13,8 +13,29 @@ Run:
     python -m sample_writer --seed 7         # wipe & write, seed 7
     python -m sample_writer --huge           # wipe & write + 1,600-message thread
     python -m sample_writer add --seed 5     # write alongside out/ (name (1) on clash)
+    python -m sample_writer append           # same world, later END (see below)
     python -m sample_writer clean            # wipe out/
     python -m sample_writer capture          # in/ -> schemas/*.json (shape refs)
+
+`append` — testing incremental ingest
+--------------------------------------
+The app's delta rule skips messages the store already holds, so re-ingesting the same
+export writes nothing. To prove it writes the genuinely new ones you need two exports of
+ONE world where the second is the first plus a week.
+
+    1. set END below to a past date (e.g. "2025-10-01")
+    2. python -m sample_writer --seed 5      # build, then ingest it
+    3. set END back to now
+    4. python -m sample_writer append        # same world, one more stretch
+    5. ingest again — most messages drop as already stored, only the new ones write
+
+The clock is saved to `.schedule.json` BESIDE `out/` (never inside it — `out/` is what
+gets staged). `append` reuses it, so every existing message keeps its exact timestamp
+and therefore its key. **The seed comes from that file, not from `--seed`**, so a
+mismatched flag cannot put a different world on top of the old one. To change the world,
+delete `.schedule.json` and run a plain build.
+
+Only a live thread grows (`APPEND_ALIVE_DAYS`); a thread that went quiet stays quiet.
 """
 from __future__ import annotations
 
