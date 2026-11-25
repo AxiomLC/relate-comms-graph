@@ -9,6 +9,8 @@ from collections.abc import Callable
 from pathlib import Path
 from random import Random
 
+from datetime import datetime
+
 from . import config, plan as plan_module, schedule, world as world_module
 from .uniquify import Filer
 from .writers import MODULES
@@ -60,6 +62,15 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
         say(f"append     extending seed={seed} from {saved.get('end', '?')}")
 
     world = _make_world(seed, say)
+    # **Where the new stretch begins.** Everything `append` adds — messages on existing
+    # threads, and brand-new threads — is drawn between the previous run's END and this
+    # run's END. Without it the additions landed anywhere in the world, so they were
+    # older than the store's watermark and the delta dropped every one.
+    if saved is not None:
+        try:
+            world.append_from = datetime.fromisoformat(str(saved.get("end")))
+        except (TypeError, ValueError):
+            world.append_from = None
     chosen = platforms or [p for p in config.PLATFORMS if p in MODULES]
 
     if clean:

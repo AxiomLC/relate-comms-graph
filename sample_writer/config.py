@@ -36,8 +36,8 @@ OWNER = "Mark Jones"            # the account holder; never fuzzed, never a Corr
 
 # The world's calendar. Quiet threads need to be 3+ years older than the newest message
 # (§10), so the window is deliberately longer than the data it carries.
-START = "2024-06-01"
-END = "2026-09-25"              # set to a past date, then `append`, to test delta ingest
+START = "2025-06-01"
+END = "2026-11-25"              # set to a past date, then `append`, to test delta ingest
 
 # Cast size. Must exceed each platform's thread count, or `_pick_distinct` falls back to
 # people who are not on that platform and CORR_MULTI_PLATFORM stops meaning anything.
@@ -94,7 +94,10 @@ ORDINARY_THREAD_MAX = 60
 
 # Messages arrive in bursts with long silences between them, never evenly spaced.
 TIMING_BURSTS = (1, 5)          # (min, max) bursts of activity in one thread
-TIMING_SPAN_DAYS = 730          # how far after START the last burst may land
+# There is no span knob. START and END define the world; messages spread across the
+# whole of it. A cap here used to truncate the calendar silently — with START 2024-06-01
+# and a 730-day span, messages stopped at 2026-06-01 while END said 2026-11-25, so the
+# last five months were empty and `append` had nothing to extend into.
 
 # 6. MANDATED SHAPES -------------------------------------------------------
 

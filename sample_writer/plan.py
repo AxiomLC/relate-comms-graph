@@ -628,7 +628,11 @@ def _append_new_threads(world: World, platform: str, rng: random.Random,
             is_group=False,
             participants=[person],
             count=min(config.ORDINARY_THREAD_MAX, _ordinary_count(rng)),
-            start=world.random_time(rng),
+            # **A new thread starts in the appended stretch.** Drawn from anywhere in
+            # the world it could begin in 2025, which is not a conversation that started
+            # during the new week — and its messages would then be older than the
+            # store's watermark, so the delta would drop them.
+            start=world.random_time(rng, after=world.append_from),
         ))
     return made
 
@@ -686,28 +690,45 @@ def _extend(recorded: list[datetime], count: int, world: World,
       delta skips them.
     * **The record is longer than `count`** — truncate. A shorter window can plan fewer
       messages than the record holds.
-    * **The record is shorter** — draw new moments after the last recorded one, up to
+    * **The record is shorter** — draw new moments in the APPENDED STRETCH, up to
       `world.end`. This is what `append` adds.
 
-    New moments are drawn from the same burst shape as `message_times` (minutes apart
-    inside a burst, hours or days between), so an appended week does not read as a
-    different generator.
+    **The new messages land in the new time, not right after the old last message.**
+    They used to crawl forward in burst gaps (20 seconds to 4 hours), which meant a
+    thread whose last message was 60 days before the old `END` would need thousands of
+    messages to reach the new week — so `append` added 1-4 messages that were still
+    older than the store's watermark and the delta dropped every one. Measured: an
+    append produced zero new rows in the graph.
+
+    `world.append_from` is the previous run's `END`; new moments are drawn between it
+    and the new `END`, so they are genuinely new. Inside that stretch the burst shape is
+    kept (minutes apart), so an appended week does not read as a different generator.
     """
     if len(recorded) >= count:
         return recorded[:count]
 
     moments = list(recorded)
-    cursor = moments[-1]
+    # Where the new messages may start. Falls back to the last recorded moment when the
+    # caller did not supply a boundary (a plain build never reaches here).
+    floor = world.append_from or moments[-1]
+    if floor <= moments[-1]:
+        floor = moments[-1]
+    if floor >= world.end:
+        return moments
+
+    # A burst inside the new stretch: pick a start in the window, then step forward.
+    cursor = floor + timedelta(
+        seconds=rng.uniform(0, max(0.0, (world.end - floor).total_seconds())))
     while len(moments) < count:
-        gap = (timedelta(seconds=rng.randint(20, 600))
-               if rng.random() < 0.55
-               else timedelta(minutes=rng.randint(10, 240)))
-        cursor = cursor + gap
         if cursor > world.end:
             # The window is closed. Stop rather than clamp: a clamped tail would give
             # several messages the same instant, and the caller shrinks the thread.
             break
         moments.append(cursor)
+        gap = (timedelta(seconds=rng.randint(20, 600))
+               if rng.random() < 0.55
+               else timedelta(minutes=rng.randint(10, 240)))
+        cursor = cursor + gap
     return moments
 
 
