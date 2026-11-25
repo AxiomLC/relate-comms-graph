@@ -12,17 +12,52 @@ import Modal, { Check, TextField } from "./Modal.jsx";
  * An unrecognised file is called out because it is the one thing the user may need to
  * act on; the names themselves are in INGEST LOG.
  */
-function stagedSummary(items) {
-  const byPlatform = new Map();
+/**
+ * `C:\Users\me\repo\sample_writer\out\telegram\Telegram Desktop`
+ *   -> `C:…\out\telegram\Telegram Desktop`
+ *
+ * A forked repo lives somewhere else, so the absolute prefix is noise: the last two
+ * segments are what identify the export, and the drive letter is what says it is a
+ * real path. Two segments are kept because `email_eml` alone is ambiguous while
+ * `out\email\email_eml` is not.
+ */
+function shortenPath(full) {
+  const parts = String(full || "").split(/[\\/]+/).filter(Boolean);
+  if (parts.length <= 3) return parts.join("\\");
+  const drive = parts[0].length === 2 && parts[0][1] === ":" ? parts[0] : "";
+  const tail = parts.slice(-2).join("\\");
+  return drive ? `${drive}…\\${tail}` : `…\\${tail}`;
+}
+
+/**
+ * One line per thing the user picked — the top folder of the selection, never its
+ * contents.
+ *
+ * The root is derived from the relative path the browser sent (`email_eml/Inbox/x.eml`
+ * -> `email_eml`), so this does not depend on the server's grouping. A folder pick is
+ * one line however many files it holds; a multi-file pick is one line per file.
+ *
+ * `duplicate` is the spool dedup: a root whose files are all already ingested is
+ * shown in red, because it will be skipped and silence reads as failure.
+ */
+function stagedRoots(items) {
+  const roots = new Map();
   for (const item of items) {
-    const key = item.platform || "unrecognised";
-    byPlatform.set(key, (byPlatform.get(key) || 0) + 1);
+    const rel = String(item.name || "").split(/[\\/]+/).filter(Boolean);
+    const top = rel.length > 1 ? rel[0] : "";
+    const key = top || item.path || item.name;
+    const row = roots.get(key) || {
+      label: top || shortenPath(item.path || item.name),
+      count: 0,
+      recognised: true,
+      duplicate: true,
+    };
+    row.count += 1;
+    row.recognised = row.recognised && item.recognised !== false;
+    row.duplicate = row.duplicate && item.duplicate === true;
+    roots.set(key, row);
   }
-  const parts = [...byPlatform.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([platform, count]) => (count > 1 ? `${platform} ×${count}` : platform));
-  const total = items.length;
-  return `${total} file${total === 1 ? "" : "s"} ready · ${parts.join(", ")}`;
+  return [...roots.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
 /**
@@ -114,6 +149,7 @@ export default function IngestModal({ onClose, onIngested }) {
   const [staged, setStaged] = useState([]);
   const dropRef = useRef(null);
   const fileRef = useRef(null);
+  const folderRef = useRef(null);
   // `uppie` owns the dropzone's listeners, so the callback it calls lives in a ref:
   // the library binds once, while React re-renders with fresh state on every keystroke.
   const dropHandlerRef = useRef(null);
@@ -197,6 +233,14 @@ export default function IngestModal({ onClose, onIngested }) {
       setStaged((prev) => [...prev, ...(result.staged || [])]);
       setPicked([]);
       if (fileRef.current) fileRef.current.value = "";
+      if (folderRef.current) folderRef.current.value = "";
+      if (result.skipped_media) {
+        note(
+          "info",
+          `${result.skipped_media} media file(s) skipped — this app reads text only`,
+        );
+      }
+      refreshPreview();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -241,11 +285,10 @@ export default function IngestModal({ onClose, onIngested }) {
       const staged = result.staged || [];
       setStaged((prev) => [...prev, ...staged]);
       note("ok", `staged ${staged.length} file(s)`);
-      for (const item of staged) {
+      if (result.skipped_media) {
         note(
-          item.recognised ? "ok" : "warn",
-          `${item.platform}: ${item.name}` +
-            (item.recognised ? "" : " · not recognised, kept"),
+          "info",
+          `${result.skipped_media} media file(s) skipped — this app reads text only`,
         );
       }
       refreshPreview();
@@ -326,6 +369,10 @@ export default function IngestModal({ onClose, onIngested }) {
     setError(null);
     setReport(null);
     setHalted(null);
+    // The "ready" list has done its job the moment the run starts: what is being read
+    // is now the spool, not this list.
+    setStaged([]);
+    setPicked([]);
     note("info", "Ingesting…");
     try {
       const months = WINDOWS.find((w) => w.key === window_)?.months ?? null;
@@ -348,19 +395,28 @@ export default function IngestModal({ onClose, onIngested }) {
       const failed = (result.batches || []).filter(
         (batch) => batch.error && !skip.has(batch.platform),
       );
+      // **Summaries, one line per platform.** A mailbox is 190 batches and a Messenger
+      // export is 29; a line each turned the log into a wall nobody reads. What the
+      // user needs is "email: 1,204 msgs", then the failures, then one verdict.
+      const byPlatform = new Map();
       for (const batch of result.batches || []) {
-        if (batch.error) {
-          note("warn", `${batch.platform}: ${batch.error}`);
-        } else {
-          note(
-            "ok",
-            `${batch.platform}: ${batch.messages} msgs · ${batch.attachments} attachments` +
-              (batch.delta_dropped
-                ? ` · ${batch.delta_dropped} already stored of ${batch.read} read`
-                : "") +
-              (batch.verified ? " · verified" : " · NOT verified"),
-          );
-        }
+        if (batch.error) continue;
+        const key = batch.platform || "unrecognised";
+        const row = byPlatform.get(key) || { messages: 0, attachments: 0, files: 0 };
+        row.messages += batch.messages || 0;
+        row.attachments += batch.attachments || 0;
+        row.files += 1;
+        byPlatform.set(key, row);
+      }
+      for (const [platform, row] of [...byPlatform.entries()].sort()) {
+        note(
+          "ok",
+          `${platform}: ${row.messages} msgs · ${row.attachments} attachments` +
+            (row.files > 1 ? ` · ${row.files} files` : ""),
+        );
+      }
+      for (const batch of failed) {
+        note("fail", `${batch.platform}: ${batch.error}`);
       }
 
       setReport(result);
@@ -371,19 +427,14 @@ export default function IngestModal({ onClose, onIngested }) {
         // Keep the staged list: the user is about to retry without those legs, and an
         // empty list would misrepresent what is still waiting in the spool.
         setHalted({ failed, skip });
-        note("warn", `${failed.length} leg(s) failed — choose to exclude and continue, or cancel`);
+        note("fail", `${failed.length} leg(s) failed — exclude and continue, or cancel`);
       } else {
-        // The run is done, so the drop-in list has served its purpose. Leaving it
-        // populated made the next ingest look like it would re-read files it had
-        // already taken, and hid the fact that the spool — not this list — is what
-        // the next run reads. "Already in the spool" below is the live view.
-        setStaged([]);
-        setPicked([]);
-        note("ok", "done");
+        const total = [...byPlatform.values()].reduce((sum, row) => sum + row.messages, 0);
+        note("done", `all ingested · ${total} messages`);
       }
     } catch (err) {
       setError(err.message);
-      note("warn", err.message);
+      note("fail", err.message);
     } finally {
       setBusy(false);
     }
@@ -619,6 +670,24 @@ export default function IngestModal({ onClose, onIngested }) {
           stageFiles(files);
         }}
       />
+      {/* A folder pick. `webkitdirectory` is the only way a browser will hand over a
+          whole tree from a dialog; without it, `Telegram Desktop/` and `email_eml/`
+          could only ever arrive by drag and drop. Each file carries
+          `webkitRelativePath`, which `api.upload` sends as the multipart filename so
+          the server can rebuild the tree. */}
+      <input
+        ref={folderRef}
+        type="file"
+        multiple
+        webkitdirectory=""
+        directory=""
+        style={{ display: "none" }}
+        onChange={(event) => {
+          const files = Array.from(event.target.files || []);
+          event.target.value = "";
+          stageFiles(files);
+        }}
+      />
       {/* The drop target. `uppie` (the effect above) owns its drag and drop listeners,
           including recursive folder traversal — the browser reports a dropped folder as
           zero files, so a plain `dataTransfer.files` handler silently does nothing for
@@ -652,9 +721,12 @@ export default function IngestModal({ onClose, onIngested }) {
         <button className="ghost" onClick={() => fileRef.current?.click()}>
           Choose files
         </button>
+        <button className="ghost" onClick={() => folderRef.current?.click()}>
+          Choose folder
+        </button>
         <span className="pager-info" style={{ alignSelf: "center" }}>
           {writeEnabled
-            ? "folders: drag one onto the box, or paste its path below"
+            ? "or drag one onto the box, or paste its path below"
             : "tick Ingest Ready below to enable staging"}
         </span>
       </div>
@@ -670,13 +742,29 @@ export default function IngestModal({ onClose, onIngested }) {
 
       {stagedCount > 0 && (
         <div style={{ marginTop: 8 }}>
-          {/* **One line, never a file list.** An email drop is ~190 `.eml` files and a
-              `.pst` or a Gmail takeout is thousands; listing them pushed the rest of the
-              modal off-screen and told the user nothing they could act on. What matters
-              is how many, of which platform, and whether anything was unrecognised.
-              The per-file detail is still in INGEST LOG, which is where a failure is
-              read. */}
-          <h2 className="section">{stagedSummary(staged)}</h2>
+          {/* **One line per picked root, never per file.** This is the "loaded and ready"
+              list: it says what is waiting, by the folder the user actually chose, and
+              it is cleared the moment Ingest starts. Per-file detail belongs in the
+              report below, not here. */}
+          {stagedRoots(staged).map((row) => (
+            <div
+              key={row.label}
+              className="mono"
+              style={{
+                color:
+                  !row.recognised || row.duplicate
+                    ? "var(--red-text)"
+                    : "var(--orange-text)",
+                padding: "2px 0",
+                wordBreak: "break-all",
+              }}
+            >
+              {row.label}
+              {row.count > 1 ? `  (${row.count} files)` : ""}
+              {!row.recognised ? "  · not recognised" : ""}
+              {row.recognised && row.duplicate ? "  · already ingested, will be skipped" : ""}
+            </div>
+          ))}
         </div>
       )}
 
@@ -703,42 +791,46 @@ export default function IngestModal({ onClose, onIngested }) {
       )}
 
       {/* --------------------------------------------------------------- IMAP */}
+      {/* Two columns, because four stacked fields cost a third of the modal for a leg
+          most runs do not use. The descriptor is one line: what this is for, and the
+          one caveat that changes what the user does next. */}
       <h2 className="section">IMAP mailbox</h2>
       <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
-        For a live mailbox. A <code>.pst</code> is a file — drop it above instead.
-        Outlook.com and O365 no longer allow password sign-in over IMAP; export a{" "}
-        <code>.pst</code> for those.
+        For web email incl. Gmail. Outlook.com/O365 need a <code>.pst</code> — drop it
+        above.
       </div>
-      <TextField
-        label="email"
-        value={imapEmail}
-        onChange={(value) => {
-          setImapEmail(value);
-          if (!imapHost) setImapHost(hostFor(value));
-        }}
-        placeholder="you@yourdomain.com"
-        autoComplete="off"
-      />
-      <TextField
-        label="password"
-        type="password"
-        value={imapPassword}
-        onChange={setImapPassword}
-        placeholder="app password for Gmail, Yahoo, iCloud"
-        autoComplete="new-password"
-      />
-      <TextField
-        label="host"
-        value={imapHost}
-        onChange={setImapHost}
-        placeholder="filled from the address; edit if wrong"
-      />
-      <TextField
-        label="port"
-        value={imapPort}
-        onChange={setImapPort}
-        placeholder="993"
-      />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
+        <TextField
+          label="email"
+          value={imapEmail}
+          onChange={(value) => {
+            setImapEmail(value);
+            if (!imapHost) setImapHost(hostFor(value));
+          }}
+          placeholder="you@yourdomain.com"
+          autoComplete="off"
+        />
+        <TextField
+          label="password"
+          type="password"
+          value={imapPassword}
+          onChange={setImapPassword}
+          placeholder="app password"
+          autoComplete="new-password"
+        />
+        <TextField
+          label="host"
+          value={imapHost}
+          onChange={setImapHost}
+          placeholder="filled from the address"
+        />
+        <TextField
+          label="port"
+          value={imapPort}
+          onChange={setImapPort}
+          placeholder="993"
+        />
+      </div>
       <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
         Local app, manual entry. Never read by MCP or AI. Writes to <code>./.env</code>.
       </div>
@@ -973,11 +1065,16 @@ export default function IngestModal({ onClose, onIngested }) {
               className="result-meta"
               style={{
                 color:
-                  entry.level === "warn"
-                    ? "var(--orange-text)"
-                    : entry.level === "ok"
-                      ? "var(--text)"
-                      : "var(--muted)",
+                  entry.level === "fail"
+                    ? "var(--red-text)"
+                    : entry.level === "done"
+                      ? "var(--green-text)"
+                      : entry.level === "warn"
+                        ? "var(--orange-text)"
+                        : entry.level === "ok"
+                          ? "var(--text)"
+                          : "var(--muted)",
+                fontWeight: entry.level === "done" ? 600 : undefined,
                 padding: "2px 0",
               }}
             >

@@ -62,6 +62,32 @@ _CONSIDER_SUFFIXES = (_JSON_SUFFIXES | _ARCHIVE_SUFFIXES | _TEXT_SUFFIXES
                       | _MAIL_SUFFIXES | _EML_SUFFIXES | _XML_SUFFIXES
                       | _HTML_SUFFIXES)
 
+# Media and attachment payloads. **No adapter reads these** (§6), so they are never
+# copied into the spool: a Telegram export is `result.json` plus a `photos/` tree that
+# is the bulk of the download, and the attachment metadata a message needs is in the
+# export file itself. Dropping the bytes loses no message and no attachment reference.
+MEDIA_SUFFIXES = frozenset({
+    # images
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic",
+    ".heif", ".avif", ".svg", ".ico",
+    # video
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".3gp", ".wmv", ".flv",
+    # audio and voice notes
+    ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".flac", ".amr", ".wma",
+    ".oga", ".tgs",
+    # attached documents
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods",
+    ".rtf", ".epub", ".vcf", ".ics",
+    # attached archives (`.zip` is NOT here — it is an export container)
+    ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz",
+})
+
+
+def _ignore_media(directory: str, names: list[str]) -> set[str]:
+    """`shutil.copytree(ignore=...)` — skip media at any depth."""
+    return {name for name in names
+            if Path(name).suffix.lower() in MEDIA_SUFFIXES}
+
 # Parse functions by platform. Adding an adapter means adding one line here.
 # Parsers that read wall-clock times with no offset. Only these accept
 # `tz_offset_hours`; passing it to others (LinkedIn states UTC) is a TypeError, which
@@ -1497,11 +1523,14 @@ def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> 
             target_root.mkdir(parents=True, exist_ok=True)
 
             if item.is_dir():
-                # Copy the recognised folder tree intact, with its own name as the
-                # one level kept — `email_eml/` and `messenger_dir/` both rely on it.
+                # Copy the recognised folder tree, with its own name as the one level
+                # kept — `email_eml/` and `messenger_dir/` both rely on it. Media is
+                # excluded: no adapter reads it, and a Telegram `photos/` tree is the
+                # bulk of a multi-GB export. The attachment metadata is in the export
+                # file, so nothing a message needs is lost.
                 destination = target_root / item.name
                 if not destination.exists():
-                    shutil.copytree(item, destination)
+                    shutil.copytree(item, destination, ignore=_ignore_media)
                 staged.append(destination)
                 continue
 

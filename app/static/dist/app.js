@@ -14676,7 +14676,9 @@
      */
     upload: (files, { writeEnabled = false } = {}) => {
       const body = new FormData();
-      for (const file of files) body.append("files", file, file.name);
+      for (const file of files) {
+        body.append("files", file, file.webkitRelativePath || file.name);
+      }
       return api.uploadForm(body, { writeEnabled });
     },
     /**
@@ -14860,9 +14862,9 @@
       // (opacity 0.3), so it is a soft band rather than a hard line — see `visual` for
       // why a real glow is not possible.
       edge: [
-        { min: 80, width: 4, opacity: 0.3 },
-        { min: 12, width: 0.4, opacity: 1 },
-        { min: 0, width: 0.2, opacity: 1 }
+        { min: 60, width: 4, opacity: 0.3 },
+        { min: 12, width: 0.7, opacity: 1 },
+        { min: 0, width: 0.4, opacity: 1 }
       ]
     },
     /* ------------------------------------------------------------------- visual */
@@ -18761,15 +18763,31 @@
 
   // app/ui/src/components/modals/IngestModal.jsx
   var import_jsx_runtime8 = __toESM(require_jsx_runtime(), 1);
-  function stagedSummary(items) {
-    const byPlatform = /* @__PURE__ */ new Map();
+  function shortenPath(full) {
+    const parts = String(full || "").split(/[\\/]+/).filter(Boolean);
+    if (parts.length <= 3) return parts.join("\\");
+    const drive = parts[0].length === 2 && parts[0][1] === ":" ? parts[0] : "";
+    const tail = parts.slice(-2).join("\\");
+    return drive ? `${drive}\u2026\\${tail}` : `\u2026\\${tail}`;
+  }
+  function stagedRoots(items) {
+    const roots = /* @__PURE__ */ new Map();
     for (const item of items) {
-      const key = item.platform || "unrecognised";
-      byPlatform.set(key, (byPlatform.get(key) || 0) + 1);
+      const rel = String(item.name || "").split(/[\\/]+/).filter(Boolean);
+      const top = rel.length > 1 ? rel[0] : "";
+      const key = top || item.path || item.name;
+      const row = roots.get(key) || {
+        label: top || shortenPath(item.path || item.name),
+        count: 0,
+        recognised: true,
+        duplicate: true
+      };
+      row.count += 1;
+      row.recognised = row.recognised && item.recognised !== false;
+      row.duplicate = row.duplicate && item.duplicate === true;
+      roots.set(key, row);
     }
-    const parts = [...byPlatform.entries()].sort((a, b) => b[1] - a[1]).map(([platform, count]) => count > 1 ? `${platform} \xD7${count}` : platform);
-    const total = items.length;
-    return `${total} file${total === 1 ? "" : "s"} ready \xB7 ${parts.join(", ")}`;
+    return [...roots.values()].sort((a, b) => a.label.localeCompare(b.label));
   }
   var WINDOWS = [
     { key: "3m", label: "3 months", months: 3 },
@@ -18833,6 +18851,7 @@
     const [staged, setStaged] = (0, import_react12.useState)([]);
     const dropRef = (0, import_react12.useRef)(null);
     const fileRef = (0, import_react12.useRef)(null);
+    const folderRef = (0, import_react12.useRef)(null);
     const dropHandlerRef = (0, import_react12.useRef)(null);
     const [imapEmail, setImapEmail] = (0, import_react12.useState)("");
     const [imapPassword, setImapPassword] = (0, import_react12.useState)("");
@@ -18886,6 +18905,14 @@
         setStaged((prev) => [...prev, ...result.staged || []]);
         setPicked([]);
         if (fileRef.current) fileRef.current.value = "";
+        if (folderRef.current) folderRef.current.value = "";
+        if (result.skipped_media) {
+          note(
+            "info",
+            `${result.skipped_media} media file(s) skipped \u2014 this app reads text only`
+          );
+        }
+        refreshPreview();
       } catch (err) {
         setError(err.message);
       } finally {
@@ -18914,10 +18941,10 @@
         const staged2 = result.staged || [];
         setStaged((prev) => [...prev, ...staged2]);
         note("ok", `staged ${staged2.length} file(s)`);
-        for (const item of staged2) {
+        if (result.skipped_media) {
           note(
-            item.recognised ? "ok" : "warn",
-            `${item.platform}: ${item.name}` + (item.recognised ? "" : " \xB7 not recognised, kept")
+            "info",
+            `${result.skipped_media} media file(s) skipped \u2014 this app reads text only`
           );
         }
         refreshPreview();
@@ -18975,6 +19002,8 @@
       setError(null);
       setReport(null);
       setHalted(null);
+      setStaged([]);
+      setPicked([]);
       note("info", "Ingesting\u2026");
       try {
         const months = WINDOWS.find((w) => w.key === window_)?.months ?? null;
@@ -18994,30 +19023,38 @@
         const failed = (result.batches || []).filter(
           (batch) => batch.error && !skip.has(batch.platform)
         );
+        const byPlatform = /* @__PURE__ */ new Map();
         for (const batch of result.batches || []) {
-          if (batch.error) {
-            note("warn", `${batch.platform}: ${batch.error}`);
-          } else {
-            note(
-              "ok",
-              `${batch.platform}: ${batch.messages} msgs \xB7 ${batch.attachments} attachments` + (batch.delta_dropped ? ` \xB7 ${batch.delta_dropped} already stored of ${batch.read} read` : "") + (batch.verified ? " \xB7 verified" : " \xB7 NOT verified")
-            );
-          }
+          if (batch.error) continue;
+          const key = batch.platform || "unrecognised";
+          const row = byPlatform.get(key) || { messages: 0, attachments: 0, files: 0 };
+          row.messages += batch.messages || 0;
+          row.attachments += batch.attachments || 0;
+          row.files += 1;
+          byPlatform.set(key, row);
+        }
+        for (const [platform, row] of [...byPlatform.entries()].sort()) {
+          note(
+            "ok",
+            `${platform}: ${row.messages} msgs \xB7 ${row.attachments} attachments` + (row.files > 1 ? ` \xB7 ${row.files} files` : "")
+          );
+        }
+        for (const batch of failed) {
+          note("fail", `${batch.platform}: ${batch.error}`);
         }
         setReport(result);
         onIngested?.(result);
         refreshPreview();
         if (failed.length) {
           setHalted({ failed, skip });
-          note("warn", `${failed.length} leg(s) failed \u2014 choose to exclude and continue, or cancel`);
+          note("fail", `${failed.length} leg(s) failed \u2014 exclude and continue, or cancel`);
         } else {
-          setStaged([]);
-          setPicked([]);
-          note("ok", "done");
+          const total = [...byPlatform.values()].reduce((sum, row) => sum + row.messages, 0);
+          note("done", `all ingested \xB7 ${total} messages`);
         }
       } catch (err) {
         setError(err.message);
-        note("warn", err.message);
+        note("fail", err.message);
       } finally {
         setBusy(false);
       }
@@ -19176,6 +19213,22 @@
               }
             }
           ),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
+            "input",
+            {
+              ref: folderRef,
+              type: "file",
+              multiple: true,
+              webkitdirectory: "",
+              directory: "",
+              style: { display: "none" },
+              onChange: (event) => {
+                const files = Array.from(event.target.files || []);
+                event.target.value = "";
+                stageFiles(files);
+              }
+            }
+          ),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
             "div",
             {
@@ -19206,7 +19259,8 @@
           ),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { display: "flex", gap: 8, marginTop: 8 }, children: [
             /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => fileRef.current?.click(), children: "Choose files" }),
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { alignSelf: "center" }, children: writeEnabled ? "folders: drag one onto the box, or paste its path below" : "tick Ingest Ready below to enable staging" })
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("button", { className: "ghost", onClick: () => folderRef.current?.click(), children: "Choose folder" }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "pager-info", style: { alignSelf: "center" }, children: writeEnabled ? "or drag one onto the box, or paste its path below" : "tick Ingest Ready below to enable staging" })
           ] }),
           dropNotice && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             "div",
@@ -19216,7 +19270,24 @@
               children: dropNotice
             }
           ),
-          stagedCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { marginTop: 8 }, children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: stagedSummary(staged) }) }),
+          stagedCount > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { style: { marginTop: 8 }, children: stagedRoots(staged).map((row) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
+            "div",
+            {
+              className: "mono",
+              style: {
+                color: !row.recognised || row.duplicate ? "var(--red-text)" : "var(--orange-text)",
+                padding: "2px 0",
+                wordBreak: "break-all"
+              },
+              children: [
+                row.label,
+                row.count > 1 ? `  (${row.count} files)` : "",
+                !row.recognised ? "  \xB7 not recognised" : "",
+                row.recognised && row.duplicate ? "  \xB7 already ingested, will be skipped" : ""
+              ]
+            },
+            row.label
+          )) }),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
             TextField,
             {
@@ -19240,55 +19311,54 @@
           ),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "IMAP mailbox" }),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
-            "For a live mailbox. A ",
+            "For web email incl. Gmail. Outlook.com/O365 need a ",
             /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: ".pst" }),
-            " is a file \u2014 drop it above instead. Outlook.com and O365 no longer allow password sign-in over IMAP; export a",
-            " ",
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: ".pst" }),
-            " for those."
+            " \u2014 drop it above."
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
-            TextField,
-            {
-              label: "email",
-              value: imapEmail,
-              onChange: (value) => {
-                setImapEmail(value);
-                if (!imapHost) setImapHost(hostFor(value));
-              },
-              placeholder: "you@yourdomain.com",
-              autoComplete: "off"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
-            TextField,
-            {
-              label: "password",
-              type: "password",
-              value: imapPassword,
-              onChange: setImapPassword,
-              placeholder: "app password for Gmail, Yahoo, iCloud",
-              autoComplete: "new-password"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
-            TextField,
-            {
-              label: "host",
-              value: imapHost,
-              onChange: setImapHost,
-              placeholder: "filled from the address; edit if wrong"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
-            TextField,
-            {
-              label: "port",
-              value: imapPort,
-              onChange: setImapPort,
-              placeholder: "993"
-            }
-          ),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
+              TextField,
+              {
+                label: "email",
+                value: imapEmail,
+                onChange: (value) => {
+                  setImapEmail(value);
+                  if (!imapHost) setImapHost(hostFor(value));
+                },
+                placeholder: "you@yourdomain.com",
+                autoComplete: "off"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
+              TextField,
+              {
+                label: "password",
+                type: "password",
+                value: imapPassword,
+                onChange: setImapPassword,
+                placeholder: "app password",
+                autoComplete: "new-password"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
+              TextField,
+              {
+                label: "host",
+                value: imapHost,
+                onChange: setImapHost,
+                placeholder: "filled from the address"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
+              TextField,
+              {
+                label: "port",
+                value: imapPort,
+                onChange: setImapPort,
+                placeholder: "993"
+              }
+            )
+          ] }),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
             "Local app, manual entry. Never read by MCP or AI. Writes to ",
             /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("code", { children: "./.env" }),
@@ -19482,7 +19552,8 @@
             {
               className: "result-meta",
               style: {
-                color: entry.level === "warn" ? "var(--orange-text)" : entry.level === "ok" ? "var(--text)" : "var(--muted)",
+                color: entry.level === "fail" ? "var(--red-text)" : entry.level === "done" ? "var(--green-text)" : entry.level === "warn" ? "var(--orange-text)" : entry.level === "ok" ? "var(--text)" : "var(--muted)",
+                fontWeight: entry.level === "done" ? 600 : void 0,
                 padding: "2px 0"
               },
               children: [

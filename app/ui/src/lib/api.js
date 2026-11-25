@@ -138,7 +138,13 @@ export const api = {
    */
   upload: (files, { writeEnabled = false } = {}) => {
     const body = new FormData();
-    for (const file of files) body.append("files", file, file.name);
+    // `webkitRelativePath` is set only by a folder pick (`<input webkitdirectory>`),
+    // and it carries the tree (`ChatExport_x/result.json`). Without it a folder pick
+    // collapsed to bare filenames and the server filed every export at the platform
+    // root, where two `result.json` files overwrite each other.
+    for (const file of files) {
+      body.append("files", file, file.webkitRelativePath || file.name);
+    }
     return api.uploadForm(body, { writeEnabled });
   },
 

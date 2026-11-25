@@ -19,6 +19,7 @@ from fastapi import APIRouter, File, UploadFile
 from pydantic import BaseModel, Field
 
 from relate_comms import paths, tools
+from relate_comms.ingest import MEDIA_SUFFIXES
 
 router = APIRouter(prefix="/api", tags=["ingest"])
 
@@ -129,6 +130,27 @@ def ingest(request: IngestRequest) -> dict:
     )
 
 
+def _already_ingested(known: dict, target: Path) -> bool:
+    """Is this exact file already in the store?
+
+    Same sampled fingerprint `preview()` uses, so the ready list and the preview agree.
+    A directory cannot be fingerprinted (`manifest.fingerprint` stats a file), so a
+    folder-shaped batch answers False — the honest answer, since the batch unit for
+    every folder export is a file inside it.
+    """
+    from relate_comms import manifest
+
+    try:
+        return manifest.fingerprint(target) in known
+    except OSError:
+        return False
+
+
+# Media is never read by any adapter — `TECHREADME` §6: "No adapter reads media". The
+# list lives in `ingest.py` so the pasted-path route and this one agree.
+_MEDIA_SUFFIXES = MEDIA_SUFFIXES
+
+
 @router.post("/ingest/upload")
 async def upload(
     files: list[UploadFile] = File(...),
@@ -145,22 +167,52 @@ async def upload(
     never guessed at and never deleted.
     """
     from relate_comms import ingest as ingest_module
+    from relate_comms import manifest
 
     tools.require(tools.Access.WRITE, write_enabled=write_enabled)
 
+    # The spool dedup, read once. The ready list needs it BEFORE Ingest is pressed:
+    # a folder that is already in the store will be skipped, and a silent skip is
+    # indistinguishable from a failed drop.
+    known = manifest.load(paths.profile_dir())
+
     staged: list[dict] = []
+    # Which platform each top-level folder belongs to, learned from the file that
+    # identifies it. A Telegram export is `result.json` plus a `photos/` tree; the media
+    # is not an export on its own, so `detect_platform` answers None for it and it would
+    # be filed under `unrecognised/` — a second, red line in the modal for a folder the
+    # user picked as one thing. The identifying file decides for the whole tree.
+    folder_platform: dict[str, str] = {}
+    # The file that IS the batch for each top-level folder — `result.json` for Telegram,
+    # the first `.eml` for a mailbox. Its fingerprint is the folder's identity, because
+    # the media beside it is skipped and the remaining files are not the unit the
+    # manifest records.
+    folder_identity: dict[str, Path] = {}
+    skipped_media = 0
     for upload_file in files:
-        # A folder pick sends `relativePath`-style names (`ChatExport/result.json`).
-        # Keep the parent folder, because Telegram's exporter writes a directory and
-        # two exports of one account share the filename `result.json`.
+        # A folder pick or a folder drop sends a RELATIVE PATH (`ChatExport/result.json`,
+        # `ChatExport/photos/p.jpg`). The whole path is kept, not just the parent: a
+        # Telegram export is a tree, and filing `photos/` beside `result.json` instead of
+        # under it left the adapter unable to resolve its own media. Two exports of one
+        # account also share the filename `result.json`, so the folder is what separates
+        # them.
         raw_name = (upload_file.filename or "upload").replace("\\", "/")
         parts = [p for p in raw_name.split("/") if p not in ("", ".", "..")]
         if not parts:
             continue
         name = parts[-1]
-        parent = parts[-2] if len(parts) > 1 else ""
+        parent = "/".join(parts[:-1])
+        # Media is dropped before a byte is written. The attachment metadata is in the
+        # export file itself, so nothing is lost and a multi-GB `photos/` tree never
+        # reaches the disk.
+        if Path(name).suffix.lower() in _MEDIA_SUFFIXES:
+            skipped_media += 1
+            continue
         # A temp copy first: detection reads the content, and the spool must only ever
         # hold files that were fully written.
+        # The temp name is flattened: `.incoming/` is a scratch area, and two files in
+        # one pick can share a basename (`photos/p.jpg` in two exports). The loop moves
+        # each out before the next arrives, so a flat name cannot collide.
         temp = paths.spool_dir() / ".incoming" / name
         temp.parent.mkdir(parents=True, exist_ok=True)
         written = 0
@@ -176,19 +228,57 @@ async def upload(
                     )
                 handle.write(chunk)
 
-        platform = ingest_module.detect_platform(temp) or "unrecognised"
+        top = parts[0] if len(parts) > 1 else ""
+        detected = ingest_module.detect_platform(temp)
+        if detected:
+            if top:
+                folder_platform[top] = detected
+                # The first file that identifies the folder is its batch unit. For
+                # Telegram that is `result.json`; for a mailbox it is any `.eml`.
+                folder_identity.setdefault(top, temp)
+            platform = detected
+        else:
+            # Inherit from the folder, but only once the folder has been identified.
+            # A pick whose files are ALL unrecognised stays unrecognised, which is the
+            # honest answer and the one the modal shows in red.
+            platform = folder_platform.get(top, "unrecognised")
         target_dir = paths.real_dir() / platform / parent / name
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         os.replace(temp, target_dir)
+        if folder_identity.get(top) is temp:
+            folder_identity[top] = target_dir
         staged.append({
             "name": f"{parent}/{name}" if parent else name,
             "path": str(target_dir),
+            # The top-level folder this file arrived under, as an absolute spool path.
+            # The modal groups by it so the "ready for ingest" list reads one line per
+            # thing the user picked (`.../spool/real/telegram/Telegram Desktop`) rather
+            # than one line per file. A bare file pick has no folder, so the root is the
+            # platform directory itself.
+            "root": str(paths.real_dir() / platform / top),
             "platform": platform,
             "bytes": written,
             "recognised": platform != "unrecognised",
+            "duplicate": _already_ingested(known, target_dir),
+            "identity": bool(top) and folder_identity.get(top) is target_dir,
         })
 
-    return {"staged": staged, "ok": all(item["recognised"] for item in staged)}
+    # A folder's verdict is its identifying file's verdict. The media is skipped and the
+    # other files are not what the manifest records, so asking each one "have I seen
+    # you?" answers no for a folder that is entirely already ingested — which is the
+    # one case the ready list exists to flag. Applied here, once, rather than in the UI,
+    # so the rule lives beside the fingerprint that defines it.
+    for item in staged:
+        top = item["name"].split("/")[0] if "/" in item["name"] else ""
+        identity = folder_identity.get(top)
+        if identity is not None and item["root"]:
+            item["duplicate"] = _already_ingested(known, identity)
+
+    return {
+        "staged": staged,
+        "skipped_media": skipped_media,
+        "ok": all(item["recognised"] for item in staged),
+    }
 
 
 @router.get("/ingest/env")
