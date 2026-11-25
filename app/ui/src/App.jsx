@@ -262,6 +262,17 @@ export default function App() {
   const onIngested = useCallback(() => {
     // A write happened. Re-read the counts and the canvas rather than guessing.
     api.stats().then(setStats).catch(() => {});
+    // **An ingest is a new graph, so it gets a new layout.**
+    //
+    // The elements effect preserves positions on every rebuild, which is right for a
+    // filter toggle and wrong here: new nodes arrive with no position, the bags are
+    // translated onto the ring, and no solver ever runs — so every edge from a child to
+    // its bag stretches across the canvas until the user presses Re-run layout.
+    //
+    // `pendingLayout` is the same one-shot flag that button sets, so the effect takes
+    // its `forced` path and solves the NEW elements once they exist. Set before
+    // `loadGraph`, because the fetch may resolve before React re-renders.
+    canvasRef.current?.layoutOnNextData?.();
     loadGraph(theme.filter.nodeTypes);
   }, [loadGraph, theme.filter.nodeTypes]);
 

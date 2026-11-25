@@ -47,8 +47,8 @@ export const THEME = {
     // is what squeezes a bag's children toward its own centre — NOT `gravity`, which
     // pulls everything toward the middle of the screen and would crush all seven bags
     // into one ball. 1.0 is fcose's default; raise it if a big bag sprawls.
-    gravityCompound: 0.3, // 0.5 = loose bag, 2.0 = tight ball
-    gravityRangeCompound: 0.15, // how far the compound pull reaches, in bag radii
+    gravityCompound: 3.0, // 0.5 = loose bag, 2.0 = tight ball
+    gravityRangeCompound: 0.5, // how far the compound pull reaches, in bag radii
     // Labels are part of a node's layout box. Without this a 120px label sits on a
     // 18px node and the solver has no idea it is there — which is most of the
     // "nodes on top of nodes" overlap.

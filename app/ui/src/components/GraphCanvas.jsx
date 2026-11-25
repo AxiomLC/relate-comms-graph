@@ -676,6 +676,19 @@ const GraphCanvas = forwardRef(function GraphCanvas(
         });
       },
 
+      /**
+       * Lay out the NEXT data that arrives, with no fallback.
+       *
+       * `rerunLayout()` cannot be used after an ingest: its microtask fallback fires
+       * before the graph fetch resolves, so it would solve the OLD elements and clear
+       * the flag — leaving the new ones exactly as unlaid-out as before. This sets the
+       * flag and nothing else, so the elements effect is the only thing that consumes
+       * it, once the new nodes exist.
+       */
+      layoutOnNextData() {
+        pendingLayout.current = true;
+      },
+
       zoomBy(factor) {
         const cy = cyRef.current;
         if (!cy) return;
