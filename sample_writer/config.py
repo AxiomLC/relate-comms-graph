@@ -1,11 +1,9 @@
 """sample_writer — every knob, in one place.
-
 The writers read this module; nothing else configures them. Change a number and the next
 run produces different data. Nothing in `relate_comms/` or `app/` changes, ever.
-
 Shape requirements come from `UNDESIRABLES.md` §12. These knobs control *size and
 flavour*; the mandated-shape counts control whether a required shape exists at all.
-
+* A 'seed' is a world with dice rolls, that will generate the same every time.
 Run:
     python -m sample_writer                  # wipe out/, write every platform
     python -m sample_writer --platform sms   # wipe & write only SMS
@@ -39,7 +37,7 @@ OWNER = "Mark Jones"            # the account holder; never fuzzed, never a Corr
 # The world's calendar. Quiet threads need to be 3+ years older than the newest message
 # (§10), so the window is deliberately longer than the data it carries.
 START = "2024-06-01"
-END = "2026-11-25"              # set to a past date, then `append`, to test delta ingest
+END = "2026-09-25"              # set to a past date, then `append`, to test delta ingest
 
 # Cast size. Must exceed each platform's thread count, or `_pick_distinct` falls back to
 # people who are not on that platform and CORR_MULTI_PLATFORM stops meaning anything.
@@ -76,7 +74,7 @@ VARIANTS = {
 
 # Ordinary threads per platform, before the mandated shapes are added. Each platform rolls
 # its own count within ±THREADS_JITTER, because a real mailbox is lumpy.
-AVG_THREADS_PER_PLATFORM = 25
+AVG_THREADS_PER_PLATFORM = 32 # Rule of thumb: cast (static Corr list) ≥ threads per platform × 1.5
 THREADS_JITTER = 0.4            # half-width of the band; 0.4 = 15..35 at an average of 25
 
 # Message-count weights for ordinary threads. 2-12 dominates; long threads are rare.
@@ -141,7 +139,7 @@ PLACEHOLDER_THREADS = {"messenger": 3, "linkedin": 1}
 
 # Correspondents: sender display names.
 CORR_FUZZY = 0.07               # share spelled one alternate way
-CORR_MULTI_PLATFORM = 0.18      # share appearing on 2+ platforms
+CORR_MULTI_PLATFORM = 0.04      # .04 default, share appearing on 2+ platforms
 
 # Bodies: how often each kind is chosen for a body line. A share, not a count — the draw
 # is weighted by share x pool size, so a bigger list is not penalised. 0 stops that kind
@@ -149,8 +147,8 @@ CORR_MULTI_PLATFORM = 0.18      # share appearing on 2+ platforms
 BODY_ENTITY_SHARE = {"org": 1.0, "place": 0.7, "product": 1.6}
 
 BODY_FUZZY = 0.15               # share of items spelled an alternate way
-BODY_MULTI_MENTION = 0.13       # share named 2+ times on ONE platform
-BODY_MULTI_PLATFORM = 0.06      # share named on 2+ platforms
+BODY_MULTI_MENTION = 0.13      # .13 default, share named 2+ times on ONE platform
+BODY_MULTI_PLATFORM = 0.04    # .04 default, share named on 2+ platforms
 MENTIONS_MULTI = (2, 5)         # (min, max) mentions for a multi-mention item
 
 # Entity lines forced into the opening of every thread. This, not the pool size, sets how

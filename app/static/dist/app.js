@@ -19310,17 +19310,15 @@
               hint: "One per line. For a folder export (Telegram writes a directory) or a file too large to upload. Files are COPIED into spool/real/<platform>/, chosen by content, never by filename."
             }
           ),
-          preview && preview.duplicates > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
-            "div",
-            {
-              className: "pager-info",
-              style: { color: "var(--orange-text)", margin: "8px 0 4px" },
-              children: [
-                preview.duplicates,
-                " file(s) in the spool are already ingested and will be skipped."
-              ]
-            }
-          ),
+          preview && (preview.legs || []).length > 0 && /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "pager-info", style: { margin: "8px 0 4px" }, children: [
+            "spool contains ",
+            (preview.legs || []).length,
+            " export",
+            (preview.legs || []).length === 1 ? "" : "s",
+            ":",
+            " ",
+            [...new Set((preview.legs || []).map((leg) => leg.platform || "unrecognised"))].sort().join(", ")
+          ] }),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h2", { className: "section", children: "IMAP mailbox" }),
           /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
             "For web email incl. Gmail. Outlook.com/O365 need a ",
