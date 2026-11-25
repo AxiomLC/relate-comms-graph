@@ -987,10 +987,23 @@ class World:
                            if rng.random() < 0.55
                            else timedelta(minutes=rng.randint(10, 240)))
                     cursor = cursor + gap
-                moments.append(min(cursor, self.end))
+                # **Append the drawn moment, never a clamped copy.**
+                #
+                # This used to be `min(cursor, self.end)`, which pinned every message
+                # past the window onto the same instant. Measured on seed 6: the
+                # 339-message SMS thread had **183 messages at one timestamp**, so the
+                # adapter's ordinal fallback minted 183 near-identical keys and the
+                # canvas showed a wall of same-second rows. A burst that runs off the
+                # end is now dropped by the filter below instead.
+                moments.append(cursor)
         # No re-stamping of `moments[0]` here: the first burst already begins at
         # `start`, and forcing it afterwards put a late hour in front of an earlier
         # one, which made some threads end before they began (span -1).
+        #
+        # **Drop, do not clamp.** Anything past the world's end is discarded, so the
+        # surviving moments are exactly as drawn and a shorter window yields a prefix
+        # rather than a pile-up. The caller shrinks the thread to match — see `plan()`.
+        moments = [moment for moment in moments if moment <= self.end]
         moments.sort()
         return moments[:count]
 

@@ -38,8 +38,8 @@ OWNER = "Mark Jones"            # the account holder; never fuzzed, never a Corr
 
 # The world's calendar. Quiet threads need to be 3+ years older than the newest message
 # (§10), so the window is deliberately longer than the data it carries.
-START = "2024-01-01"
-END = "2026-11-01"              # set to a past date, then `append`, to test delta ingest
+START = "2024-06-01"
+END = "2026-11-25"              # set to a past date, then `append`, to test delta ingest
 
 # Cast size. Must exceed each platform's thread count, or `_pick_distinct` falls back to
 # people who are not on that platform and CORR_MULTI_PLATFORM stops meaning anything.

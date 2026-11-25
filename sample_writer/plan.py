@@ -566,6 +566,22 @@ def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False,
             # (`world.message_times`), not spread evenly — an even spread made every
             # thread look machine-generated.
             thread.times = world.message_times(thread.start, thread.count, rng)
+
+        # **The window can cut a thread short.** `message_times` drops anything past the
+        # world's end rather than clamping it, so a thread that planned 339 messages may
+        # come back with 156. The count and the body list have to shrink with it: the
+        # writers index `thread.times` by `thread.count`, and a mismatch sends them down
+        # their even-split fallback — the flat shape the burst schedule exists to avoid.
+        #
+        # **A mandated shape is exempt.** §12 requires exact counts (`EMAIL_BOUNDARY_KEPT`
+        # is 10, not "about 10"), and truncating one silently breaks the contract —
+        # measured: the boundary thread came back with 3. Those threads are short and
+        # their start is drawn from the same window, so they are not the ones cut; if one
+        # ever is, the contract check reports it rather than the count quietly changing.
+        if not thread.mark and len(thread.times) < thread.count:
+            thread.count = len(thread.times)
+            del thread.lines[thread.count:]
+            del thread.group_lines[thread.count:]
         thread.end = thread.times[-1] if thread.times else thread.start
 
     return Plan(platform=platform, threads=threads, observations=observations)
