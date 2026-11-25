@@ -231,6 +231,20 @@ FUZZ_VARIANTS = {
 TIMING_BURSTS = (1, 5)        # (min, max) bursts of activity in one thread
 TIMING_SPAN_DAYS = 730        # how far after `start` the last burst may land (~2 years)
 
+# ------------------------------------------------------------- append (incremental)
+#
+# `python -m sample_writer append` re-runs the same world with a later `END` and writes
+# it over `out/`. The previous run's clock is read from `out/.schedule.json`, so every
+# message that already existed keeps its exact timestamp — and therefore its key — and
+# only the new ones are new. That is what makes an incremental ingest testable: the
+# delta drops the old week and accepts the new one.
+#
+# A thread only grows if it was still alive at the end of the previous run. A
+# conversation whose last message is months old is over; adding to it would be a thread
+# that went silent and then resumed for no reason.
+APPEND_ALIVE_DAYS = 30        # a thread whose last message is older than this is done
+APPEND_MESSAGES = (1, 4)      # (min, max) messages a live thread gains per append
+
 # How many messages a body runs to. A thread mixes one-word acknowledgements with
 # two-and-three-sentence paragraphs; the long tail is what makes a message-length
 # view interesting.

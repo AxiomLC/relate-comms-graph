@@ -105,12 +105,46 @@ Run from the **repo root**. `build` **wipes then writes**; `add` **writes alongs
 | `python -m sample_writer --platform sms` | that platform | that platform |
 | `python -m sample_writer --huge` | all | all + the 1,600-message thread |
 | `python -m sample_writer add --seed 5` | **none** | all, no clobber |
+| `python -m sample_writer append` | all | same world, later clock |
 | `python -m sample_writer clean` | all | nothing — just wipe |
 
 `add` never overwrites: an existing name becomes `name (1)`, `name (2)`, … You are the
 source of truth for which files reach the app.
 
 A missing required shape fails the build with a readable list, not a traceback.
+
+### `append` — testing incremental ingest
+
+The app's delta rule skips messages the store already holds, so a second ingest of the
+same export writes nothing. To test that it *does* write the genuinely new ones, you need
+two exports of one world where the second is the first plus a week.
+
+`append` does that. It re-runs the same seed with a later `END` and writes over `out/`,
+reusing the clock the previous run saved in `sample_writer/.schedule.json` (beside `out/`,
+never inside it — `out/` is what you drag into Ingest).
+
+**The cycle:**
+
+1. Set `END` in `config.py` to a date in the past (e.g. a week ago).
+2. `python -m sample_writer --seed 8` — build and ingest that.
+3. Set `END` back to now.
+4. `python -m sample_writer append` — same world, one more week.
+5. Ingest again. The report should show most messages **dropped as already stored** and
+   only the new week written.
+
+Measured on seed 8, `END` 2026-11-18 → 2026-11-25: run 1 wrote 2,695 messages, run 2
+wrote **11** and dropped 2,690.
+
+**The seed comes from the schedule file, not the flag**, so a mismatched `--seed` cannot
+put a different world on top of the old one. `append` with no schedule file says so and
+does nothing.
+
+**Only a live thread grows.** A thread whose last message is older than
+`APPEND_ALIVE_DAYS` (30) is over; adding to it would be a conversation that went silent
+and then resumed for no reason. A live thread gains `APPEND_MESSAGES` (1-4).
+
+**`clean` does not delete the schedule**, so `clean` then `append` still extends the same
+world. Delete `sample_writer/.schedule.json` to start a fresh clock.
 
 ---
 

@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from random import Random
 
-from . import config, plan as plan_module, world as world_module
+from . import config, plan as plan_module, schedule, world as world_module
 from .uniquify import Filer
 from .writers import MODULES
 
@@ -23,7 +23,8 @@ def _make_world(seed: int | None, say: Callable[[str], None]):
 
 def build(seed: int | None = None, platforms: list[str] | None = None,
           clean: bool = True, huge: bool = False, filer: Filer | None = None,
-          log: Callable[[str], None] | None = None) -> list[str]:
+          log: Callable[[str], None] | None = None,
+          append: bool = False) -> list[str]:
     """Write the chosen platforms into `out/<platform>/`.
 
     `clean=True` (the default) wipes each chosen platform before writing — this replaces
@@ -33,6 +34,18 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
     say = log or (lambda _line: None)
     started = time.perf_counter()
     filer = filer or Filer(False)
+
+    # **`append` reuses the previous run's clock.** The seed is taken from the saved
+    # schedule, not the flag, so a mismatched `--seed` cannot silently produce a
+    # different world on top of the old one.
+    saved = schedule.load(config.OUT_DIR) if append else None
+    if append:
+        if saved is None:
+            say("append     no .schedule.json in out/ — nothing to extend; "
+                "run a plain build first")
+            return []
+        seed = int(saved.get("seed", seed or config.SEED))
+        say(f"append     extending seed={seed} from {saved.get('end', '?')}")
 
     world = _make_world(seed, say)
     chosen = platforms or [p for p in config.PLATFORMS if p in MODULES]
@@ -48,7 +61,7 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
     for name in chosen:
         module = MODULES[name]
         rng = Random(f"{world.seed}:{name}:plan")
-        plan_obj = plan_module.plan(world, name, rng, huge=huge)
+        plan_obj = plan_module.plan(world, name, rng, huge=huge, saved=saved)
         plans.append(plan_obj)
 
         threads = len(plan_obj.threads)
@@ -78,6 +91,13 @@ def build(seed: int | None = None, platforms: list[str] | None = None,
     notes = plan_module.assert_contract(plans, huge=huge, world=world)
     for note in notes:
         say(f"{'':<10} - {note}")
+
+    # The clock is written LAST, after the contract passed: a failed build must not
+    # leave a schedule that a later `append` would extend from.
+    clock = {t.key: t.times for plan_obj in plans for t in plan_obj.threads if t.times}
+    target = schedule.save(config.OUT_DIR, seed=world.seed, start=world.start,
+                           end=world.end, threads=clock)
+    say(f"{'':<10} clock -> {target.name} ({len(clock)} threads)")
 
     elapsed = time.perf_counter() - started
     say(f"done       {len(written)} files, "
@@ -111,7 +131,7 @@ def clean() -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sample_writer")
     parser.add_argument("command", nargs="?", default="build",
-                        choices=["build", "add", "clean", "capture", "knobs"])
+                        choices=["build", "add", "append", "clean", "capture", "knobs"])
     parser.add_argument("--seed", type=int, default=None,
                         help="world seed (default: config.SEED)")
     parser.add_argument("--default", action="store_true",
@@ -148,6 +168,11 @@ def main(argv: list[str] | None = None) -> int:
             # build is the wipe->write command; the default of `clean=True` replaces
             # the chosen platforms as a set.
             build(seed=args.seed, platforms=args.platforms, huge=args.huge, log=print)
+        elif args.command == "append":
+            # Same world, later clock. Reuses the saved schedule so the old week is
+            # byte-identical and only the new messages are new.
+            build(seed=args.seed, platforms=args.platforms, huge=args.huge, log=print,
+                  append=True)
         else:  # add
             add(seed=args.seed, platforms=args.platforms, huge=args.huge, log=print)
     except AssertionError as error:

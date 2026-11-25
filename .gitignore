@@ -25,6 +25,9 @@ spool/*
 sample_writer/in/*
 !sample_writer/in/.gitkeep
 sample_writer/out/
+# The clock `append` extends from. Generated, machine-specific, and meaningless without
+# the `out/` it describes — so it is ignored with the folder it belongs to.
+sample_writer/.schedule.json
 sample_writer/schemas/
 !sample_writer/schemas/.gitkeep
 

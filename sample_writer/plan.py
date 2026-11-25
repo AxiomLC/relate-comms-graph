@@ -15,7 +15,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from . import config, dialogue
+from . import config, dialogue, schedule
 from .world import Person, World
 
 
@@ -467,7 +467,14 @@ def _thread_count(rng: random.Random) -> int:
     return max(1, round(rng.uniform(low, high)))
 
 
-def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False) -> Plan:
+def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False,
+         saved: dict | None = None) -> Plan:
+    """One platform's threads.
+
+    `saved` is the previous run's clock (`schedule.load`). When given, a thread that
+    already exists keeps its recorded times and only gains new ones — that is what makes
+    `append` produce a prefix rather than a re-roll.
+    """
     observations: list[str] = []
     threads: list[Thread] = []
 
@@ -527,13 +534,114 @@ def plan(world: World, platform: str, rng: random.Random, *, huge: bool = False)
     for thread in threads:
         if thread.silent:
             continue
-        # Message times are decided once, here, so every writer renders the same clock.
-        # They arrive in bursts with long silences between them (`world.message_times`),
-        # not spread evenly — an even spread made every thread look machine-generated.
-        thread.times = world.message_times(thread.start, thread.count, rng)
+        # **A recorded clock wins.** `append` passes the previous run's schedule in, so
+        # a thread that already exists keeps its exact times and only gains new ones.
+        # Without this the draw is re-rolled and the old week's keys change, which is
+        # what made an incremental ingest see every message as new.
+        recorded = schedule.times_for(saved, thread.key)
+        if recorded:
+            # **`append` grows a thread, it does not just re-time it.** A recorded
+            # thread keeps its exact times and gains new messages on top, drawn after
+            # the last recorded moment. Without the growth the second run would write
+            # the same messages again and the delta would have nothing to accept.
+            target = thread.count + _append_extra(thread, recorded, world, rng)
+            thread.times = _extend(recorded, target, world, rng)
+            # The body list has to match: the writers index `times` by `count`.
+            if len(thread.times) > thread.count:
+                _grow_bodies(world, thread, len(thread.times), rng)
+            elif len(thread.times) < thread.count:
+                thread.count = len(thread.times)
+                del thread.lines[thread.count:]
+                del thread.group_lines[thread.count:]
+        else:
+            # Message times are decided once, here, so every writer renders the same
+            # clock. They arrive in bursts with long silences between them
+            # (`world.message_times`), not spread evenly — an even spread made every
+            # thread look machine-generated.
+            thread.times = world.message_times(thread.start, thread.count, rng)
         thread.end = thread.times[-1] if thread.times else thread.start
 
     return Plan(platform=platform, threads=threads, observations=observations)
+
+
+def _append_extra(thread: Thread, recorded: list[datetime], world: World,
+                  rng: random.Random) -> int:
+    """How many messages `append` adds to a thread that already exists.
+
+    **Only a thread that is still alive grows.** A conversation whose last message is
+    months before the new window's start is over — adding to it would be a thread that
+    went silent and then resumed for no reason. The test is the gap between the last
+    recorded moment and the world's end: inside `APPEND_ALIVE_DAYS` and the thread is
+    live; outside it and it stays as it was.
+
+    A live thread then rolls `APPEND_MESSAGES` for how much it grew. The roll is small
+    on purpose: a week of a real conversation is a handful of messages, not a second
+    thread's worth.
+    """
+    if not recorded:
+        return 0
+    gap_days = (world.end - recorded[-1]).total_seconds() / 86400
+    if gap_days > config.APPEND_ALIVE_DAYS:
+        return 0
+    low, high = config.APPEND_MESSAGES
+    return rng.randint(low, high)
+
+
+def _grow_bodies(world: World, thread: Thread, target: int,
+                 rng: random.Random) -> None:
+    """Extend a thread's body list to `target`, keeping the existing lines.
+
+    The new lines come from the same dialogue generator as the originals, so an
+    appended week reads like the rest of the thread rather than a different voice.
+    """
+    extra = target - thread.count
+    if extra <= 0:
+        return
+    if thread.is_group:
+        thread.group_lines = list(thread.group_lines) + dialogue.group_chatter(
+            world, thread.participants, extra, rng, owner_name=world.owner,
+            platform=thread.platform)
+    else:
+        thread.lines = list(thread.lines) + dialogue.turn_pairs(
+            world, thread.participants[0], extra, rng,
+            owner_replies=thread.owner_replies, platform=thread.platform)
+    thread.count = target
+
+
+def _extend(recorded: list[datetime], count: int, world: World,
+            rng: random.Random) -> list[datetime]:
+    """Keep a thread's recorded times and add any the new window allows.
+
+    Three cases, and the first is the one that matters:
+
+    * **The thread already has `count` messages** — return the record untouched. This is
+      the common case and the whole point: identical times mean identical keys, so the
+      delta skips them.
+    * **The record is longer than `count`** — truncate. A shorter window can plan fewer
+      messages than the record holds.
+    * **The record is shorter** — draw new moments after the last recorded one, up to
+      `world.end`. This is what `append` adds.
+
+    New moments are drawn from the same burst shape as `message_times` (minutes apart
+    inside a burst, hours or days between), so an appended week does not read as a
+    different generator.
+    """
+    if len(recorded) >= count:
+        return recorded[:count]
+
+    moments = list(recorded)
+    cursor = moments[-1]
+    while len(moments) < count:
+        gap = (timedelta(seconds=rng.randint(20, 600))
+               if rng.random() < 0.55
+               else timedelta(minutes=rng.randint(10, 240)))
+        cursor = cursor + gap
+        if cursor > world.end:
+            # The window is closed. Stop rather than clamp: a clamped tail would give
+            # several messages the same instant, and the caller shrinks the thread.
+            break
+        moments.append(cursor)
+    return moments
 
 
 # ------------------------------------------------------------------ contract check
