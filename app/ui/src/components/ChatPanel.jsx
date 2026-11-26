@@ -34,7 +34,14 @@ function loadTranscript() {
   }
 }
 
-export default function ChatPanel({ theme, context, onResults, expanded, onToggleExpand }) {
+export default function ChatPanel({
+  theme,
+  context,
+  onResults,
+  onActivity,
+  expanded,
+  onToggleExpand,
+}) {
   const [transcript, setTranscript] = useState(loadTranscript);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -86,6 +93,11 @@ export default function ChatPanel({ theme, context, onResults, expanded, onToggl
     setError(null);
     setInput("");
 
+    // **The user's turn lands immediately.** Waiting for the reply to append both
+    // meant the box showed "thinking…" with no sign of what was asked — on a CPU
+    // model that is several seconds of apparent amnesia.
+    setTranscript((prev) => [...prev, { role: "user", content: text }]);
+
     // The hint is explicit and additive. It is never a filter.
     const hint = context?.label
       ? `\n\n[The user is currently looking at ${context.nodeType || "node"} ` +
@@ -93,13 +105,28 @@ export default function ChatPanel({ theme, context, onResults, expanded, onToggl
       : "";
 
     const history = transcript.map((turn) => ({ role: turn.role, content: turn.content }));
+    const started = performance.now();
 
     try {
       const result = await api.chat({ message: text + hint, messages: history });
 
+      // One row per tool the model actually called, so the trace names the surface
+      // and the tool rather than saying "chat happened".
+      for (const call of result.tool_calls || []) {
+        onActivity?.({
+          source: "chat",
+          text: `${call.name}(${JSON.stringify(call.args || {})})`,
+        });
+      }
+      onActivity?.({
+        source: "chat",
+        text: `reply · ${(result.tool_calls || []).length} tool call(s)`,
+        ms: performance.now() - started,
+      });
+
+      // The user turn is already in the transcript (appended before the request).
       setTranscript((prev) => [
         ...prev,
-        { role: "user", content: text },
         {
           role: "assistant",
           content: result.reply,
@@ -121,12 +148,18 @@ export default function ChatPanel({ theme, context, onResults, expanded, onToggl
         });
       }
     } catch (err) {
+      onActivity?.({
+        source: "chat",
+        text: `failed: ${err.message}`,
+        ms: performance.now() - started,
+        status: "error",
+      });
       setError(err.message);
-      setTranscript((prev) => [...prev, { role: "user", content: text }]);
+      // The user turn is already shown; nothing to re-append.
     } finally {
       setBusy(false);
     }
-  }, [input, busy, transcript, context, onResults]);
+  }, [input, busy, transcript, context, onResults, onActivity]);
 
   const clear = () => {
     setTranscript([]);
@@ -187,7 +220,16 @@ export default function ChatPanel({ theme, context, onResults, expanded, onToggl
               <details className="trace">
                 <summary>
                   {turn.toolCalls.length} tool call
-                  {turn.toolCalls.length === 1 ? "" : "s"} · {turn.model}
+                  {turn.toolCalls.length === 1 ? "" : "s"}
+                  {/* The model that answered **this** turn. A transcript persisted
+                      before a model swap keeps the old name on old turns, which is
+                      accurate — but it reads as a bug, so the live model is shown
+                      beside it when they differ. */}
+                  {turn.model && turn.model !== health?.model
+                    ? ` · ${turn.model} (then)`
+                    : turn.model
+                      ? ` · ${turn.model}`
+                      : ""}
                 </summary>
                 {turn.toolCalls.map((call, callIndex) => (
                   <pre key={callIndex}>

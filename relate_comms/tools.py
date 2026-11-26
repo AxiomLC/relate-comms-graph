@@ -70,6 +70,7 @@ when the store holds 1215 or 25000.
 from __future__ import annotations
 
 import inspect
+import os
 import re
 import types
 from collections.abc import Iterator, Sequence
@@ -1013,6 +1014,706 @@ def _chat_id_from_thread_key(thread_key: str) -> str:
     return chat_id
 
 
+# --------------------------------------------------------------- fulltext (BM25)
+
+# The index name is a constant, not a parameter: `SEARCH` takes an index *name*, and
+# a name a model can choose is a name a model can get wrong.
+FULLTEXT_INDEX = "msg_body"
+
+
+def ensure_fulltext_index(conn: Any) -> None:
+    """Create the BM25 index if it is absent. Idempotent, cheap, safe to call often.
+
+    Called at the top of `search_fulltext` as well as from `_SCHEMA`, because a store
+    written before this existed must still answer a search. `IF NOT EXISTS` makes the
+    call free after the first one.
+
+    **The connection must be writable.** A read-only connection refuses the DDL with
+    `WriteOnReadOnlyAccessDatabase`, which is why the caller opens one for this and
+    then reuses it for the query.
+    """
+    try:
+        conn.cursor().execute(
+            f"CREATE FULLTEXT INDEX {FULLTEXT_INDEX} IF NOT EXISTS "
+            "FOR (m:Message) ON EACH [m.body]"
+        )
+        conn.commit()
+    except Exception:  # noqa: BLE001 - already exists, or a read-only connection
+        pass
+
+
+def _name_matches(conn: Any, needle: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Correspondents whose name matches, as thread-shaped rows.
+
+    **This is the hole that made "Moreno" return nothing.** `search_fulltext` scans
+    message *bodies*; a person's name lives on `Correspondent.display_name` and in
+    `Message.sender_name`, and neither is in the fulltext index. Measured on the live
+    store: `Alicia Moreno` exists as a Correspondent with 4 messages sent, and zero
+    bodies contain the word "moreno".
+
+    Returned as **thread** rows, not message rows, because "find this person" means
+    "show me the conversations", and the Viewer already opens a Thread from a row
+    with a `thread_key`.
+    """
+    clauses = ["toLower(c.display_name) CONTAINS toLower($q)"]
+    platform_clause = _platform_clause("c", params)
+    if platform_clause:
+        clauses.append(platform_clause)
+
+    rows = _fetch(
+        conn,
+        "MATCH (t:Thread)-[:WITH]->(c:Correspondent) "
+        f"WHERE {' AND '.join(clauses)} "
+        "OPTIONAL MATCH (t)<-[:IN]-(m:Message) "
+        "RETURN t.key AS key, t.title AS title, t.platform AS platform, "
+        "       c.display_name AS sender_name, count(m) AS message_count, "
+        "       max(m.ts_utc) AS ts_utc "
+        "ORDER BY ts_utc DESC",
+        params,
+    )
+    return [
+        {
+            "key": row["key"],
+            "thread_key": row["key"],
+            "type": "Thread",
+            "title": row["title"],
+            "label": row["title"],
+            "platform": row["platform"],
+            "sender_name": row["sender_name"],
+            "message_count": row["message_count"],
+            "ts_utc": row["ts_utc"],
+            "snippet": f"{row['sender_name']} · {row['message_count']} messages",
+            "match": "name",
+            # Name hits are not ranked by the index, so they carry no score. A
+            # placeholder keeps every row the same shape for the Viewer.
+            "score": None,
+        }
+        for row in rows
+    ]
+
+
+def search_fulltext(
+    query: str,
+    *,
+    limit: int = 20,
+    platform: str | None = None,
+) -> dict[str, Any]:
+    """BM25 full-text search over message bodies **and** correspondent names.
+
+    The search bar's default. Two sources, merged:
+
+    1. **Bodies** — BM25 over the `msg_body` index, ranked by `score`.
+    2. **Names** — a substring match on `Correspondent.display_name`, returned as
+       *thread* rows. Without this, typing a person's name found nothing, because a
+       name is not in any message body.
+
+    Name hits come first: a user typing a capitalised name means the person, not a
+    word that happens to appear in a message.
+
+    **Word matching, not substring, for bodies.** `"graf"` does not match `"grafana"`,
+    and there is no stemming by default. Names *are* substring-matched, because a
+    surname is a fragment of a full name.
+    """
+    if not query or not str(query).strip():
+        raise ToolError("query is required")
+    needle = str(query).strip()
+    limit = _clamp(limit, 1, 200)
+
+    params: dict[str, Any] = {"q": needle, "n": limit}
+    clauses: list[str] = []
+    if platform and str(platform).strip():
+        clauses.append("m.platform = $platform")
+        params["platform"] = str(platform).strip()
+    platform_clause = _platform_clause("m", params)
+    if platform_clause:
+        clauses.append(platform_clause)
+    where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+
+    # Writable, because the index may not exist yet on a store written before this
+    # feature. The query itself is still read-only.
+    with _session(read_only=False) as conn:
+        ensure_fulltext_index(conn)
+        name_hits = _name_matches(conn, needle, params)
+        rows = _fetch(
+            conn,
+            f"MATCH (m:Message) SEARCH m IN (FULLTEXT INDEX {FULLTEXT_INDEX} "
+            "FOR $q LIMIT $n) SCORE AS score "
+            f"{where}"
+            "RETURN m.key AS key, m.ts_utc AS ts_utc, m.platform AS platform, "
+            "       m.chat_id AS chat_id, m.sender_name AS sender_name, "
+            "       m.is_self AS is_self, m.body AS body, score "
+            "ORDER BY score DESC",
+            params,
+        )
+
+    body_hits = [
+        {
+            "key": row["key"],
+            "ts_utc": row["ts_utc"],
+            "platform": row["platform"],
+            "thread_key": f"{row['platform']}:{row['chat_id']}",
+            "sender_name": row["sender_name"],
+            "is_self": row["is_self"],
+            "snippet": _snippet(row["body"] or "", needle),
+            "score": row.get("score"),
+            "match": "body",
+        }
+        for row in rows
+    ]
+
+    # A thread already surfaced by a name match is not repeated as a body hit.
+    seen = {hit["thread_key"] for hit in name_hits}
+    hits = name_hits + [h for h in body_hits if h["thread_key"] not in seen]
+
+    return {
+        "query": needle,
+        "mode": "fulltext",
+        "hits": hits[:limit],
+        "count": len(hits[:limit]),
+        "name_matches": len(name_hits),
+        "body_matches": len(body_hits),
+        "limit": limit,
+        "truncated": len(hits) > limit,
+    }
+
+
+# --------------------------------------------------------------- vector (semantic)
+
+EMBED_DIMENSIONS = 768
+
+# Measured ceiling on this box: 256 short bodies pass, 320-448 fail, 512 is slower
+# than two 256s. Long bodies fail below that, so `_embed_chunk` halves on a 400.
+EMBED_BATCH = 128
+
+
+# --------------------------------------------------------------- embed screening
+
+# A body with no subject and no predicate carries no meaning to embed. Measured on
+# the live store: 1,185 distinct bodies, and a large tail of `hi`, `ok`, `thanks`.
+# Those embed to nearly the same vector, so they crowd every semantic result — the
+# "money I owe someone" query returned `hi` three times before this existed.
+#
+# The test is spaCy POS, not length: `what time is it at` is 19 chars and worthless,
+# while `Hetzner is down` is 15 chars and worth keeping. Length alone would drop the
+# second and keep the first.
+_SCREENER: Any = None
+
+
+def _screener() -> Any:
+    """The spaCy pipeline, loaded once. `None` if spaCy is unavailable.
+
+    Lazy and cached: loading `en_core_web_sm` costs ~1.9 s, which must not be paid by
+    a process that never embeds anything.
+    """
+    global _SCREENER
+    if _SCREENER is None:
+        try:
+            import spacy
+
+            _SCREENER = spacy.load("en_core_web_sm")
+        except Exception:  # noqa: BLE001 - no model, no screening; embed everything
+            _SCREENER = False
+    return _SCREENER or None
+
+
+def screen_body(body: str) -> tuple[bool, str]:
+    """Should this body be embedded? Returns `(keep, reason)`.
+
+    **Keeps** anything with a noun *and* a verb — a subject and a predicate. That is
+    the cheapest honest test of "does this sentence say something".
+
+    **Drops** greetings, acknowledgements and fragments: `hello`, `ok`, `thanks`,
+    `im going there`, `what time is it at`. These embed to near-identical vectors and
+    crowd every semantic result.
+
+    **Fails open.** No spaCy, or a parse error, keeps the body. A missing vector is a
+    silent hole in search; a junk vector is only noise, and noise is visible.
+    """
+    text = (body or "").strip()
+    if not text:
+        return False, "empty"
+
+    nlp = _screener()
+    if nlp is None:
+        return True, "no-screener"
+
+    try:
+        doc = nlp(text[:2000])
+    except Exception:  # noqa: BLE001
+        return True, "parse-error"
+
+    has_noun = any(token.pos_ in ("NOUN", "PROPN") for token in doc)
+    has_verb = any(token.pos_ in ("VERB", "AUX") for token in doc)
+
+    # A dangling question — `what time is it at`, `where are we` — has a noun and an
+    # auxiliary but no content word to embed. The tell is a WH-word plus a pronoun
+    # subject and nothing else: no PROPN, no NOUN outside the WH phrase.
+    wh = {"what", "when", "where", "who", "why", "how", "which"}
+    if doc[0].lower_ in wh and not any(t.pos_ == "PROPN" for t in doc):
+        content_nouns = [
+            t for t in doc
+            if t.pos_ == "NOUN" and t.lemma_.lower() not in {"time", "day", "thing"}
+        ]
+        if not content_nouns:
+            return False, "dangling-question"
+
+    if has_noun and has_verb:
+        return True, "subject-predicate"
+    if not has_noun and not has_verb:
+        return False, "no-content"
+    if not has_noun:
+        return False, "no-subject"
+    return False, "no-predicate"
+
+
+def _embed(texts: Sequence[str]) -> list[list[float]]:
+    """Embed with the local model. Batched at 256 — measured ceiling on this box.
+
+    Ollama returns 400 above ~256 inputs, and 512 is slower than two 256s. The
+    model is `models.EMBED_MODEL`; the dimension is read from the response, never
+    assumed, because a mismatch silently returns nothing from the index.
+    """
+    import httpx
+
+    from . import models
+
+    host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+    out: list[list[float]] = []
+    for start in range(0, len(texts), EMBED_BATCH):
+        chunk = list(texts[start:start + EMBED_BATCH])
+        out.extend(_embed_chunk(host, models.EMBED_MODEL, chunk))
+    return out
+
+
+def _embed_chunk(host: str, model: str, chunk: list[str]) -> list[list[float]]:
+    """Embed one chunk, halving on a 400.
+
+    The ceiling is not a fixed count — it depends on total tokens, so a batch of 256
+    short bodies passes while 256 long ones does not. Halving is cheaper than
+    guessing a size that is safe for every body length.
+    """
+    import httpx
+
+    if not chunk:
+        return []
+    response = httpx.post(
+        f"{host}/api/embed",
+        json={"model": model, "input": chunk},
+        timeout=600.0,
+    )
+    if response.status_code == 400 and len(chunk) > 1:
+        middle = len(chunk) // 2
+        return _embed_chunk(host, model, chunk[:middle]) + _embed_chunk(
+            host, model, chunk[middle:]
+        )
+    response.raise_for_status()
+    return response.json()["embeddings"]
+
+
+def ensure_vector_index(conn: Any) -> None:
+    """Create the vector index if absent. Same reason as `ensure_fulltext_index`.
+
+    The dimension is `EMBED_DIMENSIONS`, which must match the model. A mismatch does
+    not error — the index simply returns nothing — so the constant and the model are
+    checked together in `embed_status`.
+    """
+    try:
+        conn.cursor().execute(
+            "CREATE VECTOR INDEX msg_emb IF NOT EXISTS FOR (m:Message) ON m.emb "
+            "OPTIONS {indexConfig: {`vector.dimensions`: "
+            f"{EMBED_DIMENSIONS}, `vector.similarity_function`: 'cosine'}}"
+        )
+        conn.commit()
+    except Exception:  # noqa: BLE001 - already exists, or a read-only connection
+        pass
+
+
+def embed_status() -> dict[str, Any]:
+    """How much of the store is embedded, and how much disk the vectors cost.
+
+    `store_bytes` is the whole `.rl` file, because Relate has no per-property size
+    query and the file is the honest number: a store with vectors is ~15x the size
+    of the same store without them.
+    """
+    with _session() as conn:
+        total = _scalar(conn, "MATCH (m:Message) RETURN count(m) AS n") or 0
+        done = _scalar(
+            conn, "MATCH (m:Message) WHERE m.emb IS NOT NULL RETURN count(m) AS n"
+        ) or 0
+        skipped = _scalar(
+            conn,
+            "MATCH (m:Message) WHERE m.emb_skipped IS NOT NULL RETURN count(m) AS n",
+        ) or 0
+    from . import models
+
+    path = store_path()
+    store_bytes = path.stat().st_size if path.exists() else 0
+
+    # `missing` counts only what the pass would still do, so a store where every
+    # meaningful body is embedded reads as ready even though the greetings are not.
+    missing = max(0, total - done - skipped)
+    return {
+        "total": total,
+        "embedded": done,
+        "skipped": skipped,
+        "missing": missing,
+        "ready": total > 0 and missing == 0,
+        "model": models.EMBED_MODEL,
+        "store_bytes": store_bytes,
+        "store_mb": round(store_bytes / 1_000_000, 1),
+    }
+
+
+def embed_messages(
+    *,
+    limit: int = 5000,
+    write_enabled: bool = False,
+) -> dict[str, Any]:
+    """Embed messages that have no vector yet. The opt-in background pass.
+
+    **Never part of ingest.** Measured on this box: 42 msg/s on short bodies, but
+    ~3 msg/s on long ones, so a 200k-message store is hours. Ingest must stay fast;
+    this runs when the user asks for it and only touches `m.emb IS NULL`.
+
+    **Screened.** A body with no subject and no predicate (`hi`, `ok`, `thanks`,
+    `im going there`) is skipped and stamped `emb_skipped` so it is never re-examined.
+    Those bodies embed to near-identical vectors and crowd every semantic result.
+
+    Batched at 128 with a halving retry, and written with one `UNWIND` per batch.
+    """
+    require(Access.WRITE, write_enabled=write_enabled)
+    limit = _clamp(limit, 1, 200_000)
+
+    with _session(read_only=False) as conn:
+        rows = _fetch(
+            conn,
+            "MATCH (m:Message) WHERE m.emb IS NULL AND m.emb_skipped IS NULL "
+            "RETURN m.key AS key, m.body AS body LIMIT $n",
+            {"n": limit},
+        )
+        if not rows:
+            remaining = _scalar(
+                conn,
+                "MATCH (m:Message) WHERE m.emb IS NULL "
+                "AND m.emb_skipped IS NULL RETURN count(m) AS n",
+            ) or 0
+            return {"embedded": 0, "skipped": 0, "remaining": remaining,
+                    "done": remaining == 0}
+
+        keep: list[dict[str, Any]] = []
+        skip: list[str] = []
+        for row in rows:
+            ok, _reason = screen_body(row["body"] or "")
+            (keep if ok else skip).append(row if ok else row["key"])
+
+        payload: list[dict[str, Any]] = []
+        if keep:
+            texts = [(row["body"] or "")[:4000] for row in keep]
+            vectors = _embed(texts)
+            payload = [
+                {"key": row["key"], "emb": vector}
+                for row, vector in zip(keep, vectors)
+            ]
+            conn.cursor().execute(
+                "UNWIND $rows AS row MATCH (m:Message {key: row.key}) "
+                "SET m.emb = row.emb",
+                {"rows": payload},
+            )
+
+        if skip:
+            # Stamped, not deleted: the message stays searchable by fulltext, and the
+            # pass never re-examines it. A later screener change can clear the stamp.
+            conn.cursor().execute(
+                "UNWIND $keys AS k MATCH (m:Message {key: k}) "
+                "SET m.emb_skipped = true",
+                {"keys": skip},
+            )
+        conn.commit()
+
+        remaining = _scalar(
+            conn,
+            "MATCH (m:Message) WHERE m.emb IS NULL "
+            "AND m.emb_skipped IS NULL RETURN count(m) AS n",
+        ) or 0
+
+    return {
+        "embedded": len(payload),
+        "skipped": len(skip),
+        "remaining": remaining,
+        "done": remaining == 0,
+    }
+
+
+def flush_embeddings(
+    *,
+    write_enabled: bool = False,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Delete every vector **and reclaim the disk**. Destructive.
+
+    **Why this rewrites the store instead of nulling a property.** Measured on this
+    engine: `SET m.emb = null` frees nothing — the file *grows*, because Relate
+    appends to the WAL and has no compaction. `DROP INDEX` frees nothing either.
+    The only thing that reclaims is writing the graph into a fresh file.
+
+    So: read every node and relationship, write them into a sibling `.rl` with no
+    `emb`/`emb_skipped`, then swap it in. The original is kept as `.rl.bak` until the
+    swap succeeds, so a failure mid-way leaves the store intact.
+
+    **Measured on the live store: 64.7 MB -> 3.6 MB in 1.9 s**, 3,113 nodes and
+    3,183 edges kept. Three things made it fast, each found by timing a phase:
+
+    1. One `UNWIND` per label, not one `execute()` per node (207 s -> 51 s).
+    2. Edges grouped by **endpoint labels**, so the planner uses the key index
+       instead of scanning every node per edge (51 s -> 1.9 s).
+    3. The scratch file must end in `.rl` — `graph.rl.flush` is read as a
+       *directory* store and the rebuild silently produced an empty graph.
+    """
+    require(Access.DESTRUCTIVE, write_enabled=write_enabled, confirmed=confirm)
+
+    path = store_path()
+    if not path.exists():
+        raise ToolError(f"no store at {path}")
+
+    before = path.stat().st_size
+    # **The scratch name must END IN `.rl`.** Relate decides file-vs-directory store
+    # from the extension: `graph.rl.flush` is read as a *directory* store, so the
+    # rebuild silently wrote into a folder and the swap produced an empty graph.
+    # `graph.flush.rl` is a file store, which is what we want.
+    scratch = path.parent / (path.stem + ".flush.rl")
+    backup = path.parent / (path.stem + ".bak.rl")
+    for stale in (scratch, backup):
+        if stale.is_file():
+            stale.unlink()
+        elif stale.is_dir():
+            import shutil as _shutil
+
+            _shutil.rmtree(stale)
+
+    # 1. Read everything out of the live store.
+    source = _connect(read_only=True)
+    try:
+        cur = source.cursor()
+        cur.execute(
+            "MATCH (n) RETURN labels(n) AS labels, properties(n) AS props"
+        )
+        nodes = [dict(row) for row in cur.fetchall()]
+        cur.execute(
+            "MATCH (a)-[r]->(b) RETURN type(r) AS type, properties(r) AS props, "
+            "       a.key AS from_key, b.key AS to_key, "
+            "       labels(a) AS from_labels, labels(b) AS to_labels"
+        )
+        edges = [dict(row) for row in cur.fetchall()]
+        for edge in edges:
+            # The first label is enough: every node in this store has exactly one
+            # real label, and `:Merged` is an additive marker.
+            from_labels = edge.pop("from_labels", None) or []
+            to_labels = edge.pop("to_labels", None) or []
+            edge["from_label"] = from_labels[0] if from_labels else ""
+            edge["to_label"] = to_labels[0] if to_labels else ""
+    finally:
+        source.close()
+
+    # 2. Write them into a fresh file, minus the vectors.
+    #
+    # **Batched, not per-node.** Measured: 6,300 individual `execute()` calls took
+    # 207 s. One `UNWIND` per label and one per edge type takes seconds, because the
+    # cost is the round trip, not the row.
+    import relate
+
+    target = relate.connect(str(scratch))
+    try:
+        cur = target.cursor()
+
+        # Group by label set: a Cypher label is part of the statement, so nodes with
+        # different labels cannot share one UNWIND.
+        by_label: dict[str, list[dict[str, Any]]] = {}
+        for node in nodes:
+            labels = [label for label in (node["labels"] or []) if label]
+            props = {
+                key: value
+                for key, value in (node["props"] or {}).items()
+                if key not in ("emb", "emb_skipped")
+            }
+            if not labels or "key" not in props:
+                continue
+            by_label.setdefault(":".join(labels), []).append(props)
+
+        for label_text, rows in by_label.items():
+            for start in range(0, len(rows), 500):
+                cur.execute(
+                    f"UNWIND $rows AS props CREATE (n:{label_text}) SET n = props",
+                    {"rows": rows[start:start + 500]},
+                )
+        target.commit()
+
+        # Key indexes before the edges: `MATCH (a {key: $f})` without one is a full
+        # scan per edge, which is what made the first version slow.
+        for label_text in by_label:
+            try:
+                cur.execute(
+                    f"CREATE INDEX IF NOT EXISTS FOR (n:{label_text}) ON (n.key)"
+                )
+            except Exception:  # noqa: BLE001 - a label with no key property
+                pass
+        target.commit()
+
+        # **Edges are grouped by endpoint labels, not just by type.** An unlabelled
+        # `MATCH (a {key: row.f})` scans every node in the store, and measured at
+        # 3,000 edges that is 83 s of the 51 s total. With both labels named the
+        # planner uses the key index and the same work takes under a second.
+        by_type: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for edge in edges:
+            if not edge.get("from_key") or not edge.get("to_key"):
+                continue
+            from_label = edge.get("from_label") or ""
+            to_label = edge.get("to_label") or ""
+            by_type.setdefault(
+                (edge["type"], from_label, to_label), []
+            ).append({"f": edge["from_key"], "t": edge["to_key"]})
+
+        for (edge_type, from_label, to_label), rows in by_type.items():
+            a = f"(a:{from_label})" if from_label else "(a)"
+            b = f"(b:{to_label})" if to_label else "(b)"
+            for start in range(0, len(rows), 500):
+                cur.execute(
+                    f"UNWIND $rows AS row MATCH {a} WHERE a.key = row.f "
+                    f"MATCH {b} WHERE b.key = row.t "
+                    f"CREATE (a)-[:{edge_type}]->(b)",
+                    {"rows": rows[start:start + 500]},
+                )
+        target.commit()
+    finally:
+        target.close()
+
+    # 3. Swap. The backup is kept until the rename succeeds.
+    path.rename(backup)
+    try:
+        scratch.rename(path)
+    except Exception:
+        backup.rename(path)
+        raise
+    backup.unlink()
+
+    # 4. Recreate **the whole schema**, not just the search indexes.
+    #
+    # The rebuild copies nodes and edges, not indexes. Recreating only the indexes
+    # for labels that happen to hold nodes loses `place_key` and friends on a store
+    # whose entity legs are empty — a real bug the fidelity test caught. `_SCHEMA`
+    # is the one list of every index this app creates, so replay it.
+    from .writer import _SCHEMA
+
+    restored = _connect(read_only=False)
+    try:
+        for statement in _SCHEMA:
+            try:
+                restored.cursor().execute(statement)
+            except Exception:  # noqa: BLE001 - already exists
+                pass
+        restored.commit()
+    finally:
+        restored.close()
+
+    after = path.stat().st_size
+    return {
+        "flushed": True,
+        "nodes": len(nodes),
+        "edges": len(edges),
+        "bytes_before": before,
+        "bytes_after": after,
+        "mb_before": round(before / 1_000_000, 1),
+        "mb_after": round(after / 1_000_000, 1),
+        "reclaimed_mb": round((before - after) / 1_000_000, 1),
+    }
+
+
+def search_vector(
+    query: str,
+    *,
+    limit: int = 20,
+    platform: str | None = None,
+) -> dict[str, Any]:
+    """Semantic search: embed the query, ask the vector index for nearest messages.
+
+    **Requires an embed pass.** With no vectors the index returns nothing, which is
+    indistinguishable from "no match" — so this raises a message the UI can turn
+    into the yellow "run embeds" warning rather than an empty result.
+
+    Relate's vector index is **exact** nearest-neighbour, not HNSW: a brute-force
+    scan over stored vectors. Fine at a few thousand, linear at a million.
+    """
+    if not query or not str(query).strip():
+        raise ToolError("query is required")
+    needle = str(query).strip()
+    limit = _clamp(limit, 1, 200)
+
+    status = embed_status()
+    if status["embedded"] == 0:
+        raise ToolError(
+            "vector store empty — run embeds in Utilities, then try again"
+        )
+
+    vector = _embed([needle])[0]
+
+    # `q` is for `_name_matches`, which shares the params dict.
+    params: dict[str, Any] = {"q": needle, "vec": vector, "n": limit}
+    clauses: list[str] = []
+    if platform and str(platform).strip():
+        clauses.append("m.platform = $platform")
+        params["platform"] = str(platform).strip()
+    platform_clause = _platform_clause("m", params)
+    if platform_clause:
+        clauses.append(platform_clause)
+    where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+
+    with _session(read_only=False) as conn:
+        ensure_vector_index(conn)
+        # Names first, for the same reason as `search_fulltext`: a person's name is
+        # not in any message body, so a vector search for it would miss the person.
+        name_hits = _name_matches(conn, needle, params)
+        rows = _fetch(
+            conn,
+            "CALL db.index.vector.queryNodes('msg_emb', $n, $vec) "
+            "YIELD node AS m, score "
+            f"{where}"
+            "RETURN m.key AS key, m.ts_utc AS ts_utc, m.platform AS platform, "
+            "       m.chat_id AS chat_id, m.sender_name AS sender_name, "
+            "       m.is_self AS is_self, m.body AS body, score "
+            "ORDER BY score DESC",
+            params,
+        )
+
+    body_hits = [
+        {
+            "key": row["key"],
+            "ts_utc": row["ts_utc"],
+            "platform": row["platform"],
+            "thread_key": f"{row['platform']}:{row['chat_id']}",
+            "sender_name": row["sender_name"],
+            "is_self": row["is_self"],
+            "snippet": (row["body"] or "")[:200],
+            "score": row.get("score"),
+            "match": "body",
+        }
+        for row in rows
+    ]
+
+    seen = {hit["thread_key"] for hit in name_hits}
+    hits = name_hits + [h for h in body_hits if h["thread_key"] not in seen]
+
+    return {
+        "query": needle,
+        "mode": "vector",
+        "hits": hits[:limit],
+        "count": len(hits[:limit]),
+        "name_matches": len(name_hits),
+        "body_matches": len(body_hits),
+        "limit": limit,
+        "truncated": len(hits) > limit,
+        "coverage": {"embedded": status["embedded"], "total": status["total"]},
+    }
+
+
 def message_view(message_key: str) -> dict[str, Any]:
     """One message in full, with its thread, attachments and what it replies to.
 
@@ -1528,6 +2229,12 @@ def _register_all() -> None:
         (graph_slice, Access.READ),
         (thread_arc, Access.READ),
         (search_messages, Access.READ),
+        (search_fulltext, Access.READ),
+        (search_vector, Access.READ),
+        (embed_status, Access.READ),
+        (embed_messages, Access.WRITE),
+        (flush_embeddings, Access.DESTRUCTIVE),
+        (screen_body, Access.READ),
         (message_view, Access.READ),
         (types_present, Access.READ),
         (evidence_counts, Access.READ),

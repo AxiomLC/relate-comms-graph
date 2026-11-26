@@ -35,6 +35,16 @@ _SCHEMA = (
     # query is a full scan of every message, which defeats the point of a delta run —
     # measured at 63 ms for 910 messages, i.e. linear and growing with the store.
     "CREATE INDEX msg_ts IF NOT EXISTS FOR (m:Message) ON (m.ts_utc)",
+    # Semantic search. VERIFIED on 1.0.1: the index stays live on later CREATE and on
+    # SET, so a re-embed needs no rebuild. 768 is `embeddinggemma`'s dimension — read
+    # from the model, not guessed. A node with no `emb` is simply absent from results.
+    "CREATE VECTOR INDEX msg_emb IF NOT EXISTS FOR (m:Message) ON m.emb "
+    "OPTIONS {indexConfig: {`vector.dimensions`: 768, "
+    "`vector.similarity_function`: 'cosine'}}",
+    # BM25 full-text, the search bar's default. Created here so every ingest leaves a
+    # store that can answer a search; `search_fulltext` also ensures it, for a store
+    # written before this existed.
+    "CREATE FULLTEXT INDEX msg_body IF NOT EXISTS FOR (m:Message) ON EACH [m.body]",
 )
 
 _MSG_CYPHER = (

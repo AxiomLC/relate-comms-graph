@@ -34,6 +34,29 @@ tools.evidence_counts()          # or: MATCH (n:<Kind>) RETURN count(n)
 Product. The vocabulary is loaded — `PLACE_DICTIONARY` 691, `ORG_DICTIONARY` 585,
 `products.INDEX` 764 — and `extract.PRODUCT_ENABLED = True`. Detail: `TECHREADME.md` §5.
 
+**Search was rebuilt 2026-11-25.** The search bar is now **BM25 fulltext** (ranked,
+indexed) with a **Vector** mode for semantic search; raw Cypher is the third. The mode
+control is a **radio group** that expands from a caret, plus a plain Search button.
+Embeddings are a **separate opt-in pass**, never part of ingest — measured at 42 msg/s
+on short bodies but 3 msg/s on long ones, so a 200k store is hours. Utilities gained an
+*Embed now* section with a log.
+
+**Search covers names, not just bodies.** Typing `Moreno` used to return nothing:
+`Alicia Moreno` exists with 8 messages and **zero** bodies contain the word. `_name_matches()`
+now matches `Correspondent.display_name` and returns **thread** rows, in both modes.
+
+**Bodies are screened before embedding.** A body with no subject and no predicate
+(`hi`, `ok`, `thanks`, `im going there`) is stamped `emb_skipped` and never embedded —
+those vectors are near-identical and crowd every semantic result. Measured: 2,281 →
+**1,537 embedded, 744 skipped (33%)**. Detail: `wireLLM_tools_queries.md` §F.
+
+**A vector costs ~30 KB on disk in Relate — 15× its raw size.** The store went
+3.5 MB → 64.7 MB for 1,537 vectors, and opening it went 120 ms → 520 ms. **Nulling a
+property frees nothing** and there is no compaction API, so `flush_embeddings()`
+rewrites the store into a fresh `.rl` and swaps it in: **64.7 MB → 3.6 MB in 1.9 s**,
+every node and edge kept. Utilities → *Embeddings Ingest* shows the size and has
+**Delete embeds**. Detail: `wireLLM_tools_queries.md` §G.
+
 **`sample_writer` was revamped 2026-11-25.** It now has an `append` command that extends a
 world's clock, so incremental ingest is testable: write a world ending in the past, ingest
 it, move `END` forward, `append`, ingest again — the delta drops the old stretch and writes
@@ -97,8 +120,39 @@ is a file dropped in `spool/real/`; `ingest` cannot tell it from a real export.
 > (691 / 585 / 764) and the bugs the load exposed are fixed. `rework_extraction.md` is a
 > retired stub — GLiNER is the only thing left in it, and it is optional.
 >
-> **Next: wire the local LLM chat into the UI.** The portable-graph work (§1) and MCP (§4)
-> remain standing, not urgent.
+> **Chat is wired and working.** Search is rebuilt (BM25 default, vector mode, name
+> matching, screener). **The next big item is the MCP server** (§4).
+
+### ★ NEXT BIG ITEM — the MCP server
+
+**Status: not started.** `app/mcp/` holds one file, `__init__.py`, a docstring. `mcp` is
+installed (`pyproject.toml` line 42) and importable, so this is unstarted, not blocked.
+
+**Why it is the next big item.** The app's whole claim is *private* comms. An MCP server
+is the one feature that lets another agent read that private store, so it is also the one
+feature that can quietly break the claim. It deserves a deliberate build, not a bolt-on.
+
+**The tool set is already decided** — the same `tools.REGISTRY`, a different allowlist.
+Nothing is written twice. See `wireLLM_tools_queries.md` §D4 and §D6.
+
+**The gates the docstring already commits to, all mandatory:**
+
+1. **Auth toggle.** Off by default for stdio; **required** for any network transport.
+   Never silently unauthenticated on TCP.
+2. **Write toggle, separate from the UI's.** An IDE session does not inherit the UI's
+   choices. Default off.
+3. **Destructive tools need `confirm=true`** in the call itself.
+4. **Loopback binding** for any HTTP/socket transport.
+5. **Never read `.env`.** That is the guarantee the IMAP credentials rely on.
+
+**The UI is already waiting for it.** `GET /api/health` returns `mcp_active`, hardcoded
+`False` in `app/routers/system.py`. The title bar shows **MCP being accessed** instead of
+`offline - safe` when it is true, and the activity trace has an `mcp` source tag ready.
+Building MCP means setting that flag server-side and calling `activity.push()` — the UI
+needs no change.
+
+**Open question to settle first:** should MCP expose `run_cypher`? It is the most
+powerful tool and the hardest to guard — the write-guard is a regex, not a parser.
 
 ### 0. Entity lists — **DONE** (2026-11-24)
 
@@ -333,11 +387,36 @@ Chat is wired into the UI. Never exercised end to end on a real conversation. Ne
 that `MAX_TOOL_CHARS` truncation is **reported** rather than silent. `think: false` is a 28×
 speedup on this box and must stay applied. Not involved in entity extraction (§2) — chat only.
 
-### 4. MCP wiring — **standing, not the priority**
+### 4. MCP wiring — **the next big item**
 
-`app/mcp/__init__.py` is a docstring. When built it must **not** gain a `.env` read — that
-is the guarantee the IMAP credentials rely on. Every capability is already a plain function
-in `tools.py`, so the binding is thin by construction.
+See the ★ section above. `app/mcp/__init__.py` is a docstring. When built it must **not**
+gain a `.env` read — that is the guarantee the IMAP credentials rely on. Every capability
+is already a plain function in `tools.py`, so the binding is thin by construction.
+
+---
+
+## Planned — retire the LOG modal for a generated KB
+
+**Not built. Decided 2026-11-25.**
+
+The **Log** modal (`LogModal.jsx`, the *Evidence* panel) is a static read of
+`/api/health`, `/api/stats` and `/api/types`. It duplicates what a generated knowledge
+base would say better, and it is one more surface to keep in step with the schema.
+
+**The plan:**
+
+1. **A KB file generated on every ingest** — every count, every platform, the schema,
+   the store size, the embed coverage. One artifact, written by `ingest()`.
+2. **Available as a tool call** (`read_kb` or similar), so any agent — the local chat,
+   MCP, a future one — asks the store what it holds instead of guessing.
+3. **Then delete `LogModal.jsx`** and its title-bar button.
+
+**Why a file and not a live query.** The same reason `evidence_counts` exists: an agent
+that can ask "what is in this store" in one call does not burn a tool round discovering
+it. A generated file also gives the user something to read without the app running.
+
+**Do not delete the modal until the KB exists** — it is currently the only place the
+store's shape is visible in the UI.
 
 ---
 
@@ -497,6 +576,78 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
 ---
 
 ## Done — one line each
+
+- **2026-11-25** — **Five small fixes.** (1) Vector results now show **`N% match`** —
+  only for body hits whose score is 0–1, because a BM25 score is unbounded and means
+  nothing as a percentage. (2) **Clicking a result now zooms and halos** — it was
+  haloing the *message* key while the canvas draws *Thread* nodes, so nothing matched
+  and the camera never moved; it now uses the thread key. (3) The chat shows the user's
+  bubble **before** "thinking…", not after the reply. (4) `uvicorn` access logging is
+  **off** — the console was buried in `GET /static/icons/*.svg 304` lines; startup,
+  shutdown and errors still print. Added `app/static/favicon.svg` (the bag ring + merged
+  node, in 32px). (5) A transcript persisted before a model swap keeps the old model
+  name on old turns — accurate, but it reads as a bug, so it now says `(then)` when it
+  differs from the live model.
+
+- **2026-11-25** — **One activity trace for search, chat and MCP.**
+  `components/ActivityLog.jsx` + `useActivity()` replace the static canvas chips with a
+  live feed bottom-left: every search (`bm25 “invoice” → 15`), every chat tool call
+  (`search_vector({...})`) and, when MCP is built, every MCP call — one row each, tagged
+  by source, with milliseconds and a red row on failure. In memory only, capped at 40,
+  collapsible, clearable. Brighter than the chips it replaced, because it is meant to be
+  read at a glance. **MCP itself is still not built** — `app/mcp/` is one docstring;
+  `mcp` is installed and the tool set is decided, so it is unstarted, not blocked.
+
+- **2026-11-25** — **Flush fidelity test; two real bugs it caught.**
+  `test_flush_is_byte_identical_for_every_node_and_edge` diffs every node's labels and
+  properties and every edge's type, endpoints and properties before and after a flush.
+  It caught (1) the rebuild not copying **indexes**, so BM25 broke after a *vector*
+  flush — a mode unrelated to vectors; and (2) recreating only the indexes for labels
+  that hold nodes, which lost `place_key` and friends on a store with empty entity
+  legs. The flush now replays `writer._SCHEMA` in full. Index **definitions** are
+  compared, not names (`Message_key` vs `msg_key` is the same index). Suite 500 → **501
+  passed**. Documented in `tests/README.md` and `TECHREADME.md` §10 as a Relate
+  limitation worth reporting upstream: no surgical property removal, no compaction.
+
+- **2026-11-25** — **Delete embeds: a real flush, 207 s → 1.9 s.** Nulling a property
+  frees nothing on Relate (measured: `SET m.emb = null` *grows* the file; `DROP INDEX`
+  and `flush()` free nothing; there is no compaction API), so `flush_embeddings()`
+  rewrites the store into a fresh `.rl` and swaps it in — **64.7 MB → 3.6 MB in 1.9 s**,
+  all 3,113 nodes and 3,183 edges kept. Three bugs found by timing each phase: the
+  scratch name `graph.rl.flush` was read as a *directory* store (empty graph, reported
+  success); unlabelled `MATCH (a {key: …})` scanned every node per edge (83 s of the
+  total); and a rebuild copies nodes and edges but **not indexes**, so the first search
+  after a flush failed — it now recreates `msg_body` and `msg_emb`. Utilities shows
+  `N embedded · N screened · vector store N MB` with **Embed now** / **Delete embeds**,
+  and re-arms without a refresh. Suite 497 → **500 passed**.
+
+- **2026-11-25** — **Search finds names; greetings are screened; modes are radios.**
+  Typing `Moreno` returned nothing because `search_fulltext` scanned `m.body` only —
+  `Alicia Moreno` exists with 8 messages and **zero** bodies contain the word. Added
+  `_name_matches()` (substring on `Correspondent.display_name`, returned as **thread**
+  rows, name hits first, no duplicate thread) to both fulltext and vector. Added
+  `screen_body()` — a spaCy POS test for subject **and** predicate, so `hi`/`ok`/
+  `thanks`/`im going there`/`what time is it at` are stamped `emb_skipped` and never
+  embedded; measured **744 of 2,281 (33%)** screened out, and *"money I owe someone"*
+  went from `hi` to *"still paying off the Steinway grand"*. The screener fails open.
+  The search mode control became a **radio group** expanding from a caret
+  (Search / Vector / Cypher) plus a plain Search button — cycling made the current
+  mode a guess. `tests/test_search.py` adds 19 tests; suite 478 → **497 passed**.
+
+- **2026-11-25** — **Search rebuilt: BM25 default, vector toggle, embeddings as an
+  opt-in pass.** The search bar's three modes are `fulltext` (BM25, default) → `vector`
+  (semantic) → `cypher`, cycled by one button. A yellow **run embeds** pill appears when
+  Vector is selected and the store has no vectors. Utilities gained an **Embed now**
+  section with a live log and a Stop button. **Ingest never embeds** — measured 42 msg/s
+  on short bodies, 3 msg/s on long ones, so a 200k store is hours; the pass is batched at
+  128 with a halving retry on 400 (the ceiling is token-dependent, not a fixed count).
+  Live store fully embedded: 2,281 messages in 55.8 s. Chat tools became
+  `search_vector` (default — tolerates typos and natural language) + `search_fulltext`.
+  **Two engine facts corrected:** Relate *does* have fulltext indexes (BM25, since
+  0.1.1) and vector indexes stay live on later writes and `SET` — both verified on
+  1.0.1. `models.py` gained `num_predict` (an unset limit lets reasoning eat the budget
+  and return an empty answer), `num_thread: 4` (4P+8E; E-cores lose tok/s) and
+  `keep_alive: -1`.
 
 - **2026-11-24** — **Thread titles lost their platform token.** `WhatsApp; Fred Jones;
   01-28-2024->` → `Fred Jones; 01-28-2024->`, in the canvas label and the Viewer alike,

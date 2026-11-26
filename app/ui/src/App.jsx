@@ -4,6 +4,7 @@ import { api } from "./lib/api.js";
 import { loadTheme, saveTheme } from "./config/theme.js";
 import { useViewerStack } from "./lib/useViewerStack.js";
 
+import { ActivityLog, useActivity } from "./components/ActivityLog.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import CommandBar from "./components/CommandBar.jsx";
 import GraphCanvas from "./components/GraphCanvas.jsx";
@@ -40,7 +41,11 @@ export default function App() {
   const [chatExpanded, setChatExpanded] = useState(false);
   const [viewerExpanded, setViewerExpanded] = useState(false);
   const [modal, setModal] = useState(null);
-  const [searchMode, setSearchMode] = useState("substring");
+  const [searchMode, setSearchMode] = useState("fulltext");
+  const [embedStatus, setEmbedStatus] = useState(null);
+  const [mcpConnected, setMcpConnected] = useState(false);
+  // One activity feed for every surface that touches the store: search, chat, MCP.
+  const activity = useActivity();
   const [graph, setGraph] = useState(null);
   const [graphError, setGraphError] = useState(null);
   const [stats, setStats] = useState(null);
@@ -104,10 +109,15 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    // **`embedStatus` is NOT in this Promise.all.** It opens the store, and the store
+    // is now ~65 MB because of the vectors, so a connection costs ~0.5 s. Blocking
+    // boot on it delayed the whole UI. It is only needed to decide whether to show
+    // the "run embeds" pill, so it loads after the app is already usable.
     Promise.all([api.health(), api.stats(), api.platforms()])
       .then(([health, counts, platformData]) => {
         if (cancelled) return;
         setStoreOk(!!health.store_exists);
+        setMcpConnected(!!health.mcp_active);
         setStats(counts);
         setPlatforms({
           active: platformData.active,
@@ -118,6 +128,15 @@ export default function App() {
       .catch(() => {
         /* the canvas will report the real error */
       });
+
+    // Deferred: the pill can appear a moment later without holding up the app.
+    api
+      .embedStatus()
+      .then((embeds) => {
+        if (!cancelled) setEmbedStatus(embeds);
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
     };
@@ -214,11 +233,19 @@ export default function App() {
   const runSearch = useCallback(
     async (query, mode) => {
       setSearchBusy(true);
+      const started = performance.now();
+      const label =
+        mode === "vector" ? "vector" : mode === "cypher" ? "cypher" : "bm25";
       try {
         const result = await api.search({
           query,
           mode,
           limit: mode === "cypher" ? 200 : 40,
+        });
+        activity.push({
+          source: "search",
+          text: `${label} “${query}” → ${result.count || 0}`,
+          ms: performance.now() - started,
         });
 
         if (mode === "cypher") {
@@ -234,7 +261,7 @@ export default function App() {
         } else {
           viewer.push({
             kind: "results",
-            mode: "substring",
+            mode: result.mode || mode,
             query,
             rows: result.hits || [],
             count: result.count || 0,
@@ -242,6 +269,12 @@ export default function App() {
           });
         }
       } catch (err) {
+        activity.push({
+          source: "search",
+          text: `${label} “${query}” failed: ${err.message}`,
+          ms: performance.now() - started,
+          status: "error",
+        });
         viewer.push({
           kind: "results",
           mode,
@@ -254,7 +287,7 @@ export default function App() {
         setSearchBusy(false);
       }
     },
-    [viewer.push],
+    [viewer.push, activity.push],
   );
 
   const onChatResults = useCallback((entry) => viewer.push(entry), [viewer.push]);
@@ -314,9 +347,9 @@ export default function App() {
       <CommandBar
         onSearch={runSearch}
         searchMode={searchMode}
-        onToggleSearchMode={() =>
-          setSearchMode((mode) => (mode === "cypher" ? "substring" : "cypher"))
-        }
+        onSetSearchMode={setSearchMode}
+        embedStatus={embedStatus}
+        mcpConnected={mcpConnected}
         chatOpen={chatOpen}
         onToggleChat={() => setChatOpen((open) => !open)}
         onOpenModal={setModal}
@@ -334,6 +367,7 @@ export default function App() {
               theme={theme}
               context={context}
               onResults={onChatResults}
+              onActivity={activity.push}
               expanded={chatExpanded}
               onToggleExpand={() => setChatExpanded((value) => !value)}
             />
@@ -377,6 +411,9 @@ export default function App() {
             )}
             {searchBusy && <span className="canvas-chip">searching…</span>}
           </div>
+
+          {/* One trace for every surface that touches the store. */}
+          <ActivityLog entries={activity.entries} onClear={activity.clear} />
         </main>
 
         <aside className={`pane viewer${viewerExpanded ? " expanded" : ""}`}>
@@ -389,6 +426,7 @@ export default function App() {
             onBack={onBack}
             canBack={viewer.canBack}
             depth={viewer.depth}
+            onOpenModal={setModal}
           />
         </aside>
       </div>

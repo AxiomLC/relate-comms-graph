@@ -34,10 +34,12 @@ TIMEOUT = httpx.Timeout(connect=3.0, read=180.0, write=10.0, pool=3.0)
 # Tools the chat may call. Read-only by default; write tools are added only when the
 # user has flipped the toggle, and `prune_spool` is never offered — a model must not
 # be one word away from deleting the user's downloads.
-# Fewer tools, better selection. A local 8B model given seven overlapping options
-# picks the wrong one; given five distinct ones it mostly does not.
+# Fewer tools, better selection. A local model given seven overlapping options picks
+# the wrong one; given six distinct ones it mostly does not. `types_present` is
+# deliberately absent — the prompt no longer mentions it either.
 _CHAT_TOOLS = (
-    "evidence_counts", "search_messages", "thread_arc", "message_view", "run_cypher",
+    "evidence_counts", "search_vector", "search_fulltext", "thread_arc",
+    "message_view", "run_cypher",
 )
 
 # `graph_slice` is deliberately absent: it is the canvas payload (1,546 nodes), not
@@ -53,12 +55,19 @@ stored as a graph in a local database.
 
 WHICH TOOL TO USE
 - "how many messages / threads / people do I have" -> evidence_counts
-- "what types of data are there"                  -> types_present
-- "find messages about X"                         -> search_messages
-- "show me the conversation with X"               -> search_messages first, then \
+- "find messages about X"                         -> search_vector FIRST
+- the user misspells a name or word                -> search_vector (it tolerates \
+slips; search_fulltext does not)
+- an exact word or phrase, or search_vector says \
+no embeddings exist                              -> search_fulltext
+- "show me the conversation with X"               -> search_vector first, then \
 thread_arc with the thread_key it returns
 - "what did they say" (one message)               -> message_view
 - anything structural the tools above cannot do   -> run_cypher
+
+search_vector is semantic: it matches meaning, so "money I owe someone" works. \
+search_fulltext is BM25: it matches exact words, so it is better for a rare \
+term or a quoted phrase. Prefer search_vector unless it fails.
 
 Never call thread_arc without a real thread_key. If you do not have one, search \
 first.
@@ -155,6 +164,7 @@ def _run_turn(
         "messages": messages,
         "stream": False,
         "think": models.THINK,
+        "keep_alive": models.KEEP_ALIVE,
         "options": models.OPTIONS,
         "tools": [_ollama_tool(name) for name in allowed],
     }
@@ -194,7 +204,11 @@ def _strip_thinking(text: str) -> str:
     `<think\u200b>...</think\u200b>` into `content` (note the zero-width space). Left in,
     the user reads the model's scratchpad instead of its answer.
     """
-    cleaned = _THINK_BLOCK.sub("", text)
+    # Ollama's streaming parser inserts U+200B inside a tag the model spelled out
+    # with ordinary tokens (ollama#19829). Left in, `</think\u200b>` does not match
+    # `</think\s*>` and the whole scratchpad reaches the user.
+    cleaned = text.replace("\u200b", "")
+    cleaned = _THINK_BLOCK.sub("", cleaned)
     cleaned = _THINK_OPEN.sub("", cleaned)
     return cleaned.strip()
 

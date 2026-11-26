@@ -19,20 +19,43 @@ trusting the default on hard input.
 from __future__ import annotations
 
 # The model used unless a caller explicitly asks for another.
-DEFAULT_MODEL = "lfm2.5:8b"
+DEFAULT_MODEL = "qwen3.5:4b" # qwen3.5:4b  lfm2.5:8b
 
-# Kept for tasks that need denser, more consistent output (or when lfm misses).
-# Not the default, but not deleted - it earns its disk on hard inputs.
-FALLBACK_MODEL = "qwen3.5:4b"
+# **Currently the same as DEFAULT_MODEL**, because the default was switched to qwen.
+# Kept as a separate name so `pick()` still has a second rung: when the default moves
+# back to lfm2.5:8b, this is the denser model for `thread_summary` / `semantic_pii`.
+FALLBACK_MODEL = "qwen3.5:4b"  # lfm2.5:8b
 
 EMBED_MODEL = "embeddinggemma"
 
-# Turn thinking off. Measured: 368 tokens / 39.1 s -> 10 tokens / 1.4 s for "hello".
-# Anything that honours `think` gets this for tagging and extraction.
+# Ask for no reasoning. Honoured by qwen3.5:4b; a NO-OP on lfm2.5:8b, which is a
+# reasoning-only model with no switch (Liquid AI: "Can switch off: No"). Kept because
+# it is the only legal value there and it is load-bearing on the fallback model.
+#
+# The old "368 tokens / 39.1 s -> 10 tokens / 1.4 s" note was measured on a model
+# that honours the flag. It does NOT describe lfm2.5:8b.
 THINK = False
 
-# num_ctx is set globally via OLLAMA_CONTEXT_LENGTH; kept here so calls are explicit.
-OPTIONS = {"temperature": 0, "num_ctx": 8192}
+# Speed knobs, CPU-only box. Every one of these was chosen from measurement or from
+# the engine's own defaults, not taste:
+#
+#   num_ctx      8192  prefill is the CPU bottleneck; unused context still costs.
+#   num_predict  2048  MUST be set. The default (-1) lets reasoning tokens eat the
+#                      whole budget, and the model is then cut off mid-thought with
+#                      an EMPTY answer. That is the empty-reply bug.
+#   num_thread      4  the i5-12500H is 4 P-cores + 8 E-cores. llama.cpp scales
+#                      poorly onto E-cores and oversubscribing often LOSES tok/s.
+#                      Raise to 6/8 only if a local benchmark says so.
+OPTIONS = {
+    "temperature": 0,
+    "num_ctx": 8192,
+    "num_predict": 2048,
+    "num_thread": 4,
+}
+
+# Keep the model resident. A cold load of a 5 GB model is pure latency, and the
+# default 5-minute idle eviction means the first question after a pause pays it.
+KEEP_ALIVE = -1
 
 
 def pick(task: str, explicit: str | None = None) -> str:

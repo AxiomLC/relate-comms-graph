@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { api } from "../../lib/api.js";
@@ -27,6 +27,94 @@ export default function UtilitiesModal({ onClose, onChanged }) {
   const [enabled, setEnabled] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+
+  // --- embeddings ---------------------------------------------------------
+  // A separate, opt-in pass. Never part of ingest: measured at 3-42 msg/s
+  // depending on body length, so a large store is hours of work.
+  const [embed, setEmbed] = useState(null);
+  const [embedBusy, setEmbedBusy] = useState(false);
+  const [flushBusy, setFlushBusy] = useState(false);
+  const [embedLog, setEmbedLog] = useState([]);
+  const [embedError, setEmbedError] = useState(null);
+  const stopRef = useRef(false);
+
+  const runFlush = async () => {
+    setFlushBusy(true);
+    setEmbedError(null);
+    setEmbedLog((prev) => [...prev, "deleting embeddings…"]);
+    try {
+      const result = await api.flushEmbeds({ writeEnabled: true });
+      setEmbedLog((prev) => [
+        ...prev,
+        `deleted — ${result.nodes} nodes kept, ${result.edges} edges kept`,
+        `reclaimed ${result.reclaimed_mb} MB (${result.mb_before} → ${result.mb_after} MB)`,
+      ]);
+      // Re-read the status so the button re-arms without a page refresh.
+      await refreshEmbed();
+    } catch (err) {
+      setEmbedError(err.message);
+      setEmbedLog((prev) => [...prev, `error: ${err.message}`]);
+    } finally {
+      setFlushBusy(false);
+    }
+  };
+
+  const refreshEmbed = useCallback(
+    () =>
+      api
+        .embedStatus()
+        .then((data) => {
+          setEmbed(data);
+          return data;
+        })
+        .catch((err) => {
+          setEmbedError(err.message);
+          return null;
+        }),
+    [],
+  );
+
+  useEffect(() => {
+    refreshEmbed();
+  }, [refreshEmbed]);
+
+  const runEmbed = async () => {
+    stopRef.current = false;
+    setEmbedBusy(true);
+    setEmbedError(null);
+    setEmbedLog(["starting…"]);
+
+    let total = 0;
+    let skipped = 0;
+    try {
+      for (;;) {
+        if (stopRef.current) {
+          setEmbedLog((prev) => [...prev, "stopped by user"]);
+          break;
+        }
+        const result = await api.embed({ limit: 5000, writeEnabled: true });
+        total += result.embedded || 0;
+        skipped += result.skipped || 0;
+        setEmbedLog((prev) => [
+          ...prev,
+          `batch: ${result.embedded} embedded · ${result.skipped} skipped ` +
+            `· ${result.remaining} remaining`,
+        ]);
+        await refreshEmbed();
+        if (result.done || (!result.embedded && !result.skipped)) break;
+      }
+      setEmbedLog((prev) => [
+        ...prev,
+        `done — ${total} embedded, ${skipped} skipped this run`,
+      ]);
+    } catch (err) {
+      setEmbedError(err.message);
+      setEmbedLog((prev) => [...prev, `error: ${err.message}`]);
+    } finally {
+      setEmbedBusy(false);
+      await refreshEmbed();
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -141,6 +229,67 @@ export default function UtilitiesModal({ onClose, onChanged }) {
           hint="Clearing the filter is not the same as ticking every box: a platform added later is included automatically."
         />
       </div>
+
+      <hr style={{ margin: "18px 0 14px", border: 0, borderTop: "1px solid var(--line)" }} />
+
+      <div className="pane-title" style={{ marginBottom: 8 }}>
+        <strong>Embeddings Ingest</strong>
+      </div>
+
+      <div className="pager-info" style={{ marginBottom: 4 }}>
+        running: {embed?.model || "embeddinggemma"}
+      </div>
+      <div className="pager-info" style={{ marginBottom: 4 }}>
+        Expect ~60s for 2,000 short messages | 5-15 min for a real 4,000-message
+        graph
+      </div>
+      <div className="pager-info" style={{ marginBottom: 10 }}>
+        {embed
+          ? `${formatCount(embed.embedded)} embedded · ` +
+            `${formatCount(embed.skipped)} screened · ` +
+            `vector store ${embed.store_mb} MB`
+          : "reading…"}
+      </div>
+
+      {embedError && <div className="error">{embedError}</div>}
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+        <button onClick={runEmbed} disabled={embedBusy || flushBusy}>
+          {embedBusy ? (
+            <>
+              <Loader2 size={12} className="spin" /> Embedding…
+            </>
+          ) : (
+            "Embed now"
+          )}
+        </button>
+        {embedBusy && (
+          <button className="ghost" onClick={() => (stopRef.current = true)}>
+            Stop
+          </button>
+        )}
+        <button
+          className="ghost"
+          onClick={runFlush}
+          disabled={embedBusy || flushBusy || !embed?.embedded}
+          title={
+            "Delete every vector and reclaim the disk. The graph itself is kept — " +
+            "only the embeddings go."
+          }
+        >
+          {flushBusy ? (
+            <>
+              <Loader2 size={12} className="spin" /> Deleting…
+            </>
+          ) : (
+            "Delete embeds"
+          )}
+        </button>
+      </div>
+
+      {embedLog.length > 0 && (
+        <pre className="embed-log">{embedLog.slice(-8).join("\n")}</pre>
+      )}
     </Modal>
   );
 }

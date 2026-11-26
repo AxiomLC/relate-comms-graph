@@ -39,9 +39,7 @@ Three more, for the ingest path:
 | **Export** | The copy inside `spool/`, which is what actually gets parsed. |
 | **Root** | The spool queue to read: `spool/real/`. There is **one** queue — a generated sample is just a file dropped in it, and `ingest` cannot tell it from a real export. |
 
-**`Person`, `Place`, `Organization`, `Product` are not terms in this app yet.** They name a
-*future* extraction step: entities pulled out of a message body that are neither the Owner
-nor a Correspondent. Nothing in the store, the code or the UI uses them today.
+**`Place`, `Organization`, `Product` are the message body nodes; extracted. 'Correspondent' is the sender of the thread, to the Owner (you). Person node is placeholder and not wired in as to not cause confusion with Correspondent**
 
 **Display note:** the platform key `messenger` is stored as-is (it is part of every
 `Message.key`), but the UI always shows it as **Fcbk Mssgr** — never bare "Messenger",

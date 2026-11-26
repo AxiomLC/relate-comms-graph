@@ -82,6 +82,7 @@ export default function Viewer({
   onBack,
   canBack,
   depth,
+  onOpenModal,
 }) {
   return (
     <>
@@ -102,7 +103,13 @@ export default function Viewer({
 
       {!entry && <EmptyViewer />}
       {entry?.kind === "results" && (
-        <ResultsView entry={entry} onOpen={onOpen} onHalo={onHalo} onFocus={onFocus} />
+        <ResultsView
+          entry={entry}
+          onOpen={onOpen}
+          onHalo={onHalo}
+          onFocus={onFocus}
+          onOpenModal={onOpenModal}
+        />
       )}
       {entry?.kind === "node" && entry.nodeType === "Thread" && (
         <ThreadView entry={entry} onOpen={onOpen} />
@@ -162,13 +169,28 @@ function EmptyViewer() {
 
 /* ---------------------------------------------------------------- results */
 
-function ResultsView({ entry, onOpen, onHalo, onFocus }) {
+function ResultsView({ entry, onOpen, onHalo, onFocus, onOpenModal }) {
   const { rows, query, mode, truncated, count, error, cypher } = entry;
 
   if (error) {
+    // **Name the mode that failed.** "Search failed" is useless: BM25, vector and
+    // cypher are three different promises, and only one of them can be empty.
+    const label =
+      mode === "vector" ? "Vector search" : mode === "cypher" ? "Cypher" : "BM25 search";
+    const needsEmbeds = mode === "vector" && /vector store empty/i.test(error);
     return (
       <div className="pane-body">
-        <div className="error">{error}</div>
+        <div className="error">
+          <strong>{label}</strong> — {error}
+        </div>
+        {needsEmbeds && (
+          <button
+            style={{ marginTop: 10 }}
+            onClick={() => onOpenModal?.("utilities")}
+          >
+            Open Utilities
+          </button>
+        )}
       </div>
     );
   }
@@ -218,12 +240,15 @@ function ResultRow({ row, onOpen, onHalo, onFocus }) {
     ? `${row.platform}:${row.chat_id}`
     : null);
 
-  const target = row.thread_key || row.type === "Thread" ? "Thread" : null;
+  // **What the canvas can actually find.** A body hit carries a *message* key, but
+  // the canvas draws Thread nodes — so haloing `row.key` matched nothing and the
+  // camera never moved. The thread key is the node that exists.
+  const canvasKey = row.type === "Thread" ? (row.key || row.id) : (threadKey || key);
 
   const handle = () => {
     // A result row sets BOTH halo and fly-to (UI-Cytoscape.md §10).
-    if (key) onHalo?.(key);
-    if (key) onFocus?.(key);
+    if (canvasKey) onHalo?.(canvasKey);
+    if (canvasKey) onFocus?.(canvasKey);
 
     if (row.kind === "thread" || row.type === "Thread") {
       onOpen?.({
@@ -256,15 +281,22 @@ function ResultRow({ row, onOpen, onHalo, onFocus }) {
     }
   };
 
+  // A vector hit carries a cosine score 0-1; BM25 carries an unbounded score that
+  // means nothing to a reader. Show a percentage only where it is a percentage.
+  const match = typeof row.score === "number" && row.match === "body" && row.score <= 1
+    ? Math.round(row.score * 100)
+    : null;
+
   return (
     <button className="result-row" onClick={handle}>
       <div className="result-snippet">{snippet}</div>
       <div className="result-meta">
+        {match != null && <span className="result-match">{match}% match</span>}
+        {match != null ? " · " : ""}
         {platformLabel(platform)}
         {row.ts_utc ? ` · ${formatDateTime(row.ts_utc)}` : ""}
         {row.sender_name ? ` · ${row.sender_name}` : ""}
         {row.is_self ? " · you" : ""}
-        {target ? "" : ""}
       </div>
     </button>
   );

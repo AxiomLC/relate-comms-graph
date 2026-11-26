@@ -101,7 +101,7 @@ export const api = {
 
   search: ({
     query,
-    mode = "substring",
+    mode = "fulltext",
     limit = 25,
     platform = null,
     threadKey = null,
@@ -117,6 +117,20 @@ export const api = {
         thread_key: threadKey,
         params,
       }),
+    }),
+
+  embedStatus: () => request("/api/embed/status"),
+
+  embed: ({ limit = 5000, writeEnabled = false } = {}) =>
+    request("/api/embed", {
+      method: "POST",
+      body: JSON.stringify({ limit, write_enabled: writeEnabled }),
+    }),
+
+  flushEmbeds: ({ writeEnabled = false } = {}) =>
+    request("/api/embed/flush", {
+      method: "POST",
+      body: JSON.stringify({ write_enabled: writeEnabled, confirm: true }),
     }),
 
   chat: ({ message, messages = [], writeEnabled = false }) =>

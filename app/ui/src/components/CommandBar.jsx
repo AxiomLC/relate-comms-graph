@@ -1,9 +1,7 @@
 import { useState } from "react";
 import {
-  Braces,
   Orbit,
   Palette,
-  Search,
   SlidersHorizontal,
   Sparkles,
   Terminal,
@@ -20,7 +18,7 @@ import {
 export default function CommandBar({
   onSearch,
   searchMode,
-  onToggleSearchMode,
+  onSetSearchMode,
   chatOpen,
   onToggleChat,
   onOpenModal,
@@ -29,6 +27,8 @@ export default function CommandBar({
   platformsFiltered,
   activePlatforms,
   totalPlatforms,
+  embedStatus,
+  mcpConnected,
 }) {
   const [query, setQuery] = useState("");
 
@@ -37,11 +37,43 @@ export default function CommandBar({
     if (text) onSearch(text, searchMode);
   };
 
+  // Vector search is only meaningful once the store has vectors. `missing > 0` is
+  // the honest test: a half-embedded store still answers, just from fewer messages.
+  const vectorNeedsEmbeds =
+    searchMode === "vector" && embedStatus && embedStatus.missing > 0;
+
+  const MODES = [
+    {
+      key: "fulltext",
+      label: "search",
+      hint: "BM25 full-text — ranked, word matching, plus correspondent names",
+    },
+    {
+      key: "vector",
+      label: "vector",
+      hint: "Semantic — matches meaning, tolerates typos. Needs embeddings.",
+    },
+    {
+      key: "cypher",
+      label: "cypher",
+      hint: "Raw read-only Cypher against the graph",
+    },
+  ];
+
   return (
     <header className="titlebar">
-      <span className="badge" title={storeOk ? "store loaded" : "no store yet"}>
+      <span
+        className="badge"
+        title={
+          mcpConnected
+            ? "An MCP client is reading this store"
+            : storeOk
+              ? "store loaded · nothing leaves this machine"
+              : "no store yet"
+        }
+      >
         <span className={`dot${storeOk ? "" : " warn"}`} />
-        offline · nothing leaves this machine
+        {mcpConnected ? "MCP being accessed" : "offline - safe"}
       </span>
 
       <input
@@ -50,7 +82,9 @@ export default function CommandBar({
         placeholder={
           searchMode === "cypher"
             ? "MATCH (m:Message) RETURN m LIMIT 10"
-            : "Search messages…"
+            : searchMode === "vector"
+              ? "Describe what you are looking for…"
+              : "Search messages…"
         }
         value={query}
         onChange={(event) => setQuery(event.target.value)}
@@ -59,14 +93,39 @@ export default function CommandBar({
         }}
       />
 
-      <button
-        className={searchMode === "cypher" ? "active" : "ghost"}
-        onClick={onToggleSearchMode}
-        title="Switch between substring search and raw Cypher"
-      >
-        {searchMode === "cypher" ? <Braces size={13} /> : <Search size={13} />}
-        {searchMode === "cypher" ? "Cypher" : "Search"}
-      </button>
+      {/* **The mode radios, always visible.** No button to reveal them: they are
+          three words, and hiding three words behind a click bought nothing. */}
+      <div className="mode-radios" role="radiogroup" aria-label="Search mode">
+        {MODES.map((mode) => (
+          <label
+            key={mode.key}
+            className={`mode-radio${mode.key === searchMode ? " on" : ""}`}
+            title={mode.hint}
+          >
+            <input
+              type="radio"
+              name="search-mode"
+              checked={mode.key === searchMode}
+              onChange={() => onSetSearchMode(mode.key)}
+            />
+            {mode.label}
+          </label>
+        ))}
+      </div>
+
+      {vectorNeedsEmbeds && (
+        <button
+          className="warn-pill"
+          onClick={() => onOpenModal("utilities")}
+          title={
+            `${embedStatus.missing.toLocaleString()} of ` +
+            `${embedStatus.total.toLocaleString()} messages have no vector. ` +
+            "Open Utilities to run Embed now."
+          }
+        >
+          run embeds
+        </button>
+      )}
 
       <span className="spacer" />
 

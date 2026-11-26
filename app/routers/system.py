@@ -34,6 +34,11 @@ def health() -> dict:
         "store": str(path),
         "store_exists": path.exists(),
         "store_bytes": path.stat().st_size if path.exists() else 0,
+        # **Always False until the MCP surface is built.** `app/mcp/` is a docstring;
+        # there is no server to detect. The flag exists so the title bar's badge has
+        # one honest source, and so building MCP is a change here rather than in the
+        # UI. A hardcoded `true` in the UI would be a lie the moment it shipped.
+        "mcp_active": False,
     }
 
 

@@ -86,7 +86,7 @@ back; importing the library must not pull in FastAPI.
 | `link.py` | **Cross-connect.** `link(conn)` — union-find fold over phone / email / name / fuzzy. Runs once at the end of `ingest()`. Owns `merged_by`. |
 | `scrub.py` | `Verdict` (keep/hide/block), `AliasMap` (memory-only), Luhn check. |
 | `identity.py` · `manifest.py` | Who the **Owner** is (with `tz_offsets`) · what has been ingested (sampled fingerprint, a shortcut never the authority). |
-| `tools.py` | **The tool layer.** Schema from each signature. `DRAWABLE_NODE_TYPES` / `DRAWABLE_EDGE_TYPES` derive from the write table filtered by `PRODUCT_ENABLED`, never hand-listed. `_NODE_QUERIES`, `_EDGE_QUERIES`, `_SORTS`. |
+| `tools.py` | **The tool layer.** Schema from each signature. `DRAWABLE_NODE_TYPES` / `DRAWABLE_EDGE_TYPES` derive from the write table filtered by `PRODUCT_ENABLED`, never hand-listed. `_NODE_QUERIES`, `_EDGE_QUERIES`, `_SORTS`. Search: `search_fulltext` (BM25, default), `search_vector` (semantic), `search_messages` (legacy substring scan), `embed_status`, `embed_messages`. |
 | `models.py` · `cli.py` | Ollama model choice (`THINK = False`) · `python -m relate_comms`. |
 | `adapters/` | `parse(export_path, **kw)` + `detect(path)`. Built: `telegram`, `whatsapp`, `whatsapp_html`, `messenger`, `linkedin`, `email_imap`, `outlook_pst`, `sms`. **WhatsApp has two dialects** — native `chat.txt` and the extension's HTML — both reporting `whatsapp`; `_parser_for()` picks per file. |
 
@@ -113,6 +113,7 @@ React 19 + esbuild. `dist/app.js` is **committed** so a clone runs without npm.
 | `components/modals/` | `Modal.jsx` (+ `Slider`/`Check`/`TextField`, each with a hover `hint` and a visible `note`), then the five the title bar opens: **Log**, **Ingest**, **Canvas**, **Gravity**, **Utilities**. All are side-docked (`side`) so the graph stays visible. `SetupModal.jsx` exists but is not mounted. |
 | `config/theme.js` · `nodeTypes.js` | **Every tunable**, with only the user's *overrides* persisted · `NODE_TYPES` (the single declaration of a kind), platform colours, icons, placeholders. See [`UIVISUALS.md`](UIVISUALS.md) §10. |
 | `lib/api.js` · `useViewerStack.js` | The only server call site · the persisted state timeline. |
+| `components/ActivityLog.jsx` | **One activity trace for every surface that touches the store** — search, chat, and MCP when built. Bottom-left over the canvas, in memory only, capped at 40 rows. |
 
 ## 3. Key functions
 
@@ -121,7 +122,12 @@ React 19 + esbuild. `dist/app.js` is **committed** so a clone runs without npm.
 graph_slice(node_types=None, edge_types=None, limit=2000, sort="messages")
 configure_platforms(platforms)   active_platforms()
 thread_arc(thread_key, *, skip=0, limit=50, query=None)
-search_messages(query, *, limit=20, platform=None, thread_key=None)
+search_fulltext(query, *, limit=20, platform=None)   # BM25 bodies + names — the default
+search_vector(query, *, limit=20, platform=None)     # semantic; needs an embed pass
+search_messages(query, *, limit=20, platform=None, thread_key=None)  # legacy scan
+embed_status()   embed_messages(*, limit=5000, write_enabled=False)
+flush_embeddings(*, write_enabled=False, confirm=False)   # rebuild, reclaims disk
+screen_body(body) -> (keep, reason)   # subject+predicate test, fails open
 message_view(message_key)
 types_present()   evidence_counts()   run_cypher(query, params, *, limit=500)
 ingest(...)   preview_ingest(which)   verify_ingest(which)
@@ -193,6 +199,27 @@ store label; the fold, `mention_count`, the `MENTIONS` edge and `_reconcile` are
 
 **`Product` is gated by `extract.PRODUCT_ENABLED`.** Off returns the graph to Place+Org with
 no rebuild: the index stops promoting spans and `DRAWABLE_*` drops `Product`.
+
+**`Message.emb` is optional and never written by ingest.** A 768-float vector from
+`embeddinggemma`, written only by `tools.embed_messages` (the Utilities *Embed now*
+button). `msg_emb` is a `CREATE VECTOR INDEX`; `msg_body` is a `CREATE FULLTEXT INDEX`
+(BM25). Both are created in `writer._SCHEMA` and re-ensured by the search tools, so a
+store written before either existed still works.
+
+**`Message.emb_skipped` is a stamp, not a deletion.** `tools.screen_body()` drops a
+body with no subject and no predicate (`hi`, `ok`, `thanks`) before embedding — those
+vectors are near-identical and crowd every semantic result. The message stays fully
+searchable by fulltext and is never re-examined by the embed pass. The screener
+**fails open**: no spaCy means embed everything, because a missing vector is a silent
+hole and a junk vector is only noise.
+
+**A search covers names as well as bodies.** `_name_matches()` substring-matches
+`Correspondent.display_name` and returns **thread** rows. Without it, typing a
+person's name found nothing — a name is not in any message body.
+
+**Relate's vector index is exact NN, not HNSW** — a brute-force scan over vectors. Fine
+at a few thousand, linear at a million. The fulltext index is BM25 and is **word**
+matching: `"graf"` does not match `"grafana"`, and there is no stemming by default.
 
 **`Correspondent` is keyed `person:<canonical>`.** Two spellings of one name on one
 platform already collapsed via `canon`; dropping the platform prefix means the same
@@ -386,6 +413,14 @@ junk Organization we ever saw. Reported as a warning, never an error.
 | **A `MENTIONS` edge hangs off the Message** | `Thread → Entity` is a projection in `_EDGE_QUERIES`, not stored. Re-anchoring it means teaching `link._fold` the new source too — it re-points a loser's edges by pattern, and the wrong pattern matches nothing and then `DETACH DELETE` takes everything left. |
 | **Never trust a rebuild through a running server** | Modules cache in the process. A wipe + ingest through a stale server writes a store matching neither the old code nor the new, and reports success. Restart, then rebuild. |
 | **No adapter reads media** | A huge download costs the copy, not the parse — which is why size is a warning, not a refusal. |
+| **Ingest never embeds** | Embedding is 42 msg/s on short bodies but 3 msg/s on long ones. A 200k store is hours. It is a separate opt-in pass (`embed_messages`), batched, stoppable, and only touches `m.emb IS NULL`. |
+| **A search index is created on a writable connection** | `CREATE FULLTEXT INDEX` / `CREATE VECTOR INDEX` on a read-only connection fail with `WriteOnReadOnlyAccessDatabase`. The search tools open writable for the DDL and then run the read-only query on the same connection. |
+| **A name is not in any message body** | `search_fulltext` and `search_vector` both call `_name_matches()`. Scanning bodies alone made a correspondent's name unfindable — measured: `Alicia Moreno` had 8 messages and zero bodies containing "moreno". |
+| **A greeting is not a sentence** | `screen_body()` drops a body with no subject and no predicate before embedding. Those vectors are near-identical and crowd every semantic result. It **fails open** — no spaCy means embed everything. |
+| **Nulling a property frees no disk** | Relate is append-only and has no compaction API. `SET m.emb = null`, `REMOVE m.emb` and `DROP INDEX` all leave the bytes. Only rewriting the store reclaims — `flush_embeddings()` does that, and it must replay `writer._SCHEMA` afterwards because a rebuild copies nodes and edges, **not indexes**. |
+| **The flush rewrite is guarded by a fidelity test** | `test_flush_is_byte_identical_for_every_node_and_edge` diffs every node property and every edge before and after. It has already caught two real bugs. Change `flush_embeddings` only with that test green. |
+| **A scratch store's name must end in `.rl`** | `graph.rl.flush` is read as a **directory** store: the rebuild writes into a folder and the swap produces an empty graph that reports success. Use `graph.flush.rl`. |
+| **An unlabelled `MATCH (a {key: …})` scans every node** | Grouping edges by endpoint labels took a 3,183-edge rebuild from 83 s to under a second. |
 | **A WhatsApp chat downloaded both ways is one thread, not two** | `_chat_id()` hashes the chat *title*; `message_key()` truncates to the **minute**. Measured: 46 of 47 keys identical. |
 | **A failed leg restarts, it does not resume** | Continue re-runs the whole ingest without the failed leg. |
 | **Truncating the graph always truncates the manifest** | Left behind, the next ingest skips every file it has seen and produces an empty graph that looks successful. |
@@ -534,6 +569,16 @@ modal, or `localStorage.removeItem("relate.graphStyle.overrides")`.
   **cannot talk to Relate at all.** Not "needs an adapter": there is no socket.
 - `relate.Connection` exposes `execute, executemany, cursor, commit, rollback, close,
   flush, autocommit, namespace` and nothing else.
+- **There is no compaction, and deleting a property frees no disk.** Measured on 1.0.1:
+  `SET m.emb = null` and `REMOVE m.emb` both leave the file the same size or larger;
+  `DROP INDEX` frees nothing; `flush()` and `close()` free nothing; `db.checkpoint` is
+  listed by `SHOW PROCEDURES` but is not callable (`ProcedureNotFound`). Relate is
+  append-only, so the only way to reclaim space is to **rewrite the graph into a fresh
+  `.rl`** — which is what `tools.flush_embeddings()` does, in Python, at 1.5 s for
+  3,113 nodes and 3,183 edges. **This is a real limitation worth reporting upstream:**
+  there is no surgical way to drop a large property (a 768-float vector is ~30 KB on
+  disk) without copying the whole store. See `tests/README.md` for the fidelity test
+  that guards the rewrite.
 - Vector indexes are native (`CREATE VECTOR INDEX … OPTIONS {indexConfig: …}`,
   `db.index.vector.queryNodes`). There is **no inline `cosine_similarity()`**, so hybrid
   search is "vector query, then traverse".

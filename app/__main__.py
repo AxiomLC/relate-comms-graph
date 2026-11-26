@@ -24,12 +24,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reload", action="store_true", help="restart on file change")
     args = parser.parse_args(argv)
 
+    # **Access logging off.** Every icon is a separate request, and the canvas asks
+    # for ~40 of them on first paint — the console filled with `GET /static/icons/
+    # place-email.svg 304 Not Modified` and buried the lines that matter (ingest
+    # progress, errors, the port). `log_level="warning"` keeps startup, shutdown and
+    # every error; it drops the per-request line.
     uvicorn.run(
         "app.main:app",
         host="127.0.0.1",
         port=args.port,
         reload=args.reload,
-        log_level="info",
+        log_level="warning",
+        access_log=False,
     )
     return 0
 

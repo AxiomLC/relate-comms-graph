@@ -1,6 +1,6 @@
 # tests/
 
-`python -m pytest tests -q` → **485 passed, 2 skipped**, ~88 s.
+`python -m pytest tests -q` → **501 passed, 10 skipped**, ~71 s.
 
 Two kinds of test live here, and they answer different questions:
 
@@ -86,6 +86,36 @@ count. Two rules keep it there:
 
 If it needs to go faster, `pytest-xdist -n auto` is the next lever; the tests are
 independent and share no store.
+
+---
+
+## The flush fidelity test — why it exists
+
+`test_flush_is_byte_identical_for_every_node_and_edge` in `test_search.py` is the most
+important test in this directory. Read it before changing `tools.flush_embeddings`.
+
+**Why.** Relate has no compaction. Deleting a property (`REMOVE m.emb`) frees no disk;
+the file only grows. So "delete the vectors" is implemented as **our own Python rewrite**:
+read every node and edge, write them into a fresh `.rl`, swap it in. That is a copy of
+the user's entire graph, written by hand — the highest-risk code in the app.
+
+The test dumps every node's labels and every property, and every edge's type, endpoints
+and properties, before and after, and asserts the two sets are identical. It also
+asserts every index definition survives.
+
+**It has already caught two real bugs:**
+
+1. The rebuild copied nodes and edges but **not indexes**, so BM25 search broke after a
+   vector flush — a mode that has nothing to do with vectors.
+2. Recreating only the indexes for labels that *hold nodes* lost `place_key` and
+   friends on a store whose entity legs were empty.
+
+**Compare index definitions, not names.** The live store's indexes carry auto-generated
+names (`Message_key`) from an older `_SCHEMA`; a rebuild replays the current one and
+names them `msg_key`. Same index, different label.
+
+**If you add a property type or a relationship property to the writer, this test is what
+stops the flush from silently dropping it.**
 
 ---
 
