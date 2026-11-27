@@ -102,45 +102,18 @@ function windowStart(months) {
   return date.toISOString().slice(0, 10);
 }
 
-/** Which IMAP host a mail domain implies. Mirrors the server's table. */
-const HOSTS = {
+/**
+ * **No provider table, no domain guessing.**
+ *
+ * There used to be a 15-entry `HOSTS` map and a `providerFor()` that turned an unknown
+ * domain into the pseudo-provider `custom` — which the server then refused, silently.
+ * The host is now a field the user fills in and can see. The only convenience left is
+ * the two hosts nobody should have to remember.
+ */
+const HOST_HINTS = {
   "gmail.com": "imap.gmail.com",
   "googlemail.com": "imap.gmail.com",
-  "outlook.com": "outlook.office365.com",
-  "hotmail.com": "outlook.office365.com",
-  "live.com": "outlook.office365.com",
-  "yahoo.com": "imap.mail.yahoo.com",
-  "icloud.com": "imap.mail.me.com",
-  "me.com": "imap.mail.me.com",
-  "zoho.com": "imap.zoho.com",
-  "fastmail.com": "imap.fastmail.com",
-  "gmx.com": "imap.gmx.com",
-  "gmx.net": "imap.gmx.com",
-  "yandex.com": "imap.yandex.com",
-  "aol.com": "imap.aol.com",
-  "hostinger.com": "imap.hostinger.com",
 };
-
-function hostFor(email) {
-  const domain = (email.split("@")[1] || "").toLowerCase();
-  if (!domain) return "";
-  return HOSTS[domain] || `mail.${domain}`;
-}
-
-/** A provider name for the request, from the address. `custom` for anything else. */
-function providerFor(email) {
-  const domain = (email.split("@")[1] || "").toLowerCase();
-  if (!domain) return "";
-  const known = {
-    "gmail.com": "gmail", "googlemail.com": "gmail",
-    "outlook.com": "outlook", "hotmail.com": "outlook", "live.com": "outlook",
-    "yahoo.com": "yahoo", "icloud.com": "icloud", "me.com": "icloud",
-    "zoho.com": "zoho", "fastmail.com": "fastmail",
-    "gmx.com": "gmx", "gmx.net": "gmx", "yandex.com": "yandex",
-    "aol.com": "aol", "hostinger.com": "hostinger",
-  };
-  return known[domain] || "custom";
-}
 
 export default function IngestModal({ onClose, onIngested }) {
   // --- drop box ------------------------------------------------------------
@@ -155,12 +128,39 @@ export default function IngestModal({ onClose, onIngested }) {
   const dropHandlerRef = useRef(null);
 
   // --- IMAP ----------------------------------------------------------------
+  // **One checkbox, no button.** Ticking it means "read this mailbox as part of this
+  // ingest". The four values travel with the run and reach `.env` only if the run
+  // succeeds — so a wrong password leaves nothing behind.
+  const [imapOn, setImapOn] = useState(false);
   const [imapEmail, setImapEmail] = useState("");
   const [imapPassword, setImapPassword] = useState("");
   const [imapHost, setImapHost] = useState("");
   const [imapPort, setImapPort] = useState("993");
+  // Reveal is local-only: it flips the input's `type`, nothing leaves the browser.
+  const [showPassword, setShowPassword] = useState(false);
   const [envStatus, setEnvStatus] = useState(null);
-  const [envSaved, setEnvSaved] = useState(null);
+
+  // **Autofill on a match, never on open.** Nothing is filled until the user has typed
+  // at least three characters of the saved address; then host and port fill in. The
+  // password field stays empty and its placeholder says one is saved — the secret never
+  // enters the DOM.
+  //
+  // Filling on mount was wrong: the modal opened with a mailbox already in the box, so
+  // it looked like the app had chosen one for you.
+  const saved = envStatus || {};
+  const typed = imapEmail.trim().toLowerCase();
+  const matchesSaved =
+    typed.length >= 3 && !!saved.email && saved.email.toLowerCase().startsWith(typed);
+  const savedPassword = matchesSaved && !!saved.password_present;
+
+  // Fill host and port once a typed prefix matches the saved address. Guarded by
+  // `matchesSaved` so it never fires on mount, and by the field being empty so it never
+  // overwrites something the user typed.
+  useEffect(() => {
+    if (!matchesSaved) return;
+    setImapHost((current) => current || saved.host || "");
+    setImapPort((current) => current || saved.port || "993");
+  }, [matchesSaved, saved.host, saved.port]);
 
   // --- settings ------------------------------------------------------------
   const [tzOffset, setTzOffset] = useState("");
@@ -332,28 +332,6 @@ export default function IngestModal({ onClose, onIngested }) {
     }
   };
 
-  /** Write IMAP credentials to `./.env`. Its own button, never a side effect. */
-  const saveCredentials = async () => {
-    setBusy(true);
-    setError(null);
-    setEnvSaved(null);
-    try {
-      const result = await api.saveEnv({
-        email: imapEmail.trim(),
-        password: imapPassword,
-        host: imapHost.trim() || null,
-        port: Number(imapPort) || 993,
-        write_enabled: writeEnabled,
-      });
-      setEnvSaved(result);
-      setImapPassword("");
-      api.envStatus().then(setEnvStatus).catch(() => {});
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   /**
    * One ingest run.
@@ -364,6 +342,31 @@ export default function IngestModal({ onClose, onIngested }) {
    * costs only the parse. Resuming mid-pipeline would mean holding a half-written
    * batch across a user decision, which is a far worse thing to get wrong.
    */
+  /**
+   * Wait for a background job to finish, reporting progress as it goes.
+   *
+   * Polls every 700 ms — fast enough that a short ingest feels immediate, slow enough
+   * that a long one is not a request storm. A job that vanishes (the app restarted) is
+   * reported as a failure rather than hanging the modal forever.
+   */
+  const pollJob = async (jobId, onProgress) => {
+    let lastStage = null;
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      let job;
+      try {
+        job = await api.job(jobId);
+      } catch (err) {
+        throw new Error(`lost track of the ingest: ${err.message}`);
+      }
+      if (job.progress?.stage && job.progress.stage !== lastStage) {
+        lastStage = job.progress.stage;
+        onProgress?.(job);
+      }
+      if (job.state !== "running") return job;
+    }
+  };
+
   const run = async ({ skip = new Set() } = {}) => {
     setBusy(true);
     setError(null);
@@ -376,10 +379,21 @@ export default function IngestModal({ onClose, onIngested }) {
     note("info", "Ingesting…");
     try {
       const months = WINDOWS.find((w) => w.key === window_)?.months ?? null;
-      const result = await api.ingest({
+      // **Start, then poll.** An ingest holds the store for its whole duration, so
+      // awaiting it blocked every other surface and a second client collided with it.
+      // The server returns a job id in milliseconds; the work runs on a thread.
+      const started = await api.ingest({
         which: "real",
         paths: pathList(),
-        email: imapEmail.trim() && !skip.has("email") ? [providerFor(imapEmail)] : [],
+        imap:
+          imapOn && imapEmail.trim() && !skip.has("email")
+            ? {
+                email: imapEmail.trim(),
+                password: imapPassword,
+                host: imapHost.trim(),
+                port: Number(imapPort) || 993,
+              }
+            : null,
         since: windowStart(months),
         tz_offset_hours: tzOffset === "" ? null : Number(tzOffset),
         exclude_silent_groups: silentGroups,
@@ -389,6 +403,27 @@ export default function IngestModal({ onClose, onIngested }) {
         exclude_spam_groups: spamGroups,
         write_enabled: writeEnabled,
       });
+
+      const result = await pollJob(started.job, (job) => {
+        if (job.progress?.stage) note("info", `… ${job.progress.stage}`);
+      });
+      if (result.state === "failed") {
+        throw new Error(result.error || "the ingest failed");
+      }
+
+      // **The mailbox verdict, before the per-platform lines.** Three cases, and the
+      // user needs to know which one happened: a delta, a first ingest, or a
+      // replacement that removed the previous mailbox's messages.
+      const progress = result.progress || {};
+      if (progress.replaced) {
+        note(
+          "warn",
+          `mailbox changed: removed every message from ${progress.replaced} ` +
+            `before reading ${progress.saved_mailbox}`,
+        );
+      } else if (progress.saved_mailbox) {
+        note("ok", `mailbox ${progress.saved_mailbox} saved to .env`);
+      }
 
       // A leg that failed is the one thing worth stopping on: the rest landed, and the
       // user has to decide whether to retry without it.
@@ -430,7 +465,13 @@ export default function IngestModal({ onClose, onIngested }) {
         note("fail", `${failed.length} leg(s) failed — exclude and continue, or cancel`);
       } else {
         const total = [...byPlatform.values()].reduce((sum, row) => sum + row.messages, 0);
-        note("done", `all ingested · ${total} messages`);
+        const written = result.written ?? 0;
+        note(
+          "done",
+          written === 0 && total === 0
+            ? "nothing new · the store already holds everything in this window"
+            : `all ingested · ${written} new message(s)`,
+        );
       }
     } catch (err) {
       setError(err.message);
@@ -799,9 +840,9 @@ export default function IngestModal({ onClose, onIngested }) {
       {/* Two columns, because four stacked fields cost a third of the modal for a leg
           most runs do not use. The descriptor is one line: what this is for, and the
           one caveat that changes what the user does next. */}
-      <h2 className="section">IMAP mailbox</h2>
+      <h2 className="section">IMAP INBOX</h2>
       <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
-        For web email incl. Gmail. Outlook.com/O365 need a <code>.pst</code> — drop it
+        For any IMAP email or Gmail. Outlook is <code>.pst</code> file only as dropped
         above.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
@@ -810,24 +851,39 @@ export default function IngestModal({ onClose, onIngested }) {
           value={imapEmail}
           onChange={(value) => {
             setImapEmail(value);
-            if (!imapHost) setImapHost(hostFor(value));
+            // Fill the host only when it is empty, and only for the two hosts nobody
+            // should have to remember. Everything else is typed, not guessed.
+            const domain = (value.split("@")[1] || "").toLowerCase();
+            if (!imapHost && HOST_HINTS[domain]) setImapHost(HOST_HINTS[domain]);
           }}
           placeholder="you@yourdomain.com"
           autoComplete="off"
         />
-        <TextField
-          label="password"
-          type="password"
-          value={imapPassword}
-          onChange={setImapPassword}
-          placeholder="app password"
-          autoComplete="new-password"
-        />
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <TextField
+              label="password"
+              type={showPassword ? "text" : "password"}
+              value={imapPassword}
+              onChange={setImapPassword}
+              placeholder={savedPassword ? "•••••••• (saved)" : "app password"}
+              autoComplete="new-password"
+            />
+          </div>
+          <button
+            className="ghost"
+            onClick={() => setShowPassword((value) => !value)}
+            title={showPassword ? "Hide the password" : "Show the password"}
+            style={{ padding: "5px 8px", marginBottom: 1 }}
+          >
+            {showPassword ? "hide" : "show"}
+          </button>
+        </div>
         <TextField
           label="host"
           value={imapHost}
           onChange={setImapHost}
-          placeholder="filled from the address"
+          placeholder="imap.gmail.com"
         />
         <TextField
           label="port"
@@ -836,31 +892,23 @@ export default function IngestModal({ onClose, onIngested }) {
           placeholder="993"
         />
       </div>
-      <div className="empty" style={{ paddingTop: 0, paddingBottom: 8 }}>
-        Local app, manual entry. Never read by MCP or AI. Writes to <code>./.env</code>.
-      </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
-        <button
-          className="ghost"
-          onClick={saveCredentials}
-          disabled={busy || !writeEnabled || !imapEmail.trim() || !imapPassword}
-        >
-          Save credentials
-        </button>
-        {envSaved && (
-          <span className="pager-info">
-            saved {envSaved.provider} → {envSaved.host}:{envSaved.port}
-          </span>
-        )}
-        {!envSaved && envStatus && (
-          <span className="pager-info">
-            {Object.entries(envStatus.providers || {})
-              .filter(([, row]) => row.email_present && row.password_present)
-              .map(([name]) => name)
-              .join(", ") || "no credentials on disk yet"}
-          </span>
-        )}
+        <Check
+          label="Save credentials"
+          checked={imapOn}
+          onChange={setImapOn}
+          hint="Written to ./.env only if the ingest succeeds."
+        />
+        <span className="pager-info">
+          {saved.configured ? `in env: ${saved.email}` : "no credentials saved yet"}
+        </span>
       </div>
+      {saved.configured && imapEmail.trim() && !matchesSaved ? (
+        <div className="empty" style={{ paddingTop: 0, paddingBottom: 6, color: "var(--orange-text)" }}>
+          A different mailbox replaces <strong>{saved.email}</strong>: its messages are
+          removed from the graph before this one is read.
+        </div>
+      ) : null}
 
       {/* --------------------------------------------------------- separator */}
       <hr

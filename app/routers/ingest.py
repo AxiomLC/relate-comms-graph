@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field
 from relate_comms import paths, tools
 from relate_comms.ingest import MEDIA_SUFFIXES
 
+from .. import jobs
+
 router = APIRouter(prefix="/api", tags=["ingest"])
 
 # The three platforms that have groups, so the three that can carry a silent-group
@@ -39,7 +41,14 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 class IngestRequest(BaseModel):
     which: Literal["real", "sample"] = "real"
     paths: list[str] = Field(default_factory=list, description="Files to copy into the spool")
-    email: list[str] = Field(default_factory=list, description="Mailboxes to read over IMAP")
+
+    # **One mailbox, entered inline.** The four values travel with the ingest rather than
+    # being saved first: credentials are written to `.env` only after the run succeeds,
+    # so a wrong password leaves nothing behind. `slot` is derived from the address, not
+    # chosen — a gmail.com address is the gmail slot, anything else is the email slot.
+    imap: "ImapCredentials | None" = Field(
+        default=None, description="A mailbox to read over IMAP, entered in the modal",
+    )
     since: str | None = None
     until: str | None = None
     tz_offset_hours: float | None = Field(
@@ -94,27 +103,154 @@ class PruneRequest(BaseModel):
     confirm: bool = False
 
 
-class EnvRequest(BaseModel):
-    """IMAP credentials, written to `./.env`.
-
-    The password is written and never read back. `GET /api/ingest/env` reports only
-    whether a key is present, never its value.
-    """
+class ImapCredentials(BaseModel):
+    """The four values a mailbox needs. Travels with an ingest, never saved alone."""
 
     email: str = Field(description="Mailbox address, e.g. dev@w57th.agency")
-    password: str = Field(description="Password or app password. Never echoed back.")
-    host: str | None = Field(default=None, description="IMAP host. Omit to derive from the domain.")
+    password: str = Field(
+        default="",
+        description="Password or app password. Empty reuses the saved one. Never echoed.",
+    )
+    host: str = Field(description="IMAP host, e.g. imap.gmail.com")
     port: int = Field(default=993, ge=1, le=65535)
-    write_enabled: bool = False
 
 
 @router.post("/ingest")
 def ingest(request: IngestRequest) -> dict:
-    """Stage, parse, resolve, scrub, write, verify. Returns the full report."""
-    return tools.ingest(
+    """Start an ingest and return its job id immediately.
+
+    **Not a synchronous call any more.** An ingest holds the store for its whole duration
+    (Relate allows one writer), so awaiting it blocked every other surface — and a second
+    client, MCP, collided with it and got `storage locked`. The work now runs on a
+    background thread and the caller polls `GET /api/jobs/{id}`.
+
+    The write toggle is still checked here, before the job starts: a refused request must
+    fail in the request, not in a thread nobody is watching.
+    """
+    if not request.write_enabled:
+        raise tools.ToolError(
+            "write access is disabled for this surface; enable it to use write tools"
+        )
+
+    try:
+        job = jobs.start("ingest", lambda job: _run_ingest(request, job))
+    except RuntimeError as exc:
+        raise tools.ToolError(str(exc)) from exc
+
+    return {"job": job.id, "state": job.state, "kind": job.kind}
+
+
+def _saved_mailbox() -> str:
+    """The address currently in `.env`, or `""`."""
+    from relate_comms.adapters import email_imap
+
+    user_var, _p, _h, _po = email_imap.slot_keys()
+    return (email_imap._dotenv().get(user_var) or "").strip()
+
+
+def _wipe_email_rows() -> dict:
+    """Delete every `email` row, and the vectors and indexes that hang off them.
+
+    **Why this is necessary rather than tidy.** The key is
+    `email:<chat_id>:<message_id>` and `chat_id` carries no mailbox, so two mailboxes
+    share one namespace: the delta watermark is shared (the new mailbox's older messages
+    are dropped as duplicates) and any `Message-ID` both hold merges into one row. The
+    only honest way to change mailbox is to remove what the old one wrote.
+
+    Scoped to `email` on purpose. Every other platform is untouched, and `outlook` is a
+    different platform entirely — a `.pst` is not affected by a mailbox change.
+    """
+    from relate_comms import writer
+
+    with tools._session(read_only=False) as conn:
+        cur = conn.cursor()
+        cur.execute("MATCH (m:Message {platform: 'email'}) DETACH DELETE m")
+        # A thread with no messages left is a thread the mailbox no longer supports.
+        cur.execute(
+            "MATCH (t:Thread {platform: 'email'}) "
+            "WHERE NOT EXISTS { MATCH (m:Message)-[:IN]->(t) } "
+            "DETACH DELETE t"
+        )
+        # Correspondents that only ever appeared in that mailbox.
+        cur.execute(
+            "MATCH (c:Correspondent) "
+            "WHERE NOT EXISTS { MATCH (:Thread)-[:WITH]->(c) } "
+            "DETACH DELETE c"
+        )
+        conn.commit()
+        # The search indexes are rebuilt because a delete leaves them pointing at rows
+        # that no longer exist; `_SCHEMA` is idempotent.
+        for statement in writer._SCHEMA:
+            try:
+                cur.execute(statement)
+            except Exception:  # noqa: BLE001 - already exists
+                pass
+        conn.commit()
+
+    return {"wiped": "email"}
+
+
+def _run_ingest(request: IngestRequest, job: jobs.Job) -> dict:
+    """The work the job thread runs. Publishes progress as it goes.
+
+    **Three cases, decided before anything is written:**
+
+    | `.env` | request | what happens |
+    |---|---|---|
+    | empty | an address | ingest, then write `.env` |
+    | same address | same address | delta ingest — only new messages |
+    | different address | a new address | **wipe the `email` rows**, ingest, then overwrite `.env` |
+
+    Credentials reach `.env` only after the run succeeds, so a wrong password or a host
+    that is not IMAP leaves nothing behind and the modal shows the reason.
+    """
+    from relate_comms.adapters import email_imap
+
+    imap = request.imap
+    extra_results: list = []
+    saved_password: str | None = None
+    switched_from: str | None = None
+
+    if imap is not None:
+        password = imap.password
+        if not password:
+            # An empty field on a revisit means "unchanged": reuse what is saved.
+            _u, pass_var, _h, _p = email_imap.slot_keys()
+            password = email_imap._dotenv().get(pass_var) or ""
+        if not password:
+            raise tools.ToolError(
+                f"no password for {imap.email}; enter it in the modal"
+            )
+
+        job.progress["stage"] = f"reading {imap.email}"
+        try:
+            extra_results = [email_imap.fetch(
+                imap.host, imap.email, password,
+                port=int(imap.port),
+                since=tools._iso(request.since),
+                until=tools._iso(request.until),
+            )]
+        except Exception as exc:  # noqa: BLE001 - the message is the point
+            raise tools.ToolError(
+                f"could not read {imap.email} at {imap.host}:{imap.port} — "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        # **The mailbox changed.** Wipe before writing, or the two mailboxes share one
+        # namespace and the delta drops the new one's older messages as duplicates.
+        previous = _saved_mailbox()
+        if previous and previous.lower() != imap.email.strip().lower():
+            job.progress["stage"] = f"replacing {previous}"
+            _wipe_email_rows()
+            switched_from = previous
+            job.progress["switched_from"] = previous
+
+        saved_password = password
+
+    job.progress["stage"] = "staging"
+    result = tools.ingest(
         which=request.which,
         paths_in=request.paths or None,
-        email=request.email or None,
         since=request.since,
         until=request.until,
         tz_offset_hours=request.tz_offset_hours,
@@ -125,9 +261,53 @@ def ingest(request: IngestRequest) -> dict:
         spam_thread_platforms=request.spam_thread_platforms,
         prune=request.prune,
         prune_keep=request.prune_keep,
-        write_enabled=request.write_enabled,
+        write_enabled=True,
         delta=request.delta,
+        extra_results=extra_results,
     )
+
+    # **Only now.** The run succeeded, so the credentials are known good.
+    if imap is not None and saved_password:
+        user_var, pass_var, host_var, port_var = email_imap.slot_keys()
+        _write_dotenv({
+            user_var: imap.email.strip(),
+            pass_var: saved_password,
+            host_var: imap.host.strip(),
+            port_var: str(int(imap.port)),
+        })
+        job.progress["saved_mailbox"] = imap.email.strip()
+
+    job.progress["stage"] = "done"
+    job.progress["written"] = result.get("written")
+    job.progress["batches"] = len(result.get("batches") or [])
+    if switched_from:
+        job.progress["replaced"] = switched_from
+    return result
+
+
+@router.get("/jobs/{job_id}")
+def job_status(job_id: str) -> dict:
+    """One job's state. `state` is `running`, `done` or `failed`.
+
+    A finished job carries the full result, so the caller never needs a second endpoint
+    to collect it. An unknown id is a 404 — a job is in memory only, so a restart loses
+    it, and saying so is better than an empty object.
+    """
+    found = jobs.status(job_id)
+    if found is None:
+        raise tools.ToolError(f"no job {job_id!r}; it may have finished and been swept")
+    return found
+
+
+@router.get("/jobs")
+def job_list() -> dict:
+    """The job currently holding the store, if any.
+
+    The UI uses this to show "an ingest is running" instead of a lock error, and MCP
+    uses it to refuse a second ingest with a sentence rather than a collision.
+    """
+    current = jobs.running()
+    return {"running": current.to_dict() if current else None}
 
 
 def _already_ingested(known: dict, target: Path) -> bool:
@@ -283,69 +463,33 @@ async def upload(
 
 @router.get("/ingest/env")
 def env_status() -> dict:
-    """Which `.env` keys exist. Never returns a value.
+    """The saved mailbox. **Never returns a password.**
 
-    The modal needs this to say "credentials present" without ever holding the
-    password. A missing key is reported by name, never by value.
+    The modal needs to autofill email/host/port and to say "a password is saved" without
+    ever holding it. So the password is reported as a boolean, and the field renders
+    empty with a `•••••••• (saved)` placeholder — the value never enters the DOM, not
+    even on a revisit.
     """
     from relate_comms.adapters import email_imap
 
-    present = {}
-    for name, (_host, user_var, pass_var, _port) in email_imap.ENV_ACCOUNTS.items():
-        env = email_imap._dotenv()
-        present[name] = {
-            "email_key": user_var,
-            "password_key": pass_var,
-            "email_present": bool(env.get(user_var) or os.environ.get(user_var)),
-            "password_present": bool(env.get(pass_var) or os.environ.get(pass_var)),
-        }
-    custom = email_imap._dotenv()
-    present["custom"] = {
-        "email_key": "CUSTOM_EMAIL",
-        "password_key": "CUSTOM_PASSWORD",
-        "email_present": bool(custom.get("CUSTOM_EMAIL")),
-        "password_present": bool(custom.get("CUSTOM_PASSWORD")),
-    }
-    return {"providers": present}
+    env = email_imap._dotenv()
+    env.update(os.environ)
 
-
-@router.post("/ingest/env")
-def save_env(request: EnvRequest) -> dict:
-    """Write IMAP credentials to `./.env`, replacing only the keys involved.
-
-    Appends or replaces, never rewrites the file — a user's other keys must survive.
-    The password is written and never returned, logged or echoed.
-    """
-    tools.require(tools.Access.WRITE, write_enabled=request.write_enabled)
-
-    from relate_comms.adapters import email_imap
-
-    domain = request.email.rsplit("@", 1)[-1].lower() if "@" in request.email else ""
-    host = request.host or _host_for_domain(domain)
-    if not host:
-        raise tools.ToolError(
-            f"no known IMAP host for {domain or 'that address'}; "
-            "enter the host explicitly (e.g. mail.yourdomain.com)"
-        )
-
-    key = _provider_key(domain)
-    user_var, pass_var = _env_names(key)
-
-    updates = {
-        user_var: request.email.strip(),
-        pass_var: request.password,
-        f"{key.upper()}_HOST": host,
-        f"{key.upper()}_PORT": str(request.port),
-    }
-    _write_dotenv(updates)
-
+    user_var, pass_var, host_var, port_var = email_imap.slot_keys()
     return {
-        "saved": sorted(updates),
-        "provider": key,
-        "host": host,
-        "port": request.port,
-        # Deliberately no password, no length, no prefix.
+        "email": env.get(user_var) or "",
+        "host": env.get(host_var) or "",
+        "port": env.get(port_var) or "",
+        "password_present": bool(env.get(pass_var)),
+        "configured": bool(
+            env.get(user_var) and env.get(pass_var) and env.get(host_var)
+        ),
     }
+
+
+# **There is no "save credentials" endpoint.** Credentials are written by a successful
+# ingest (`_run_ingest`), not by a button: a mailbox that cannot be read must leave
+# nothing behind, and the only proof that it can be read is a run that worked.
 
 
 class TruncateRequest(BaseModel):
@@ -417,61 +561,13 @@ def prune(request: PruneRequest) -> dict:
 
 # ------------------------------------------------------------------ .env helpers
 
-def _host_for_domain(domain: str) -> str | None:
-    """The IMAP host for a mail domain, from the adapter's own table.
-
-    Detection, not a selector: the user types an address and the host follows. The
-    field stays editable, so an unknown domain is a prompt, not a refusal.
-    """
-    from relate_comms.adapters import email_imap
-
-    for _name, (host, _u, _p, _port) in email_imap.ENV_ACCOUNTS.items():
-        if "{domain}" in host:
-            continue
-        if host.split(".")[-2:] and domain and domain.split(".")[0] in host:
-            return host
-    known = {
-        "gmail.com": "imap.gmail.com",
-        "googlemail.com": "imap.gmail.com",
-        "outlook.com": "outlook.office365.com",
-        "hotmail.com": "outlook.office365.com",
-        "live.com": "outlook.office365.com",
-        "yahoo.com": "imap.mail.yahoo.com",
-        "icloud.com": "imap.mail.me.com",
-        "me.com": "imap.mail.me.com",
-        "zoho.com": "imap.zoho.com",
-        "fastmail.com": "imap.fastmail.com",
-        "gmx.com": "imap.gmx.com",
-        "gmx.net": "imap.gmx.com",
-        "yandex.com": "imap.yandex.com",
-        "aol.com": "imap.aol.com",
-        "hostinger.com": "imap.hostinger.com",
-    }
-    if domain in known:
-        return known[domain]
-    # cPanel / generic hosting: the mail host is the domain itself.
-    return f"mail.{domain}" if domain else None
-
-
-def _provider_key(domain: str) -> str:
-    """The `.env` key prefix for a domain. `custom` for anything unlisted."""
-    from relate_comms.adapters import email_imap
-
-    for name, (host, _u, _p, _port) in email_imap.ENV_ACCOUNTS.items():
-        if "{domain}" in host:
-            continue
-        if domain and domain.split(".")[0] in host:
-            return name
-    return "custom"
-
-
-def _env_names(key: str) -> tuple[str, str]:
-    from relate_comms.adapters import email_imap
-
-    if key in email_imap.ENV_ACCOUNTS:
-        _host, user_var, pass_var, _port = email_imap.ENV_ACCOUNTS[key]
-        return user_var, pass_var
-    return "CUSTOM_EMAIL", "CUSTOM_PASSWORD"
+# **No provider table, no domain guessing.** The host is a field the user fills in.
+#
+# There used to be `_host_for_domain` (a 15-entry domain map plus a `mail.{domain}`
+# guess), `_provider_key` (domain -> provider name) and `_env_names` (provider -> key
+# names). Between them they turned `w57th.agency` into the pseudo-provider `custom`,
+# which nothing downstream understood. A host is one string the user can read and
+# correct; a guess is a string they cannot see.
 
 
 def _write_dotenv(updates: dict[str, str]) -> None:

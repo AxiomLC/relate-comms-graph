@@ -558,18 +558,18 @@ def parse(
     * **A saved mailbox** — a folder of `.eml` files, or one `.eml`. Read from disk,
       no network. This is what `discover()` hands over when the spool holds a
       `sample_writer` email export.
-    * **A provider name** (`"gmail"`, `"zoho"`, …) — resolved from `.env` by
-      `account_from_env` and read over IMAP. For a provider not in the table, call
-      `fetch()` directly with `account_from_parts()`.
+    * **A slot name** (`"email"` or `"gmail"`) — resolved from `.env` by
+      `account_from_slot` and read over IMAP. Both slots land on the same `email`
+      platform; the slot only decides which four `.env` keys hold the credentials.
 
-    The test is `Path.exists()`, not a suffix check: a provider name is not a path,
-    so it cannot exist on disk, and a real folder always does.
+    The test is `Path.exists()`, not a suffix check: a slot name is not a path, so it
+    cannot exist on disk, and a real folder always does.
     """
     path = Path(str(export_path))
     if path.exists() and (path.is_dir() or path.suffix.lower() == _EML_SUFFIX):
         return parse_eml(path, since=since, until=until, limit=limit)
 
-    account = account_from_env(str(export_path))
+    account = account_from_slot(str(export_path))
     return fetch(
         account["host"], account["user"], account["password"],
         port=int(account.get("port", 993)),
@@ -652,79 +652,73 @@ def parse_eml(
     return result
 
 
-# Known IMAP providers. This is a CONVENIENCE TABLE, not a whitelist: a provider
-# that is not here works by passing host/port/user/password directly. Nothing in the
-# adapter branches on a provider name — folder selection is by RFC 6154 special-use
-# flags first and name hints second, so a new provider needs no code at all.
+# **One mailbox, four keys, no provider table.**
 #
-# `host` may be a template: `{domain}` is filled from the mailbox address, which is
-# how the cPanel-style providers work (the mail host is the domain itself).
-ENV_ACCOUNTS: dict[str, tuple[str, str, str, int]] = {
-    "gmail": ("imap.gmail.com", "GOOGLE_EMAIL", "GOOGLE_APP_PASSWORD", 993),
-    "hostinger": ("imap.hostinger.com", "HOSTINGER_EMAIL", "HOSTINGER_PASSWORD", 993),
-    "outlook": ("outlook.office365.com", "OUTLOOK_EMAIL", "OUTLOOK_PASSWORD", 993),
-    "yahoo": ("imap.mail.yahoo.com", "YAHOO_EMAIL", "YAHOO_APP_PASSWORD", 993),
-    "icloud": ("imap.mail.me.com", "ICLOUD_EMAIL", "ICLOUD_APP_PASSWORD", 993),
-    "zoho": ("imap.zoho.com", "ZOHO_EMAIL", "ZOHO_PASSWORD", 993),
-    "fastmail": ("imap.fastmail.com", "FASTMAIL_EMAIL", "FASTMAIL_APP_PASSWORD", 993),
-    "gmx": ("imap.gmx.com", "GMX_EMAIL", "GMX_PASSWORD", 993),
-    "yandex": ("imap.yandex.com", "YANDEX_EMAIL", "YANDEX_APP_PASSWORD", 993),
-    "aol": ("imap.aol.com", "AOL_EMAIL", "AOL_APP_PASSWORD", 993),
-    # cPanel / generic hosting: the mail host is the domain in the address.
-    "cpanel": ("mail.{domain}", "CPANEL_EMAIL", "CPANEL_PASSWORD", 993),
-}
-
-# Providers that display app passwords with spaces that are not part of the secret.
-_SPACED_APP_PASSWORDS = {"gmail", "yahoo", "aol", "icloud"}
-
-# Hostinger's mailbox address is not in `.env` yet; the skill records this one.
-_FALLBACK_USERS = {"hostinger": "dev@w57th.agency"}
+# There used to be an `ENV_ACCOUNTS` table of 11 providers, each with a hardcoded host
+# and its own pair of `.env` key names. It was a convenience that became a trap: a
+# mailbox on a domain nobody listed (`w57th.agency`) resolved to the pseudo-provider
+# `custom`, which `account_from_env` then refused — and the refusal was printed to
+# stderr and swallowed, so the ingest reported success with zero messages.
+#
+# What replaces it is one block. Gmail is not a special case: it is an address whose
+# host happens to be `imap.gmail.com`. Nothing in the adapter branches on a provider
+# name — folder selection is RFC 6154 special-use flags first and name hints second, so
+# Gmail and a cPanel mailbox take the same code path.
+#
+# **One mailbox at a time, and that is a store constraint, not a UI choice.** The key is
+# `email:<chat_id>:<message_id>` and `chat_id` carries no mailbox, so two mailboxes would
+# share a namespace, share the delta watermark, and silently merge on any `Message-ID`
+# both happen to hold. Switching mailboxes therefore wipes the `email` rows first — see
+# `app/routers/ingest.py::_run_ingest`.
+IMAP_KEYS: tuple[str, str, str, str] = (
+    "IMAP_EMAIL", "IMAP_PASSWORD", "IMAP_HOST", "IMAP_PORT",
+)
 
 
-def account_from_env(name: str, *, environ: dict[str, str] | None = None) -> dict[str, str]:
-    """Resolve a provider name to host, user, password, port.
+def slot_keys(slot: str | None = None) -> tuple[str, str, str, str]:
+    """The four `.env` keys. There is one mailbox, so `slot` is accepted and ignored.
+
+    Kept as a parameter so callers that still pass `"email"` do not break; it is not a
+    choice any more.
+    """
+    return IMAP_KEYS
+
+
+def account_from_slot(slot: str | None = None, *, environ: dict[str, str] | None = None) -> dict[str, str]:
+    """Resolve the mailbox to host, user, password, port.
 
     Secrets are read from the environment or the repo `.env` (gitignored), never from
     code and never logged. A missing key raises with the *name* of the key, not its
     value.
-
-    A provider in `ENV_ACCOUNTS` is a shortcut for "look these keys up in `.env`".
-    Anything else must be supplied explicitly — see `account_from_parts()`.
     """
     import os
 
-    key = name.strip().lower()
-    if key not in ENV_ACCOUNTS:
-        raise ValueError(
-            f"unknown email provider {name!r}; known: {', '.join(sorted(ENV_ACCOUNTS))}. "
-            "For any other IMAP server, pass host/port/user/password directly."
-        )
-    host, user_var, pass_var, port = ENV_ACCOUNTS[key]
+    user_var, pass_var, host_var, port_var = slot_keys(slot)
 
     env = dict(_dotenv(environ) if environ is None else environ)
     env.update(os.environ)
 
-    user = env.get(user_var) or _FALLBACK_USERS.get(key)
-    password = env.get(pass_var)
-    if not user:
-        raise ValueError(f"{user_var} is not set (needed to log in to {key})")
-    if not password:
-        raise ValueError(f"{pass_var} is not set (needed to log in to {key})")
-    if key in _SPACED_APP_PASSWORDS:
-        # These providers display app passwords with spaces; the spaces are not part
-        # of the secret.
-        password = password.replace(" ", "")
+    user = (env.get(user_var) or "").strip()
+    password = env.get(pass_var) or ""
+    host = (env.get(host_var) or "").strip()
+    port = (env.get(port_var) or "993").strip()
 
-    # `mail.{domain}` — the cPanel shape, where the host is the mailbox's own domain.
-    if "{domain}" in host:
-        domain = user.rsplit("@", 1)[-1] if "@" in user else ""
-        if not domain:
-            raise ValueError(
-                f"{key} needs a full mailbox address to derive its host; got {user!r}"
-            )
-        host = host.replace("{domain}", domain)
+    missing = [
+        name for name, value in (
+            (user_var, user), (pass_var, password), (host_var, host),
+        ) if not value
+    ]
+    if missing:
+        raise ValueError(
+            f"no mailbox is configured: {', '.join(missing)} not set. "
+            "Enter the four values in the Ingest modal."
+        )
 
-    return {"host": host, "user": user, "password": password, "port": str(port)}
+    # Gmail and several others display app passwords with spaces that are not part of
+    # the secret. Stripping them is harmless for a password that has none.
+    password = password.replace(" ", "")
+
+    return {"host": host, "user": user, "password": password, "port": str(int(port))}
 
 
 def account_from_parts(

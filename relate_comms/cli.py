@@ -15,6 +15,8 @@ import json
 import sys
 from datetime import datetime, timezone
 
+from .tools import ToolError
+
 
 def _utc(value: str) -> datetime:
     """Parse an ISO-8601 boundary. A naive value is read as UTC, never local."""
@@ -131,18 +133,24 @@ def _fetch_mailboxes(
 
     results = []
     for name in accounts:
+        # **A failure raises.** It used to print to stderr and `continue`, which meant a
+        # mailbox that could not be read produced a successful ingest with zero
+        # messages and no explanation — the user saw "0 msgs" and nothing else. The
+        # caller now gets a `ToolError` naming the slot and the reason.
         try:
-            creds = email_imap.account_from_env(name)
+            creds = email_imap.account_from_slot(name)
         except ValueError as exc:
-            print(f"email {name}: {exc}", file=sys.stderr)
-            continue
-        print(f"email {name}: reading {creds['user']} …", file=sys.stderr)
+            raise ToolError(f"email {name}: {exc}") from exc
+
         try:
             results.append(email_imap.fetch(
                 creds["host"], creds["user"], creds["password"],
                 port=int(creds["port"]), since=since, until=until))
-        except Exception as exc:  # noqa: BLE001 - one mailbox must not stop the run
-            print(f"email {name}: failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            raise ToolError(
+                f"email {name}: could not read {creds['user']} at {creds['host']}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
     return results
 
 

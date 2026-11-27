@@ -65,6 +65,18 @@ export const api = {
   types: () => request("/api/types"),
 
   /**
+   * Drain the MCP activity trace. **Draining, not tailing** — the server deletes the
+   * rows it returns, so a poll never shows the same call twice.
+   */
+  activity: () => request("/api/activity"),
+
+  /** One background job's state. `state` is `running`, `done` or `failed`. */
+  job: (id) => request(`/api/jobs/${encodeURIComponent(id)}`),
+
+  /** The job currently holding the store, if any. */
+  jobs: () => request("/api/jobs"),
+
+  /**
    * The canvas payload. `nodeTypes`/`edgeTypes` are explicit, never inherited.
    *
    * `sort` decides which nodes survive `limit` — it is not a display preference,
@@ -193,9 +205,6 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  /** Write IMAP credentials to `./.env`. The password is never echoed back. */
-  saveEnv: (payload) =>
-    request("/api/ingest/env", { method: "POST", body: JSON.stringify(payload) }),
 
   verify: (which = "real") => request(`/api/ingest/verify?which=${which}`),
 
