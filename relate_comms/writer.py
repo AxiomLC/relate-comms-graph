@@ -126,7 +126,7 @@ _CORRESPONDENT_CYPHER = (
 # merged Correspondents on the live store reported `exact_name`, including the typo pairs.
 #
 # `link._fold` now owns it: it is the only thing that *merges*, so it is the only thing
-# that knows why. See `rework_extraction.md` §4 open decision 5.
+# that knows why. See `HANDOVER.md` Open decisions.
 
 # Per-platform spellings and first sightings are stored **flat**, not as a map:
 # Relate rejects a map property (`DataError: InvalidPropertyType`). The plan's
@@ -361,8 +361,11 @@ def _reconcile(cur: Any, keys: Iterable[str], *, label: str = "Correspondent") -
     **The rules are the same for every entity label**, which is why this takes a label
     rather than a query: a `Place` seen on Telegram and on WhatsApp carries exactly the
     properties a `Correspondent` does (`handle_<p>`, `seen_<p>`), and `:Merged` has to
-    mean the same thing on both. The `WHERE` is spelled out per label rather than
-    built from a parameter because Relate cannot parameterise a label in `MATCH`.
+    mean the same thing on both. The label is interpolated into the `MATCH` because it
+    is an internal constant from `_ENTITY_WRITE_KINDS`, never input.
+
+    (Relate *can* parameterise a label — `MATCH (n:$($lbl))` works, verified on 1.0.1.
+    An f-string is used because it is simpler and the value is trusted.)
 
     What it decides, and why each rule is what it is:
 
@@ -822,8 +825,11 @@ _ENTITY_WRITE_KINDS: dict[str, str] = {
     "product": "Product",
 }
 
-# Cypher cannot parameterise a label, so the statement is built once per kind rather
-# than formatted per row.
+# The statement is built once per kind rather than formatted per row: the label is the
+# only thing that varies, and building it once keeps the Cypher readable.
+#
+# (Relate *can* parameterise a label — `MATCH (n:$($lbl))` works, verified on 1.0.1 —
+# so this is a readability choice, not an engine limit.)
 def _entity_cypher(label: str) -> str:
     return (
         "UNWIND $rows AS row "
@@ -852,8 +858,8 @@ def _entity_cypher(label: str) -> str:
 # count, so the node keeps the larger of the two — an entity seen in three messages stays
 # three when re-ingested.
 #
-# This replaced a fixed `_PLACE_CYPHER`; the statement is generated per label because
-# Relate cannot parameterise a label, and two hand-written copies would drift.
+# This replaced a fixed `_PLACE_CYPHER`; the statement is generated per label so two
+# hand-written copies cannot drift.
 #
 # Entities never carried a `merged_by` from this writer (only Correspondents did), and
 # `link._fold` now owns the field for every kind — so there is no entity-side table.

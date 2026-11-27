@@ -14616,6 +14616,15 @@
     stats: () => request("/api/stats"),
     types: () => request("/api/types"),
     /**
+     * Drain the MCP activity trace. **Draining, not tailing** — the server deletes the
+     * rows it returns, so a poll never shows the same call twice.
+     */
+    activity: () => request("/api/activity"),
+    /** One background job's state. `state` is `running`, `done` or `failed`. */
+    job: (id) => request(`/api/jobs/${encodeURIComponent(id)}`),
+    /** The job currently holding the store, if any. */
+    jobs: () => request("/api/jobs"),
+    /**
      * The canvas payload. `nodeTypes`/`edgeTypes` are explicit, never inherited.
      *
      * `sort` decides which nodes survive `limit` — it is not a display preference,
@@ -14713,8 +14722,6 @@
       method: "POST",
       body: JSON.stringify(payload)
     }),
-    /** Write IMAP credentials to `./.env`. The password is never echoed back. */
-    saveEnv: (payload) => request("/api/ingest/env", { method: "POST", body: JSON.stringify(payload) }),
     verify: (which = "real") => request(`/api/ingest/verify?which=${which}`),
     prune: (payload) => request("/api/ingest/prune", { method: "POST", body: JSON.stringify(payload) })
   };
@@ -15999,10 +16006,15 @@
       /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
         "span",
         {
-          className: "badge",
-          title: mcpConnected ? "An MCP client is reading this store" : storeOk ? "store loaded \xB7 nothing leaves this machine" : "no store yet",
+          className: `badge${mcpConnected ? " mcp" : ""}`,
+          title: mcpConnected ? "An MCP client is reading this store right now" : storeOk ? "store loaded \xB7 nothing leaves this machine" : "no store yet",
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: `dot${storeOk ? "" : " warn"}` }),
+            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+              "span",
+              {
+                className: `dot${mcpConnected ? " mcp" : storeOk ? "" : " warn"}`
+              }
+            ),
             mcpConnected ? "MCP being accessed" : "offline - safe"
           ]
         }
@@ -18950,50 +18962,10 @@
     date.setMonth(date.getMonth() - months);
     return date.toISOString().slice(0, 10);
   }
-  var HOSTS = {
+  var HOST_HINTS = {
     "gmail.com": "imap.gmail.com",
-    "googlemail.com": "imap.gmail.com",
-    "outlook.com": "outlook.office365.com",
-    "hotmail.com": "outlook.office365.com",
-    "live.com": "outlook.office365.com",
-    "yahoo.com": "imap.mail.yahoo.com",
-    "icloud.com": "imap.mail.me.com",
-    "me.com": "imap.mail.me.com",
-    "zoho.com": "imap.zoho.com",
-    "fastmail.com": "imap.fastmail.com",
-    "gmx.com": "imap.gmx.com",
-    "gmx.net": "imap.gmx.com",
-    "yandex.com": "imap.yandex.com",
-    "aol.com": "imap.aol.com",
-    "hostinger.com": "imap.hostinger.com"
+    "googlemail.com": "imap.gmail.com"
   };
-  function hostFor(email) {
-    const domain = (email.split("@")[1] || "").toLowerCase();
-    if (!domain) return "";
-    return HOSTS[domain] || `mail.${domain}`;
-  }
-  function providerFor(email) {
-    const domain = (email.split("@")[1] || "").toLowerCase();
-    if (!domain) return "";
-    const known = {
-      "gmail.com": "gmail",
-      "googlemail.com": "gmail",
-      "outlook.com": "outlook",
-      "hotmail.com": "outlook",
-      "live.com": "outlook",
-      "yahoo.com": "yahoo",
-      "icloud.com": "icloud",
-      "me.com": "icloud",
-      "zoho.com": "zoho",
-      "fastmail.com": "fastmail",
-      "gmx.com": "gmx",
-      "gmx.net": "gmx",
-      "yandex.com": "yandex",
-      "aol.com": "aol",
-      "hostinger.com": "hostinger"
-    };
-    return known[domain] || "custom";
-  }
   function IngestModal({ onClose, onIngested }) {
     const [paths, setPaths] = (0, import_react13.useState)("");
     const [picked, setPicked] = (0, import_react13.useState)([]);
@@ -19002,12 +18974,22 @@
     const fileRef = (0, import_react13.useRef)(null);
     const folderRef = (0, import_react13.useRef)(null);
     const dropHandlerRef = (0, import_react13.useRef)(null);
+    const [imapOn, setImapOn] = (0, import_react13.useState)(false);
     const [imapEmail, setImapEmail] = (0, import_react13.useState)("");
     const [imapPassword, setImapPassword] = (0, import_react13.useState)("");
     const [imapHost, setImapHost] = (0, import_react13.useState)("");
     const [imapPort, setImapPort] = (0, import_react13.useState)("993");
+    const [showPassword, setShowPassword] = (0, import_react13.useState)(false);
     const [envStatus, setEnvStatus] = (0, import_react13.useState)(null);
-    const [envSaved, setEnvSaved] = (0, import_react13.useState)(null);
+    const saved = envStatus || {};
+    const typed = imapEmail.trim().toLowerCase();
+    const matchesSaved = typed.length >= 3 && !!saved.email && saved.email.toLowerCase().startsWith(typed);
+    const savedPassword = matchesSaved && !!saved.password_present;
+    (0, import_react13.useEffect)(() => {
+      if (!matchesSaved) return;
+      setImapHost((current) => current || saved.host || "");
+      setImapPort((current) => current || saved.port || "993");
+    }, [matchesSaved, saved.host, saved.port]);
     const [tzOffset, setTzOffset] = (0, import_react13.useState)("");
     const [window_, setWindow] = (0, import_react13.useState)("all");
     const [silentGroups, setSilentGroups] = (0, import_react13.useState)(true);
@@ -19124,26 +19106,21 @@
         return null;
       }
     };
-    const saveCredentials = async () => {
-      setBusy(true);
-      setError(null);
-      setEnvSaved(null);
-      try {
-        const result = await api.saveEnv({
-          email: imapEmail.trim(),
-          password: imapPassword,
-          host: imapHost.trim() || null,
-          port: Number(imapPort) || 993,
-          write_enabled: writeEnabled
-        });
-        setEnvSaved(result);
-        setImapPassword("");
-        api.envStatus().then(setEnvStatus).catch(() => {
-        });
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setBusy(false);
+    const pollJob = async (jobId, onProgress) => {
+      let lastStage = null;
+      for (; ; ) {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        let job;
+        try {
+          job = await api.job(jobId);
+        } catch (err) {
+          throw new Error(`lost track of the ingest: ${err.message}`);
+        }
+        if (job.progress?.stage && job.progress.stage !== lastStage) {
+          lastStage = job.progress.stage;
+          onProgress?.(job);
+        }
+        if (job.state !== "running") return job;
       }
     };
     const run = async ({ skip = /* @__PURE__ */ new Set() } = {}) => {
@@ -19156,10 +19133,15 @@
       note("info", "Ingesting\u2026");
       try {
         const months = WINDOWS.find((w) => w.key === window_)?.months ?? null;
-        const result = await api.ingest({
+        const started = await api.ingest({
           which: "real",
           paths: pathList(),
-          email: imapEmail.trim() && !skip.has("email") ? [providerFor(imapEmail)] : [],
+          imap: imapOn && imapEmail.trim() && !skip.has("email") ? {
+            email: imapEmail.trim(),
+            password: imapPassword,
+            host: imapHost.trim(),
+            port: Number(imapPort) || 993
+          } : null,
           since: windowStart(months),
           tz_offset_hours: tzOffset === "" ? null : Number(tzOffset),
           exclude_silent_groups: silentGroups,
@@ -19169,6 +19151,21 @@
           exclude_spam_groups: spamGroups,
           write_enabled: writeEnabled
         });
+        const result = await pollJob(started.job, (job) => {
+          if (job.progress?.stage) note("info", `\u2026 ${job.progress.stage}`);
+        });
+        if (result.state === "failed") {
+          throw new Error(result.error || "the ingest failed");
+        }
+        const progress = result.progress || {};
+        if (progress.replaced) {
+          note(
+            "warn",
+            `mailbox changed: removed every message from ${progress.replaced} before reading ${progress.saved_mailbox}`
+          );
+        } else if (progress.saved_mailbox) {
+          note("ok", `mailbox ${progress.saved_mailbox} saved to .env`);
+        }
         const failed = (result.batches || []).filter(
           (batch) => batch.error && !skip.has(batch.platform)
         );
@@ -19199,7 +19196,11 @@
           note("fail", `${failed.length} leg(s) failed \u2014 exclude and continue, or cancel`);
         } else {
           const total = [...byPlatform.values()].reduce((sum, row) => sum + row.messages, 0);
-          note("done", `all ingested \xB7 ${total} messages`);
+          const written = result.written ?? 0;
+          note(
+            "done",
+            written === 0 && total === 0 ? "nothing new \xB7 the store already holds everything in this window" : `all ingested \xB7 ${written} new message(s)`
+          );
         }
       } catch (err) {
         setError(err.message);
@@ -19456,11 +19457,11 @@
             " ",
             [...new Set((preview.legs || []).map((leg) => leg.platform || "unrecognised"))].sort().join(", ")
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "section", children: "IMAP mailbox" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { className: "section", children: "IMAP INBOX" }),
           /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
-            "For web email incl. Gmail. Outlook.com/O365 need a ",
+            "For any IMAP email or Gmail. Outlook is ",
             /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: ".pst" }),
-            " \u2014 drop it above."
+            " file only as dropped above."
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }, children: [
             /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
@@ -19470,30 +19471,43 @@
                 value: imapEmail,
                 onChange: (value) => {
                   setImapEmail(value);
-                  if (!imapHost) setImapHost(hostFor(value));
+                  const domain = (value.split("@")[1] || "").toLowerCase();
+                  if (!imapHost && HOST_HINTS[domain]) setImapHost(HOST_HINTS[domain]);
                 },
                 placeholder: "you@yourdomain.com",
                 autoComplete: "off"
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
-              TextField,
-              {
-                label: "password",
-                type: "password",
-                value: imapPassword,
-                onChange: setImapPassword,
-                placeholder: "app password",
-                autoComplete: "new-password"
-              }
-            ),
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { style: { display: "flex", alignItems: "flex-end", gap: 6 }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { style: { flex: 1, minWidth: 0 }, children: /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+                TextField,
+                {
+                  label: "password",
+                  type: showPassword ? "text" : "password",
+                  value: imapPassword,
+                  onChange: setImapPassword,
+                  placeholder: savedPassword ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (saved)" : "app password",
+                  autoComplete: "new-password"
+                }
+              ) }),
+              /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+                "button",
+                {
+                  className: "ghost",
+                  onClick: () => setShowPassword((value) => !value),
+                  title: showPassword ? "Hide the password" : "Show the password",
+                  style: { padding: "5px 8px", marginBottom: 1 },
+                  children: showPassword ? "hide" : "show"
+                }
+              )
+            ] }),
             /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
               TextField,
               {
                 label: "host",
                 value: imapHost,
                 onChange: setImapHost,
-                placeholder: "filled from the address"
+                placeholder: "imap.gmail.com"
               }
             ),
             /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
@@ -19506,31 +19520,23 @@
               }
             )
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 8 }, children: [
-            "Local app, manual entry. Never read by MCP or AI. Writes to ",
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: "./.env" }),
-            "."
-          ] }),
           /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }, children: [
             /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
-              "button",
+              Check,
               {
-                className: "ghost",
-                onClick: saveCredentials,
-                disabled: busy || !writeEnabled || !imapEmail.trim() || !imapPassword,
-                children: "Save credentials"
+                label: "Save credentials",
+                checked: imapOn,
+                onChange: setImapOn,
+                hint: "Written to ./.env only if the ingest succeeds."
               }
             ),
-            envSaved && /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { className: "pager-info", children: [
-              "saved ",
-              envSaved.provider,
-              " \u2192 ",
-              envSaved.host,
-              ":",
-              envSaved.port
-            ] }),
-            !envSaved && envStatus && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "pager-info", children: Object.entries(envStatus.providers || {}).filter(([, row]) => row.email_present && row.password_present).map(([name]) => name).join(", ") || "no credentials on disk yet" })
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "pager-info", children: saved.configured ? `in env: ${saved.email}` : "no credentials saved yet" })
           ] }),
+          saved.configured && imapEmail.trim() && !matchesSaved ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 6, color: "var(--orange-text)" }, children: [
+            "A different mailbox replaces ",
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: saved.email }),
+            ": its messages are removed from the graph before this one is read."
+          ] }) : null,
           /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
             "hr",
             {
@@ -20027,12 +20033,20 @@
     }, []);
     const loadGraph = (0, import_react15.useCallback)(async (nodeTypes, { sort, limit } = {}) => {
       setGraphError(null);
+      const fetchGraph = () => api.graph({
+        nodeTypes,
+        sort: sort || theme.filter.sort || "messages",
+        limit: limit || theme.filter.limit || 2e3
+      });
       try {
-        const data = await api.graph({
-          nodeTypes,
-          sort: sort || theme.filter.sort || "messages",
-          limit: limit || theme.filter.limit || 2e3
-        });
+        let data;
+        try {
+          data = await fetchGraph();
+        } catch (err) {
+          if (!/store is busy/i.test(err.message)) throw err;
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          data = await fetchGraph();
+        }
         setGraph(data);
       } catch (err) {
         setGraphError(err.message);
@@ -20060,6 +20074,32 @@
         cancelled = true;
       };
     }, []);
+    (0, import_react15.useEffect)(() => {
+      let cancelled = false;
+      const tick = () => {
+        api.health().then((health) => {
+          if (!cancelled) setMcpConnected(!!health.mcp_active);
+        }).catch(() => {
+        });
+        api.activity().then(({ rows }) => {
+          if (cancelled || !rows?.length) return;
+          rows.forEach(
+            (row) => activity.push({
+              source: "mcp",
+              text: row.text,
+              ms: row.ms,
+              status: row.status === "error" ? "error" : void 0
+            })
+          );
+        }).catch(() => {
+        });
+      };
+      const timer = setInterval(tick, 1e4);
+      return () => {
+        cancelled = true;
+        clearInterval(timer);
+      };
+    }, [activity.push]);
     const booted = (0, import_react15.useRef)(false);
     (0, import_react15.useEffect)(() => {
       if (booted.current) return;

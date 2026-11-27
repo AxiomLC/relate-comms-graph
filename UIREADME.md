@@ -1,9 +1,79 @@
-# UIVISUALS.md
+# UIREADME.md
 
-**Settled UI and visual facts.** Not a log, not a plan — only what has been built, seen in a
+**The UI app, for an AI picking it up cold.** Component map, the renderer's real limits, and
+the traps that cost a day each. Not a log, not a plan — only what has been built, seen in a
 browser, and would cost real time to rediscover.
 
 Backend reference: [`TECHREADME.md`](TECHREADME.md). What is next: [`HANDOVER.md`](HANDOVER.md).
+
+---
+
+## 0a. Shape of the UI
+
+React 19 + esbuild. `app/static/dist/app.js` is **committed**, so a clone runs without npm.
+
+```
+app/ui/src/
+  App.jsx                    shell: theme, viewer stack, chat, modal, platform filter
+  components/
+    GraphCanvas.jsx          Cytoscape + fcose. 1,314 lines. Icons are the only node look.
+    Viewer.jsx               two states, Back, budgeted loads, per-thread search, paging
+    ChatPanel.jsx            Ollama chat with tool trace
+    CommandBar.jsx           the title bar: badge, search, mode radios, modal buttons
+    ActivityLog.jsx          one trace for search, chat and MCP (bottom-left)
+    modals/                  Modal.jsx + Slider/Check/TextField, then Log, Ingest,
+                             Canvas, Gravity, Utilities. All side-docked.
+  config/
+    theme.js                 EVERY tunable. Only the user's overrides are persisted.
+    nodeTypes.js             NODE_TYPES — the single declaration of a kind
+  lib/
+    api.js                   the only server call site
+    useViewerStack.js        the persisted state timeline
+  styles/globals.css         the stylesheet; `npm run build` runs `build:css` too
+```
+
+**`npm run build` after any `.jsx`/`.css` edit.** Python edits need only a server restart.
+`build` runs `build:css` as a second step — before that existed, a new CSS rule silently
+never reached the browser because `index.html` loads `dist/app.css` separately.
+
+### The five modals, and what each owns
+
+| Modal | Owns |
+|---|---|
+| **Ingest** | drop zone, IMAP mailbox, window/tz/gates, truncate, spool delete, the log |
+| **Canvas** | sort, limit, per-kind visibility radios, hide-silent-threads. Applied on **Re-run layout** |
+| **Gravity** | fcose physics sliders. Same apply model as Canvas |
+| **Utilities** | platform filter (narrows every surface), embed status, Embed now / Delete embeds |
+| **Log** | static read of `/api/health`, `/api/stats`, `/api/types`. Slated for a generated KB |
+
+**Canvas and Gravity hold their values and apply on a button.** They do not write on every
+slider move — that was a double-fetch bug (`App.jsx` watched the filter *and* the modal called
+`onReload`).
+
+### The activity trace
+
+`ActivityLog.jsx` + `useActivity()` — one feed for every surface that touches the store.
+In memory only, capped at 40 rows, collapsible, clearable. Rows carry a `source` tag
+(`search` / `chat` / `mcp`), the call, the milliseconds, and a red status on failure.
+
+**MCP rows arrive by polling.** The MCP server is a separate process, so it appends to
+`store/profile/mcp.activity.jsonl` and `App.jsx` drains it every 10 s via `/api/activity`.
+Draining, not tailing: a row is shown once. The same poll reads `/api/health` for
+`mcp_active`, which drives the yellow pulsing badge.
+
+### The title bar badge
+
+Three states, three colours:
+
+| State | Dot | Text |
+|---|---|---|
+| store loaded | green | `offline - safe` |
+| no store | amber | `offline - safe` |
+| MCP connected | **yellow, pulsing** | `MCP being accessed` |
+
+Yellow outranks the store state — it is the one thing the user must notice. `mcp_active` is
+true while `store/profile/mcp.heartbeat` is under 120 s old; a missing, stale, future-dated
+or unparseable file all read as **false**.
 
 ---
 
@@ -372,9 +442,8 @@ order (`layout-base` → `cose-base` → `cytoscape-fcose`) with `window`/`globa
 pointing at it and **no** `module`/`exports`/`define` — those steer the UMD to a CommonJS
 branch whose inner `require` cannot resolve.
 
-### Open data issue
+### An unfolded pair is data, not physics
 
-Two `POSSIBLY` fuzzy pairs are **data, not physics**: `person:dimitri whitfield` ↔
-`person:dimitir whitfield`, and `person:sahfi hassan` ↔ `person:shafi hassan`. Each variant
-sits in a different platform bag, so the unfolded pair stretches an edge across the ring. The
-fix belongs in `relate_comms/link.py` fold rules, not in layout.
+When two spellings of one person do not fold, each variant sits in a different platform bag
+and the edge between them stretches across the ring. That is a `relate_comms/link.py` fold
+rule, not a layout problem — no slider fixes it.

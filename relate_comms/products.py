@@ -56,7 +56,7 @@ it is the only labelled product vocabulary this repo has, and the tier assignmen
 judgement a generator cannot make: nothing in a package registry says `Seat` is a bad node
 and `Slack Connect` is a good one.
 
-`rework_extraction.md` §4 step 3 records the intended generation sources (the live graph's
+`TECHREADME.md` §5 records the intended generation sources (the live graph's
 own mislabelled nodes, package registries, vendor catalogues) and why each was deferred:
 registries bias hard toward a developer's vocabulary, and the live graph cannot seed a
 correction until the corrections exist.

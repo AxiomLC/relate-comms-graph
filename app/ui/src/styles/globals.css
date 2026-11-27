@@ -99,6 +99,23 @@ body::after {
   box-shadow: 0 0 8px var(--orange-text);
 }
 
+/* MCP connected. Yellow, and it pulses — this is the one badge state the user must
+   notice, because it means another agent is reading their messages right now. */
+.dot.mcp {
+  background: #e8c547;
+  box-shadow: 0 0 10px #e8c547;
+  animation: mcp-pulse 2s ease-in-out infinite;
+}
+
+.badge.mcp {
+  color: #e8c547;
+}
+
+@keyframes mcp-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 .spacer {
   flex: 1;
 }

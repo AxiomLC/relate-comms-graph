@@ -2,7 +2,7 @@
 
 Headless geometry instrument for the canvas. The IDE agent runs it; the numbers it
 prints replace screenshots for every "is the geometry right" question. See
-`UIVISUALS.md` §12 for the fcose facts it exists to measure, and for what it cannot
+`UIREADME.md` §12 for the fcose facts it exists to measure, and for what it cannot
 do (it never replaces the owner's eye for "does it look right", and it cannot see
 render-pipeline breakage).
 

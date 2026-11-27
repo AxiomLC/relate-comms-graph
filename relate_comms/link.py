@@ -455,9 +455,15 @@ def _inherit(cur: Any, survivor_key: str, loser_key: str,
              *, label: str = "Correspondent") -> None:
     """Copy the loser's `handle_<p>` / `seen_<p>` / address onto the survivor.
 
-    Written as a read-then-write rather than one Cypher statement because the property
-    names are dynamic (`handle_telegram`), and Relate cannot parameterise a property
-    name in a `SET`. The values are flat strings, so this is a handful of assignments.
+    Written as a read-then-write because the *set* of properties to copy is not known
+    until the loser is read — it depends on which platforms that node was seen on. A
+    single statement would have to name every `handle_<p>` up front.
+
+    (Relate *can* parameterise a property name in a `SET` — `SET n[$p] = "v"` works,
+    verified on 1.0.1. The names below are interpolated anyway because they come from
+    `HANDLE_PREFIX`/`SEEN_PREFIX` and a fixed field list, never from input.)
+
+    The values are flat strings, so this is a handful of assignments.
 
     `mention_count` is a Place's own flat fact and joins the copy: the survivor of a
     Place fold has seen every message either loser saw, so the counts are summed. It is

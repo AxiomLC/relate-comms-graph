@@ -201,7 +201,7 @@ def test_a_mistyped_name_folds_into_one_node(store):
     # store as `exact_name` keeps that value even when a later fold was fuzzy. The
     # link-time reason is in `report["merged_by"]`, asserted above. Recording this
     # rather than quietly asserting `exact_name`: it is a real mismatch between the two
-    # sources, and `rework_extraction.md` §0a notes it.
+    # sources, and `HANDOVER.md` Open decisions notes it.
 
 
 def test_a_different_surname_is_not_a_candidate(store):

@@ -63,16 +63,21 @@ export default function CommandBar({
   return (
     <header className="titlebar">
       <span
-        className="badge"
+        className={`badge${mcpConnected ? " mcp" : ""}`}
         title={
           mcpConnected
-            ? "An MCP client is reading this store"
+            ? "An MCP client is reading this store right now"
             : storeOk
               ? "store loaded · nothing leaves this machine"
               : "no store yet"
         }
       >
-        <span className={`dot${storeOk ? "" : " warn"}`} />
+        {/* Three states, three colours: no store (amber), MCP connected (yellow),
+            otherwise green. MCP outranks the store state because it is the one thing
+            the user needs to notice. */}
+        <span
+          className={`dot${mcpConnected ? " mcp" : storeOk ? "" : " warn"}`}
+        />
         {mcpConnected ? "MCP being accessed" : "offline - safe"}
       </span>
 

@@ -91,12 +91,25 @@ export default function App() {
 
   const loadGraph = useCallback(async (nodeTypes, { sort, limit } = {}) => {
     setGraphError(null);
-    try {
-      const data = await api.graph({
+    const fetchGraph = () =>
+      api.graph({
         nodeTypes,
         sort: sort || theme.filter.sort || "messages",
         limit: limit || theme.filter.limit || 2000,
       });
+    try {
+      let data;
+      try {
+        data = await fetchGraph();
+      } catch (err) {
+        // **A busy store is transient.** Relate allows one writer, so an ingest running
+        // in another surface makes this read fail. Retrying is the correct response —
+        // the alternative is a red banner that only a manual refresh clears, which is
+        // what the user actually saw.
+        if (!/store is busy/i.test(err.message)) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        data = await fetchGraph();
+      }
       setGraph(data);
     } catch (err) {
       setGraphError(err.message);
@@ -141,6 +154,43 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // **The MCP badge polls.** The MCP server is a separate process, so it can connect or
+  // disconnect at any moment and the app has no event to listen for. A 10 s poll of a
+  // cheap endpoint is the honest way to show it: the badge lights up when a client
+  // starts calling tools and goes dark 2 minutes after the last call.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      api
+        .health()
+        .then((health) => {
+          if (!cancelled) setMcpConnected(!!health.mcp_active);
+        })
+        .catch(() => {});
+      // The trace is drained on the same tick: the MCP server appends rows to a file,
+      // and this is the only thing that reads them. Draining means a row appears once.
+      api
+        .activity()
+        .then(({ rows }) => {
+          if (cancelled || !rows?.length) return;
+          rows.forEach((row) =>
+            activity.push({
+              source: "mcp",
+              text: row.text,
+              ms: row.ms,
+              status: row.status === "error" ? "error" : undefined,
+            }),
+          );
+        })
+        .catch(() => {});
+    };
+    const timer = setInterval(tick, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activity.push]);
 
   // The one automatic fetch: the first paint. It reads the saved filter from
   // `loadTheme()`, so a returning user sees the canvas they left. Nothing after this

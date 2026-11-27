@@ -1,196 +1,357 @@
-# relate-comms-graph
+# Social Comms GraphRAG
 
-**Your own message archives — across platforms — as one local, privacy-scrubbed graph.**
+**relate-comms-graph** — your own message archives, across seven platforms, as one local,
+privacy-scrubbed graph.
 
-> Working prototype. Five adapters, live email, identity resolution, a scrub gate, and a
-> local-only UI. Nothing leaves the machine.
+> Working prototype. Seven adapters, live IMAP email, identity resolution across platforms,
+> a scrub gate that runs *before* the write, a local-only UI, an AI chat, and an MCP server
+> so your IDE's agent can read it. **Nothing leaves the machine.**
 
 ---
 
-## What it is
+## What it handles
+
+| Platform | Route | Grade |
+|---|---|---|
+| **Telegram** | Desktop export → `result.json` | **A** — documented schema |
+| **WhatsApp** | per-chat `.txt` / `.zip`, **and** the extension's HTML | B — **no bulk export**; use a recommended 3rd-party exporter |
+| **Facebook Messenger** | *Download your information* → HTML archive | B/C — slow, no API |
+| **LinkedIn** | *Basic* archive → `messages.csv` | **A** data |
+| **Email (any IMAP)** | live, read-only — Gmail, Hostinger, cPanel, Yahoo, iCloud, Zoho… | **A** |
+| **Outlook** | `.pst` export | **A** |
+| **SMS (Android)** | *SMS Backup & Restore* XML or `.xml.zip` | **A** — **no bulk export**; use a recommended 3rd-party app |
+
+Seven legs, one store. Ingest any subset, in any order, any number of times — every write is
+a `MERGE` on a stable key, so a re-ingest updates rather than duplicates.
+
+**WhatsApp and Android SMS have no official bulk export.** Both are handled by well-known
+third-party apps that write the same shapes this reads — the per-chat `.txt`/`.zip` for
+WhatsApp, and *SMS Backup & Restore*'s XML for SMS. [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md)
+names them.
+
+**Outlook is its own platform, not a variant of Email.** A `.pst` is a file exported at a
+point in time; IMAP is a live mailbox. Different provenance, different keys, and merging them
+would make "where did this come from" unanswerable.
+
+---
+
+## Seven sources, one graph
+
+Your personal or business comms become **graph nodes** — seven platforms folded into one
+walkable structure:
+
+| Node | What it is |
+|---|---|
+| **Thread** | one conversation |
+| **Correspondent** | the other party — folded across platforms by name, phone and email |
+| **Place** | a location named in a message body |
+| **Organization** | a company named in a message body |
+| **Product** | a product named in a message body |
+| **Message** | one message |
+| **Attachment** | a file a message mentions (metadata only — bytes are never read) |
+
+![The canvas: platform bags on a ring, merged nodes at the centre](screenshot-canvas.webp)
+
+**Three ways to use it:**
+
+- **The UI** — search and traverse. Three search modes (BM25, semantic, raw Cypher), a
+  click-through viewer, and a canvas where a merged node draws a grey glyph and an orange
+  halo: the visual claim that two spellings are one person.
+- **A local AI chat** — a model on your own machine answers by calling the toolset. Every
+  answer comes from a tool call, and the trace of what it asked is shown beside the reply.
+- **MCP** — your IDE's agent (Zed, Claude Code, anything that speaks MCP) reads the same
+  graph through the same 19 tools, behind **two keys**: a read key and a write key.
+
+---
+
+## The problem
 
 Your messages already *are* a graph: sender → message → thread → reply. That structure is
-explicit, not inferred. But it is shredded across five apps, so nobody can answer:
+explicit, not inferred — it is sitting in the export files. But it is shredded across seven
+apps, so nobody can answer:
 
-> **"Who did I talk to about X on more than one platform, and when did it stop?"**
+> **"Who did I talk to about the travel to Madrid on more than one platform, and when did it
+> stop?"** — or *the Meta Dev Group*, or *a Lexus RX 350*.
 
-The answer exists in your data today and is invisible. This makes it visible — as one
-graph you can walk, search and question, on your own disk.
+The answer exists in your data today and is invisible. Every platform shows you one silo.
+None of them can tell you that the person you emailed in March is the same person you were
+messaging on Telegram in June, or that a thread went quiet the week after a deal closed.
 
-Built as a **Neo4j Relate** hackathon entry (theme *"Context, Connected"*).
+This makes that visible — as one graph you can walk, search, and question, on your own disk.
 
-## Terms — the short key
+---
 
-Five words mean five specific things in this app. Everything else is prose.
+## Privacy — the whole point
 
-| Term | Means | Never means |
-|---|---|---|
-| **Owner** | The account owner — whose archives these are. One per platform, stored in `store/profile/identity.json`. | Not a node. Not shown in the UI except as "you" in a message body. |
-| **Correspondent** | The other party in a conversation, **on one platform**. A fact from the export, keyed `<platform>:<name>`. | Not a person across platforms. Not an extracted entity. |
-| **Platform** | The source: `telegram`, `messenger`, `email`, `linkedin`, `whatsapp`, `outlook`, `sms`. Shown as Telegram, Fcbk Mssgr, Email, LinkedIn, WhatsApp, Outlook, SMS. | Not the file you ingested. Not the user's download. Not the provider — Outlook-over-IMAP is **Email**. |
-| **Thread** | One conversation. | Not a message. |
-| **Message** | One message. | Not a thread. |
+These are the most sensitive files a person owns. Three things follow from that:
 
-Three more, for the ingest path:
+- **Everything is local.** No cloud, no telemetry, no outbound call except a loopback Ollama
+  on `127.0.0.1:11434`. The store is one file on your disk.
+- **The scrub gate runs before the write, not after.** Phone numbers, addresses and card
+  numbers are replaced with stable aliases (`PHONE-1`) *before* a row reaches the graph. The
+  alias map is memory-only by default — it is a re-identification key, so it is not persisted.
+- **Refusals are visible.** Nothing is silently dropped. Unknown message types are counted,
+  unrecognised files are reported and kept, and every ingest ends with a verdict per file.
 
-| Term | Means |
-|---|---|
-| **Download** | The raw file the user got from the platform. Never moved, never deleted. |
-| **Export** | The copy inside `spool/`, which is what actually gets parsed. |
-| **Root** | The spool queue to read: `spool/real/`. There is **one** queue — a generated sample is just a file dropped in it, and `ingest` cannot tell it from a real export. |
+The MCP server is the one feature that lets *another* agent read this store, so it is gated by
+two keys and refuses to start without one.
 
-**`Place`, `Organization`, `Product` are the message body nodes; extracted. 'Correspondent' is the sender of the thread, to the Owner (you). Person node is placeholder and not wired in as to not cause confusion with Correspondent**
+---
 
-**Display note:** the platform key `messenger` is stored as-is (it is part of every
-`Message.key`), but the UI always shows it as **Fcbk Mssgr** — never bare "Messenger",
-which reads as "a message". The mapping lives in one place,
-`PLATFORM_LABELS` in `app/ui/src/config/nodeTypes.js`.
-
-**Outlook is its own platform, not a variant of Email.** The same Outlook account can
-arrive two ways and lands on two different lines:
-
-| route | platform | shown as | colour |
-|---|---|---|---|
-| `.pst` export dropped in the spool | `outlook` | Outlook | purple |
-| live IMAP (`--email outlook`) | `email` | Email | red |
-
-That is deliberate. A `.pst` is a file exported at a point in time; IMAP is a live
-mailbox. Different provenance, different keys, and merging them would make "where did
-this come from" unanswerable.
-
-## Why a graph, why local
+## Why a graph, and why Relate
 
 | | |
 |---|---|
-| **Native edges** | `from` / `to` / `reply_to` / `thread` are data fields, not LLM guesses. Most "documents → graph" tools guess at structure; here it is given. |
-| **Identity resolution** | The same person appears on three platforms as three Correspondents. Merging them is a real problem, and the demo's money shot. |
-| **Privacy by construction** | These are the most sensitive files a person owns. Everything runs locally, and a scrubbing gate sits *before* the write, not after. |
-| **No server** | Relate is an embedded engine — one `.rl` file, no port, no Bolt. That is also why this project has its own Cypher writer: every off-the-shelf graph-extraction library needs a Neo4j server to connect to. |
+| **Native edges** | `from` / `to` / `reply_to` / `thread` are data fields, not LLM guesses. Most "documents → graph" tools infer structure; here it is given. |
+| **Identity resolution** | The same person appears on three platforms as three Correspondents. Folding them is a real problem, and the demo's money shot. |
+| **Cross-platform queries** | "Who did I talk to about the travel to Madrid on more than one platform" is a two-hop traversal, not a join across seven tables. |
 
-## Where the data lives
+**[Relate](https://relate.neo4j.com/)** is Neo4j's embedded graph engine — the reason this
+runs with no server at all:
 
-**One file holds everything: `store/graph.rl`.** No CSV, no database server, no export
-between parse and write. Exports land in `spool/real/<platform>/`, are read into in-memory
-records, and merged into that single file.
+- **One file, no port, no Bolt.** `relate.connect("store/graph.rl")` takes a filesystem path.
+  There is nothing to install, nothing to start, nothing listening.
+- **Cypher 25**, the real dialect — `MATCH`, `UNWIND`, `MERGE`, `CALL {}`, subqueries.
+- **Native vector and fulltext indexes.** `CREATE VECTOR INDEX` for semantic search,
+  `CREATE FULLTEXT INDEX` for BM25. Both are used here.
+- **~7,000 messages/second** on batched `UNWIND` writes; ~1,500 bytes per message on disk.
 
-```
-spool/
-  real/     telegram/  whatsapp/  messenger/  linkedin/  outlook/  sms/  imap/  gmail/
-store/
-  graph.rl      the graph — every message, every correspondent
-  profile/      identity.json — which account is the Owner, per platform
-```
+**The data model is semi-portable.** The store holds facts, not summaries —
+`(message)-[:IN]->(thread)` and `(message)-[:MENTIONS]->(entity)`. "This thread is about the
+Meta Dev Group" is computed at read time, not stored. That is the triple model any graph
+engine accepts, so the *data* would move to Neo4j, Memgraph or Kùzu unchanged. The **writer**
+would not: it is Cypher 25 against Relate's embedded API, so a port means re-writing the
+`writer.py` layer, not just pointing at a different server.
 
-Both folders sit inside the repo and are **gitignored**; only `.gitkeep` files are
-committed, so a fresh clone has the shape but no data. `ingest` recreates them if deleted.
+> **Honest limitation:** Relate is append-only and has no compaction. Deleting a property
+> frees no disk. Reclaiming space means rewriting the store into a fresh `.rl` — which this
+> app does, at 64.7 MB → 3.6 MB in 1.9 s.
 
-**Backup:** `graph.rl` is rebuildable only from `spool/`. Copy it somewhere safe before
-running anything destructive.
+---
 
 ## Setup
 
-Requires **Python 3.11+**. Node is only needed if you change the UI.
+Requires **Python 3.11+**. Node 22+ only if you change the UI — `dist/app.js` is committed,
+so a clone runs without npm.
 
 ```bash
-pip install -e ".[resolve,app]"     # rapidfuzz + fastapi/uvicorn
-cp .env.example .env                # only if you want live email
+pip install -e ".[resolve,app]"
 ```
 
-Optional, for the AI chat: install [Ollama](https://ollama.com) and pull a model.
+**Run it:**
 
 ```bash
-ollama pull lfm2.5:8b
-```
-
-## How to run
-
-**Windows:** double-click **`start.bat`** in the root. A console window opens, the browser
-opens at `http://127.0.0.1:8100`, and closing the window stops the app.
-
-**Any platform:**
-
-```bash
-python -m app                       # http://127.0.0.1:8100
-python -m app --port 8110           # if 8100 is taken
+python -m app          # http://127.0.0.1:8100
+start.bat              # Windows: opens the browser and the server
 ```
 
 Port **8100**, not 8000 — 8000 is held by another app on this machine.
 
-### Getting your messages in
-
-Press **Ingest** in the title bar. The modal explains what each platform requires and
-accepts a pasted path; files are **copied** into the spool, never moved.
+**Optional, for the AI chat:** install [Ollama](https://ollama.com) and pull a model.
 
 ```bash
-python -m relate_comms ingest --which real --email hostinger --tz-offset -5
+ollama pull qwen3.5:4b
 ```
 
-Per-platform download instructions live in
-[`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md).
+**To change the model**, edit one line in [`relate_comms/models.py`](relate_comms/models.py):
 
-**No real exports yet?** `python -m sample_writer` writes a full fake batch to
-`sample_writer/out/` — every platform, every shape the app has a switch for. Drop those in
-the same way: `ingest` cannot tell them from a real download. See
-[`sample_writer/README.md`](sample_writer/README.md).
+```python
+DEFAULT_MODEL = "qwen3.5:4b"   # or "lfm2.5:8b", or anything you have pulled
+```
 
-### What the demo looks like
+---
 
-1. Drop three archives in: Telegram JSON, WhatsApp `.txt`, LinkedIn zip. (Email reads live.)
-2. Ingest — show the refusal log and what was scrubbed.
-3. Ask: *"Who did I talk to about [topic] on more than one platform, and when did it stop?"*
-4. One `Correspondent` node per platform, edges into each Thread, a timeline, a cluster
-   that goes quiet.
-5. Flip `phones: block`, re-ingest → same graph shape, PII gone, refusal log lists what
-   was withheld.
+## How to run it
 
-## Platform reality
+**1. Get your exports.** No platform offers an API for your own history, and that is
+deliberate on their part. [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md)
+has the click-by-click for every platform, including the traps — Gmail needs an App Password,
+Meta's download link expires in four days, LinkedIn's *Basic* archive is enough.
 
-| Platform | Grade | Route |
-|---|---|---|
-| **Telegram** | **A** | Desktop export → `result.json` (officially documented schema) |
-| **Email (Gmail)** | **A** | IMAP read-only, App Password. Verified live |
-| **Email (Hostinger / cPanel)** | **A** | IMAP read-only, `INBOX` + `INBOX.Sent`. Verified live |
-| **Outlook (`.pst`)** | **A** | Export to a `.pst` and drop it in. Verified against a real file |
-| **Outlook (live IMAP)** | **F** | Basic auth is dead; needs OAuth2. Lands on the **Email** line |
-| **WhatsApp** | B | Per-chat `.txt`/`.zip`. No all-chats export; media placeholders only |
-| **LinkedIn** | **A data / F automation** | *Basic* archive → `messages.csv`. Export only |
-| **Facebook Messenger** | B/C | *Download your information* → HTML archive. Slow, no API |
-| **SMS** | **A** | *SMS Backup & Restore* XML or `.xml.zip`. Verified |
-| **Slack** | C | Export needs workspace admin. Not viable |
-| **Instagram** | — | Out of scope. Export names no sender |
+> **A savvy architect can automate this.** Most platforms email a download link on request,
+> and several can be scripted — a cron job that requests the export, polls for the link, and
+> drops the file into `spool/real/` turns this into a weekly refresh. The app does not do that
+> for you; it only reads what lands in the spool.
+
+**2. Drop it in.** Press **Ingest** in the title bar and drag the file or folder onto the drop
+zone. Files are **copied** into `spool/real/`, never moved — your download is untouched.
+
+![The Ingest modal: drop zone, IMAP mailbox, gates, and the log](screenshot-ingest.webp)
+
+**Email is the one live source.** Gmail and any IMAP mailbox are read directly — no file to
+download. Enter the address, password, host and port in the Ingest modal; the credentials are
+written to `.env` **only after the ingest succeeds**, so a wrong password leaves nothing
+behind. Outlook is the exception: Microsoft killed basic auth, so use the `.pst` export.
+
+**3. Re-ingest weekly.** `ingest(delta=True)` is the default: it reads `max(ts_utc)` per
+platform from the store and drops every parsed message at or before it, **before** the write
+and before extraction. Measured on a realistic weekly case — 10,000 stored + 500 new:
+
+| Run | Time |
+|---|---|
+| full re-process | 25.7 s |
+| delta | 2.6 s |
+
+So the loop is: export again, drop it in, ingest. Only the new week is parsed.
+
+**To try that loop without real exports**, `sample_writer` can extend a world's clock:
+set `END` in [`sample_writer/config.py`](sample_writer/config.py) to a past date, build and
+ingest, move `END` forward, run `python -m sample_writer append`, and ingest again — the
+second run should report most messages dropped as already stored.
+
+---
+
+## For developers and AI agents
+
+| Directory | What is in it |
+|---|---|
+| [`tests/`](tests/) | The suite (`pytest tests -q`), the committed fixtures, and `tests/README.md` — the payloads and how to wire a new export format. |
+| [`tools/`](tools/) | Benchmarks and probes, not app code: `bench_scale.py`, `bench_ollama.py`, `compare_models.py`, `verify_relate.py`, and `ai_visual_graph_tool/` (the headless fcose measurement harness). |
+| [`sample_writer/`](sample_writer/) | The world generator. Every knob lives in [`config.py`](sample_writer/config.py) — `END` (the clock), `AVG_THREADS_PER_PLATFORM`, `BIG_THREAD_*`, `BODY_ENTITY_SHARE`, `SPAM_GROUPS`, `APPEND_*`. |
+| [`scripts/`](scripts/) | `vendor.mjs` (re-copy Cytoscape + fcose), `build_entity_icons.py`. |
+
+**Nothing in `tools/` is imported by the app.** It is measurement and one-off probes, kept
+so a number in the docs can be re-derived rather than trusted.
+
+---
+
+## The toolset — one registry, three surfaces
+
+Every capability is a plain function in `relate_comms/tools.py`. Three surfaces bind the same
+functions and differ only in policy:
+
+```
+relate_comms/tools.py   REGISTRY — 19 tools
+        |
+        +-- app/routers/*.py     the UI's HTTP routes
+        +-- app/routers/chat.py  the AI chat: 6 tools + write toggle
+        +-- app/mcp/server.py    MCP: all 19 + two keys + a path rule
+```
+
+**19 tools**, by access:
+
+| Access | Tools |
+|---|---|
+| **READ** | `graph_slice` `thread_arc` `search_fulltext` `search_vector` `search_messages` `message_view` `types_present` `evidence_counts` `embed_status` `screen_body` `run_cypher` `preview_ingest` `verify_ingest` |
+| **WRITE** | `embed_messages` `ingest` |
+| **DESTRUCTIVE** | `flush_embeddings` `truncate_store` `prune_spool` `delete_spool` |
+
+**Search has three modes, and they are different promises:**
+
+- **`fulltext`** — BM25 over bodies, ranked and indexed. Word matching, not substring.
+- **`vector`** — semantic. Needs an opt-in embed pass; "money I owe someone" finds
+  *"been flat out with the remittance"*.
+- **`cypher`** — whatever you type, refused if it would write.
+
+**Both search modes also match names.** A person's name is in no message body, so
+`_name_matches()` substring-matches `Correspondent.display_name` and returns thread rows.
+Without it, typing a correspondent's name found nothing.
+
+### MCP — your IDE's agent
+
+`python -m app.mcp` speaks MCP over stdio, so Zed, Claude Code, or any MCP client can read the
+graph. **Two keys** live in `store/profile/mcp.json`:
+
+| Key | Grants |
+|---|---|
+| `read_key` | 16 tools — read only |
+| `write_key` | 21 tools — read + write |
+
+```json
+{ "command": "python", "args": ["-m", "app.mcp"],
+  "env": { "RELATE_MCP_KEY": "r_…" } }
+```
+
+No key, or a wrong one, refuses to start. `ingest` is bounded to paths inside the repo, and
+the mailbox credentials are used inside the process — never returned in a response, a tool
+argument, or the activity trace. The title bar shows a yellow pulsing **MCP being accessed**
+badge while a client is connected.
+
+---
+
+## The sample world — `sample_writer`
+
+**No real exports?** `sample_writer` manufactures a whole believable batch — seven platforms,
+every shape the app has a switch for, with the awkward corners a real export contains: threads
+the owner never spoke in, spam groups, placeholder senders, off-by-one boundaries, and the
+same entity spelled five ways.
+
+```bash
+python -m sample_writer              # fake downloads -> sample_writer/out/
+python -m sample_writer --seed 5     # wipe & write, seed 5
+python -m sample_writer append       # same world, later clock (delta testing)
+python -m sample_writer clean        # wipe out/
+```
+
+Then drop `sample_writer/out/` onto the Ingest drop zone. `ingest` cannot tell it from a real
+download — that is the point.
+
+**Every knob is in [`sample_writer/config.py`](sample_writer/config.py):**
+
+| Knob | What it controls |
+|---|---|
+| `START` / `END` | the world's clock. **`END` is the one to move** for delta testing |
+| `AVG_THREADS_PER_PLATFORM` | world size (each platform rolls ±`THREADS_JITTER`) |
+| `BIG_THREAD_COUNT` / `BIG_THREAD_RANGE` / `BIG_THREAD_LOW_WEIGHT` | how many long-running threads, how long, how strongly the short end is favoured |
+| `BODY_ENTITY_SHARE` | how often each body kind is named (`org` 1.0, `place` 0.7, `product` 1.6) |
+| `SPAM_GROUPS` | how many spam groups the world contains |
+| `APPEND_THREAD_SHARE` / `APPEND_NEW_THREAD_SHARE` / `APPEND_MESSAGES` | what `append` adds |
+
+`python -m sample_writer knobs` prints every knob and its current value.
+
+**The delta cycle, end to end:**
+
+1. Set `END` in `config.py` to a date in the past (e.g. a week ago).
+2. `python -m sample_writer --seed 8` — build, then ingest that.
+3. Set `END` back to now.
+4. `python -m sample_writer append` — same world, one more week.
+5. Ingest again. The report should show most messages **dropped as already stored** and only
+the new week written.
+
+Measured on seed 5, `END` 2025-10-01 → 2026-11-01: run 1 wrote 3,049 messages, run 2 wrote
+**146** and dropped 2,749 as already stored.
+
+**It is a substantial piece of work in its own right** — a world generator with a cast, a
+thread planner, per-platform writers, and three independent fuzz axes. It could be its own
+repo, and it is the reason this one can be demoed without anyone's real history.
+
+---
 
 ## Status
 
-**Ingested:** 2,003 messages, 93 correspondents across all seven platforms — Telegram 851 ·
-Messenger 655 · Email 151 · SMS 139 · WhatsApp 108 · LinkedIn 93 · Outlook 6. **34
-correspondents merged across platforms**, 7 `POSSIBLY` edges.
+Working prototype. `pytest tests -q` → **587 passed, 10 skipped, 1 known failure** (a `canon`
+camelCase split, pre-existing).
 
-**Built:** seven file adapters + live IMAP, parallel parse → resolve → scrub → serialised
-write → verify → prune, body-entity extraction (Place, Organization, Product), 12-tool
-layer, FastAPI, and the UI.
+**Built:** seven adapters + live IMAP, parallel parse → resolve → scrub → serialised write →
+verify → prune, body-entity extraction (Place / Organization / Product), delta ingest, BM25 +
+vector search, the job registry, the MCP surface, the AI chat, and the UI.
 
-**Not built:** semantic search (Relate supports vector indexes; none exists in this store
-yet).
-
-`pytest tests -q` → **478 passed, 10 skipped, 1 known failure** (`canon` camelCase split,
-pre-existing).
+**Not built:** multi-mailbox support (one mailbox at a time — the key carries no mailbox, so
+two would silently merge), non-English extraction, and a generated knowledge base to replace
+the Log modal.
 
 ## Docs
 
-| Doc | What's in it |
+| Doc | What is in it |
 |---|---|
-| [`TECHREADME.md`](TECHREADME.md) | Module map, key functions, commands, Relate/Neo4j references — written for an AI |
-| [`HANDOVER.md`](HANDOVER.md) | Short, dated, newest at the bottom — what is next |
-| [`UIVISUALS.md`](UIVISUALS.md) | Settled UI and visual facts: glows, colour parsing, stylesheet order, the merged-node template, bags, and what fcose actually honours |
-| [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) | How to get each platform's export |
-| [`archive_docs/HowToRunOllama.md`](archive_docs/HowToRunOllama.md) | Local model setup on this machine |
+| [`TECHREADME.md`](TECHREADME.md) | the pipeline, the modules, the invariants — written for an AI |
+| [`SCHEMA.md`](SCHEMA.md) | the store's data model and the 19-tool registry |
+| [`UIREADME.md`](UIREADME.md) | the UI app, and every renderer trap |
+| [`HANDOVER.md`](HANDOVER.md) | what is next, and what just landed |
+| [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) | how to get each platform's export |
+| [`archive_docs/Ollama.md`](archive_docs/Ollama.md) | local model setup on Windows |
+| [`sample_writer/README.md`](sample_writer/README.md) | the generator — every knob |
 
 ## Design principles
 
 - **Deterministic before LLM.** Parsing, normalisation, exact matching and shape scrubbing
-  never need a model. Enrichment is optional.
+  never need a model. Enrichment is optional; the graph builds with zero LLM calls.
 - **Never a silent drop.** Unknown message types are counted and reported.
 - **Refusals are append-only and user-visible.**
 - **Single writer per graph file;** every other access is read-only.
 - **Alias maps are re-identification keys** — memory-only by default.
-- **Visually: A node is: halo (behind) → circle body → SVG → border → label.** Five things, in that order. The halo is behind the circle, not between circle and SVG. Selection is the border layer, not a halo.
+- **The store holds facts, not summaries** — anything derivable is computed at read time.
+
+---
+
+**Questions, or want to talk about it?** `dev@w57th.agency`

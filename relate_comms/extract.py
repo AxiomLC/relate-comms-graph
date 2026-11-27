@@ -300,7 +300,7 @@ DOCUMENT_CHARS = 2_000
 # The arbitration below is real and tested with the flag on, but a `Product` leg with no
 # product vocabulary would be a guess: `en_core_web_sm` has no `PRODUCT` label at all, so
 # the only thing that can claim a span is a dictionary entry, and there is no index yet
-# (`rework_extraction.md` §4 step 3). Off means the seam exists, is exercised by tests,
+# (`TECHREADME.md` §5). Off means the seam exists, is exercised by tests,
 # and writes nothing — the live store and every existing count are unchanged.
 #
 # Deliberately a module constant and not an env var: a switch that can differ between two
@@ -489,7 +489,7 @@ class Mention:
     # Every kind this span could plausibly be, strongest first — **provenance, not a
     # decision**. `kind` is what gets written; this is the record of what lost and why a
     # later reviewer might disagree. It exists because the arbitration is the newest and
-    # least proven part of the pipeline (`rework_extraction.md` §4 step 2), and a wrong
+    # least proven part of the pipeline (`TECHREADME.md` §5), and a wrong
     # choice should be visible without re-running the extractor.
     #
     # Empty on a mention from a path that never arbitrates (the old single-kind helpers),
@@ -1056,7 +1056,7 @@ def _arbitrate(text: str, label: str, body: str = "") -> tuple[str, tuple[str, .
     inside it — `Grafana Labs` the company contains `Grafana` the product — and demoting
     that would lose the organisation, which is a true fact the graph should keep. So
     `organization:snowflake` and `organization:claude` stay Organizations;
-    `rework_extraction.md` §5 open decision 2 records that as deliberate.
+    `HANDOVER.md` Open decisions records that as deliberate.
 
     The arbitration is per span and needs the body, because a context-gated entry
     (`Support Plan`) is only a product in a procurement sentence.

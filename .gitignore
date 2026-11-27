@@ -9,6 +9,14 @@ secrets.json
 token.json
 *client_secret*
 
+# Editor and shell backups. `.env.bak` is covered by `.env.*` above, but a stray
+# `settings.json.bak` or `writer.py.orig` is not, and both can hold a secret.
+*.bak
+*.orig
+*.rej
+*.swp
+*~
+
 # User exports / message archives (contain unencrypted personal history)
 # The folder itself ships via .gitkeep so a fresh clone has a drop zone.
 exports/

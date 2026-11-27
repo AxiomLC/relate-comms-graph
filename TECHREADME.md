@@ -25,7 +25,7 @@ Ingest path — three more, not interchangeable: **Download** (the user's file, 
 (`paths.real_dir()`, **one queue** — a sample is just a file dropped in it).
 
 **Extracted kinds are live.** `Place`, `Organization` and `Product` are written by the
-pipeline and drawn on the canvas (§5). `Person` is extracted but **not wired** — a person
+pipeline and drawn on the canvas (§4). `Person` is extracted but **not wired** — a person
 drawn from a body competes with the Correspondent already on the thread, which is a merge
 with a wrong answer that looks right.
 
@@ -50,10 +50,11 @@ are built.
 | `outlook` | Outlook | `#8b5cf6` purple |
 | `sms` | SMS | `#b8912a` dark gold |
 
-`gmail` and `imap` are aliases resolving to `email`. The store key is `messenger` and must
-stay that way — it is part of every `Message.key`. The UI shows **Fcbk Mssgr**, never bare
-"Messenger", which reads as "a message" beside a `Message` node. `outlook` is its own
-platform, not a variant of `email`: a `.pst` and a live mailbox have different provenance.
+The store key is `messenger` and must stay that way — it is part of every `Message.key`. The
+UI shows **Fcbk Mssgr**, never bare "Messenger", which reads as "a message" beside a
+`Message` node. `outlook` is its own platform, not a variant of `email`: a `.pst` and a live
+mailbox have different provenance. **There is no `gmail` or `imap` platform** — a Gmail
+mailbox is `email` with `imap.gmail.com` as its host.
 
 ---
 
@@ -77,7 +78,7 @@ back; importing the library must not pull in FastAPI.
 | File | Role |
 |---|---|
 | `schema.py` | Frozen dataclasses: `Message`, `Chat`, `AttachmentRef`, `IngestResult`. |
-| `paths.py` | `spool_dir()`, `real_dir()`, `store_path()`, `profile_dir()`, `ensure_layout()`. |
+| `paths.py` | `spool_dir()`, `real_dir()`, `store_path()`, `profile_dir()`, `ensure_layout()`, `SPOOL_SCAFFOLD` + `ensure_spool_scaffold()`. |
 | `ingest.py` | The pipeline: `_parser_for()`, `detect_platform()`, `discover()`, `parse_batches()`, `ingest()`, `preview()`, `stage()`, `_drop_spam_threads()`. Extraction runs at the end of each batch; `delta=True` is the default. |
 | `writer.py` | Cypher writer. `write()` (UNWIND 500), `write_correspondents()` + `_reconcile()` + `_contact_ids()`, `write_entities()`, `thread_display_title()`, `verify_present()`, `handles_from()`, `_ENTITY_WRITE_KINDS`. |
 | `canon.py` | The flattening pipe. `canonical(raw, kind=…)` → `Canonical`; `KINDS`, `NICKNAMES`, `candidates()`, `nickname_form()`, `score()`, `fuzzy_available()`. Knobs `NICKNAME_ENABLED`, `FOLD_ON_NAME`, `FUZZY_REPORT`. |
@@ -97,237 +98,33 @@ back; importing the library must not pull in FastAPI.
 | `main.py` | FastAPI app, `ToolError` → 400, static mount, `/` serves `index.html`. |
 | `routers/system.py` | `/api/health`, `/stats`, `/types`, `GET|POST /platforms`. |
 | `routers/graph.py` · `search.py` · `chat.py` | `/api/graph`, `/api/thread/{key}`, `/api/message/{key}` · `POST /api/search` · Ollama loopback, one tool round. |
-| `routers/ingest.py` | `/api/ingest`, `/upload` (file or folder picker → spool), `/preview` (read-only: size + duplicate), `/env` (credentials → `./.env`, never echoed), `/truncate` (destructive), `/verify`, `/prune`. |
+| `routers/ingest.py` | `/api/ingest` (**returns a job id**), `/upload` (file or folder picker → spool), `/preview` (read-only: size + duplicate), `/env` (what is saved, **never the password**), `/truncate` (destructive), `/verify`, `/prune`, `/jobs/{id}`. |
+| `jobs.py` | The job registry. `start()` runs work on a thread and returns immediately; `status()` reports it. One job at a time. Exists because an ingest holds the store for its whole duration (Relate is single-writer) and every other surface would otherwise fail with `storage locked`. |
+| `mcp/` | **The MCP surface.** `config.py` (two keys, path rule, heartbeat, activity trace), `server.py` (allowlist, `_bind`, ingest guard), `__main__.py` (`python -m app.mcp`). §13. |
 | `__main__.py` | `python -m app`, default port **8100**. |
 
 ### UI — `app/ui/src/`
 
 React 19 + esbuild. `dist/app.js` is **committed** so a clone runs without npm.
 
-| File | Role |
-|---|---|
-| `App.jsx` | Shell. Theme, viewer stack, chat toggle, modal, platform filter. Enforces halo/fly-to. |
-| `components/GraphCanvas.jsx` | Cytoscape + fcose. **Icons are the only node look.** Stylesheet traps: [`UIVISUALS.md`](UIVISUALS.md). |
-| `components/Viewer.jsx` | Two states, Back, budgeted loads, per-thread search, paging. |
-| `components/ChatPanel.jsx` · `CommandBar.jsx` | Ollama chat with tool trace · the title bar. |
-| `components/modals/` | `Modal.jsx` (+ `Slider`/`Check`/`TextField`, each with a hover `hint` and a visible `note`), then the five the title bar opens: **Log**, **Ingest**, **Canvas**, **Gravity**, **Utilities**. All are side-docked (`side`) so the graph stays visible. `SetupModal.jsx` exists but is not mounted. |
-| `config/theme.js` · `nodeTypes.js` | **Every tunable**, with only the user's *overrides* persisted · `NODE_TYPES` (the single declaration of a kind), platform colours, icons, placeholders. See [`UIVISUALS.md`](UIVISUALS.md) §10. |
-| `lib/api.js` · `useViewerStack.js` | The only server call site · the persisted state timeline. |
-| `components/ActivityLog.jsx` | **One activity trace for every surface that touches the store** — search, chat, and MCP when built. Bottom-left over the canvas, in memory only, capped at 40 rows. |
+**The UI is its own guide:** [`UIREADME.md`](UIREADME.md) — component map, the five modals,
+the activity trace, the badge, and every Cytoscape/fcose trap that cost a day each.
 
-## 3. Key functions
+What matters from the backend's side: `theme.js` holds every tunable and only the user's
+*overrides* are persisted; `nodeTypes.js` is the single declaration of a kind; `api.js` is
+the only server call site. **`npm run build` after any `.jsx`/`.css` edit** — `theme.js` is
+compiled into the bundle.
 
-```python
-# relate_comms/tools.py — the whole surface
-graph_slice(node_types=None, edge_types=None, limit=2000, sort="messages")
-configure_platforms(platforms)   active_platforms()
-thread_arc(thread_key, *, skip=0, limit=50, query=None)
-search_fulltext(query, *, limit=20, platform=None)   # BM25 bodies + names — the default
-search_vector(query, *, limit=20, platform=None)     # semantic; needs an embed pass
-search_messages(query, *, limit=20, platform=None, thread_key=None)  # legacy scan
-embed_status()   embed_messages(*, limit=5000, write_enabled=False)
-flush_embeddings(*, write_enabled=False, confirm=False)   # rebuild, reclaims disk
-screen_body(body) -> (keep, reason)   # subject+predicate test, fails open
-message_view(message_key)
-types_present()   evidence_counts()   run_cypher(query, params, *, limit=500)
-ingest(...)   preview_ingest(which)   verify_ingest(which)
-truncate_store(...)   prune_spool(older_than_days, ...)
+## 3. Schema and the tool layer
 
-# relate_comms/ingest.py
-parse_batches(...)   ingest(*, which="real", delta=True, ...) -> Report
-preview(...) -> dict   stage(paths_in) -> list[Path]   detect_platform(path)
+**Moved to [`SCHEMA.md`](SCHEMA.md)** — the store's data model (every node and edge type,
+the property rules, the locked thread-title format) and the 19-tool registry with its three
+bindings.
 
-# relate_comms/extract.py — proposes spans, merges nothing
-extract(rows) -> list[Mention]        places(body) / organizations(body)
-fragments(body) -> list[Fragment]     # `<br>` split; offsets index the ORIGINAL body
-_arbitrate(text, label, body) -> (kind, candidates)
+That file is the one to read before writing a query or adding a tool. This one covers the
+pipeline that fills the store.
 
-# relate_comms/products.py — the four-rule ladder, no weights
-products.decide(text, body) -> (bool, reason)
-products.lookup(text) -> ProductEntry | None     products.has_context(body) -> bool
-
-# relate_comms/writer.py
-write(conn, result, *, owner=None) -> dict[str, int]   # UNWIND, BATCH_SIZE = 500
-write_correspondents(...)   write_entities(conn, mentions, *, message_meta, kinds)
-_reconcile(cur, keys)       thread_display_title(chat, owner=None)   verify_present(...)
-
-# relate_comms/canon.py — the flattening pipe
-canonical(raw, *, kind="person", owner=None) -> Canonical
-candidates(...)   nickname_form(raw)   score(a, b)   fuzzy_available()
-KINDS = ("person", "organization", "place", "product")
-
-# relate_comms/link.py — cross-connect, once per ingest
-link(conn, *, fold_on_name=None) -> dict   # {folded, merged_by, groups, entities}
-```
-
-
-## 4. Schema (what exists today)
-
-```cypher
-(:Thread        {key, platform, title, is_group})
-(:Message       {key, platform, chat_id, message_id, ts_utc, body,
-                 has_attachments, is_self, sender_name, sender_id, raw_kind})
-(:Attachment    {key, filename_scrubbed, mime, sha256, size})
-(:Correspondent {key, display_name, platform, platforms, platform_label,
-                 first_seen_utc, merged_by, email, phone_e164,
-                 handle_<platform>, seen_<platform>})
-(:Place         {key, display_name, platform, platforms, platform_label,
-                 first_seen_utc, merged_by, mention_count,
-                 handle_<platform>, seen_<platform>})
-(:Organization  … same shape as Place)
-(:Product       … same shape as Place)
-
-(:Message)-[:IN]->(:Thread)        (:Message)-[:REPLY_TO]->(:Message)
-(:Message)-[:HAS_ATTACHMENT]->(:Attachment)
-(:Thread)-[:WITH]->(:Correspondent)
-(:Message)-[:MENTIONS]->(:Place | :Organization | :Product)
-```
-
-**Five edge types, and no more.** `REPLY_TO` is declared and written by nothing. There is
-no `POSSIBLY`: a fuzzy spelling pair folds like every other pair, and both endpoints of an
-entity edge are `Message`, so `Thread → Entity` is a projection, not an edge — see below.
-
-**The store holds facts, not summaries.** `(message)-[:MENTIONS]->(entity)` and
-`(message)-[:IN]->(thread)` are what actually happened; "this thread is about Grafana" is
-computed at read time by `tools._EDGE_QUERIES` as a two-hop `MATCH (t:Thread)<-[:IN]-(m)
--[:MENTIONS]->(e)`. That is the triple model another graph engine would accept — do not
-let `_EDGE_QUERIES` become the schema.
-
-**All three entity kinds share one write path.** `writer._ENTITY_WRITE_KINDS` maps kind to
-store label; the fold, `mention_count`, the `MENTIONS` edge and `_reconcile` are identical.
-`mention_count` is **message-based** (not thread-based) since 2026-11-23.
-
-**`Product` is gated by `extract.PRODUCT_ENABLED`.** Off returns the graph to Place+Org with
-no rebuild: the index stops promoting spans and `DRAWABLE_*` drops `Product`.
-
-**`Message.emb` is optional and never written by ingest.** A 768-float vector from
-`embeddinggemma`, written only by `tools.embed_messages` (the Utilities *Embed now*
-button). `msg_emb` is a `CREATE VECTOR INDEX`; `msg_body` is a `CREATE FULLTEXT INDEX`
-(BM25). Both are created in `writer._SCHEMA` and re-ensured by the search tools, so a
-store written before either existed still works.
-
-**`Message.emb_skipped` is a stamp, not a deletion.** `tools.screen_body()` drops a
-body with no subject and no predicate (`hi`, `ok`, `thanks`) before embedding — those
-vectors are near-identical and crowd every semantic result. The message stays fully
-searchable by fulltext and is never re-examined by the embed pass. The screener
-**fails open**: no spaCy means embed everything, because a missing vector is a silent
-hole and a junk vector is only noise.
-
-**A search covers names as well as bodies.** `_name_matches()` substring-matches
-`Correspondent.display_name` and returns **thread** rows. Without it, typing a
-person's name found nothing — a name is not in any message body.
-
-**Relate's vector index is exact NN, not HNSW** — a brute-force scan over vectors. Fine
-at a few thousand, linear at a million. The fulltext index is BM25 and is **word**
-matching: `"graf"` does not match `"grafana"`, and there is no stemming by default.
-
-**`Correspondent` is keyed `person:<canonical>`.** Two spellings of one name on one
-platform already collapsed via `canon`; dropping the platform prefix means the same
-canonical name on two platforms is now **one node** with a `WITH` edge per thread.
-Placeholders keep their platform prefix (`messenger:placeholder:facebook user`) so
-`Facebook user` and `LinkedIn Member` never fold into one node.
-
-| Property | Rule |
-|---|---|
-| `platform` | the **first** platform by date — a single string, because the filter reads it |
-| `platforms` | every platform, date order. **The filter reads this list.** |
-| `platform_label` | `Telegram-WhatsApp-Fcbk Mssgr`, same order |
-| `first_seen_utc` | earliest message timestamp across platforms |
-| `merged_by` | why a fold happened: `fuzzy` / `exact_name` / `nickname` / `phone` / `email`, or `same_name` when two platforms met under one key with **no fold at all**. `link._fold` owns it. |
-| `handle_<p>` · `seen_<p>` | that platform's spelling and first sighting, stored **flat** |
-
-**`primaryPlatform` and `dominance` are query-time, not stored.** `graph_slice`
-returns them on every Correspondent: `primaryPlatform` is the platform with the most
-**messages**, `dominance` is its share (0.0–1.0). They are deliberately *not* the same
-as `platform` — that is first-by-**date**, so the filter and label never drift between
-ingests. Measured on the sample store: 17 of 34 merged nodes lean toward a platform
-other than their first-by-date one, so the two fields carry different information.
-
-**They are not a layout input.** A merged node is pulled **equally** by every platform
-it touches; the dominance leash was designed and then withdrawn. See
-[`UIVISUALS.md`](UIVISUALS.md) §8.
-
-**`graph_slice` also returns `merged`** (the `:Merged` label as a boolean) on every
-Correspondent. The canvas uses it as the bag-membership test, inverted.
-
-`:Merged` is an additive label on a node spanning more than one platform. It is
-filtered out of `types_present()` — it is a marker, not a node type.
-
-**Relate rejects map properties** (`InvalidPropertyType`), so `handles` is stored as
-`handle_<platform>` and assembled by `writer.handles_from()` at the API edge.
-
-**Relate evaluates every row of an `UNWIND` against the node as it stood before the
-statement.** Accumulating in Cypher therefore cannot work — the last row wins. The
-row statement writes only per-platform facts; `writer._reconcile()` computes the
-derived properties afterwards.
-
-**Queryable but empty — the queries exist, the rows do not:** `Person`
-(`tools.ENTITY_KINDS`). A person extracted from a body would compete with the
-`Correspondent` already on the thread, so it is documented but never written.
-
-**Designed but unwritten — do not query against these:** `Identity`, `MATCHED_BY`,
-`SENT`, `Draft`.
-
-**Cross-connect is `relate_comms/link.py`, run once at the end of `ingest()`.** It folds
-the nodes whose keys differ — a phone-only contact onto a named one — by union-find over
-phone / email / name / **fuzzy**, re-pointing every `WITH` or `MENTIONS` edge before the
-loser is deleted, then `writer._reconcile()` rebuilds `platforms` / `platform_label` /
-`:Merged`. The fuzzy rung is blocked on the surname's first letter and is **last**, so a
-pair that folds on phone never reports itself as fuzzy. Two places a letter apart stay two
-places — entities use `exact_name` only.
-
-**A named contact's phone or address comes from `sender_id`,** recorded by
-`writer._contact_ids()` — only when the value actually is a phone or an address. Without
-it a phone fold has nothing to compare, because a sender field is a name.
-
-**Fold knobs live in `canon.py`:** `NICKNAME_ENABLED` (honoured by the pipe itself, since
-a nickname is resolved into the *key* at write time) and `FOLD_ON_NAME`.
-
-### Thread title schema — LOCKED
-
-```
-<Name>; <MM-DD-YYYY>[-][>][ #n]
-```
-
-| Case | Example |
-|---|---|
-| 1:1, single day | `Bryan Rodgers; 06-02-2026` |
-| 1:1, spans days | `Ryan Phillip; 02-13-2025->` |
-| Group | `Come to Africa; 10-25-2026->` |
-| With subject | `n8n Hackathon today - log in!🪐; 08-16-2025` |
-| Same person, same start date | `Ryan Phillip; 02-13-2025-> #2` |
-| Name contains a date | `Invoice due 08-16-2025; 08-16-2025` |
-| No messages | `Mary Olver` (second `;` omitted) |
-
-**Parse from the outside in:** date block after the **last** `;`, name before it.
-
-**No platform token** (removed 2026-11-24). It spent the widest part of a canvas label on
-a fact the node already carries — the glyph is platform-coloured and the Viewer draws a
-platform pill beside the title.
-
-**Why `;`:** measured across 500 real titles — `;` 0 occurrences, `[`/`]` 0, `->` 0, `#` 0,
-`|` 3, `-` 6. `-` collides on day one; `;` does not.
-
-**Why `->` not an end date:** an end date changes on every ingest because `max(ts)` moves.
-`->` changes at most once, ever.
-
-**`#n` by date collision only**, ordered by `chat_id`, never ingest order.
-
-**Display only.** Never parse the title for the platform key; query the `platform` property.
-The title no longer contains one at all.
-
-### Naming — settled
-
-| Use | Not |
-|---|---|
-| `Organization` | `Company` |
-| `Product` | `Thing` |
-| `Person` (extraction only, never the Owner) | — |
-
-`canon.KINDS` is the single source; `tools.ENTITY_KINDS` derives from it. An unknown kind
-raises rather than falling through to the `person` branch. `Company` appears nowhere.
-
-## 5. Body-entity extraction
+## 4. Body-entity extraction
 
 **Three kinds — Place, Organization, Product — one pipeline.** The order never changes:
 
@@ -381,13 +178,11 @@ junk Organization we ever saw. Reported as a warning, never an error.
 
 **No LLM in this path.** spaCy and rules only. The local model is a chat feature.
 
-## 6. Invariants — break these and things fail silently
+## 5. Invariants — break these and things fail silently
 
 | Invariant | Why |
 |---|---|
 | `Message.key = platform:chat_id:message_id` | Makes re-ingest idempotent. Never an array index or timestamp. |
-| Canvas bags are `synthetic` | A bag is a layout body, not data. `cy.nodes().length` includes them, so nothing may use that raw — the reveal, `onLayoutDone` and every count filter `.synthetic`. |
-| Bag membership is `:Merged`, inverted | The label, not `platforms.length`. A node with one platform goes in that platform's bag; everything else goes in the central merged bag. A length test would bag the world's geography. |
 | `ts_utc` everywhere | Telegram/WhatsApp/Messenger export wall-clock with no offset. |
 | **A platform is a source, not a provider** | `outlook` is a `.pst`; Outlook-over-IMAP is `email`. Different provenance, different keys. |
 | **A merged node is filtered on `platforms`, never `platform`** | `platform` is one string (first by date). Testing it hides a merged node whenever the user filters by any other platform. |
@@ -397,17 +192,16 @@ junk Organization we ever saw. Reported as a warning, never an error.
 | **The tz offset is part of the key** | `ts_utc` hashes into the key. Stored per platform; changing it on a populated store is refused. |
 | `MERGE` on `key`, never `CREATE` | Re-ingest must not duplicate. |
 | Every title has a fallback, never empty | `writer.thread_display_title()`. |
-| One writer per `.rl` file | Concurrent writers are corruption. Hence parallel parse → serialised write. |
+| One writer per `.rl` file | Concurrent writers are corruption. Hence parallel parse → serialised write. **A reader also takes a lock**, so an ingest holds the store for its whole duration and every other surface fails with `storage locked`. Hence the **job registry** (`app/jobs.py`): `POST /api/ingest` returns a job id in ms, the work runs on a thread, and callers poll `GET /api/jobs/{id}`. One job at a time; a second is refused, not queued. `tools._connect()` also retries for ~2.75 s to clear the app's own short reads. |
+| **A variant tree stages one artifact per platform** | `sample_writer/out/` holds several packagings of the same conversations; ingesting two stores every message twice. `ingest._canonical_children()` takes `email_eml`, `linkedin_zip`, `messenger_zip`, `sms_xml`, `Telegram Desktop`, `whatsapp_html` — and **not** `outlook_copy`, because a `.pst` is a copy of the committed fixture. The rule fires only when a folder holds **two or more** known artifact names, and **the spool is never narrowed**. |
 | Truncation is never silent | Any tool hitting `limit` returns `truncated: true`; `graph_slice` also returns `total`. |
 | **Canvas toggles never narrow a query; Utilities does, deliberately** | Canvas hides clusters and silent threads — drawing only, reversible, still searchable. The **Utilities** platform filter is different: it is module state in `tools.py` (`configure_platforms`), so it narrows `graph_slice`, `search_messages` and the AI chat alike. That overrides the older blanket rule on purpose; the alternative is a per-call `platforms` argument. |
-| **Icons are an override layer, never the base** | A platform with no icon file keeps the base fill and stays visible. |
-| **Cytoscape 3.35 has no `shadow-*`** | Removed with the WebGL rewrite; glows are `underlay-*` radial gradients. A removed property fails silently. [`UIVISUALS.md`](UIVISUALS.md) §1. |
-| **A style value that fails to parse kills the whole stylesheet** | 8-digit hex and `data()` on an empty string both do it. The app goes black, not just the node. [`UIVISUALS.md`](UIVISUALS.md) §3. |
-| `write_enabled` and `platforms` are excluded from tool schemas | They are the surface's toggles, not something a model may set. |
+| **Every UI invariant lives in `UIREADME.md`** | Bags are `synthetic`, membership is `:Merged` inverted, icons are an override layer, `shadow-*` does not exist, a bad style value kills the stylesheet. Do not re-derive them here. |
+| `write_enabled`, `platforms`, `extra_results` are excluded from tool schemas | They are the surface's toggles, not something a model may set. |
 | **A dropped thread leaves no orphan messages** | Any parse-time gate runs before the rows are committed and before the `Chat` is appended. |
 | **Legs are independent — any subset, any order, any number of runs** | Every write is a `MERGE`, so ingesting SMS into a five-platform store adds rows and touches nothing else. |
 | **A parse-time gate is per platform, never global** | `_kwargs_for()` pops a keyword an adapter does not accept, so adding a platform never means adding a no-op argument. |
-| **Credentials are never readable by a tool** | `.env` is read only by `email_imap._dotenv()`. `tools.py` has no environment access. |
+| **A credential is never returned** | `.env` holds only the four `IMAP_*` keys. MCP may use them (`ingest(email=["email"])` takes a mailbox name), but the values never appear in a response, a tool argument or the activity trace. |
 | **The duplicate stamp is a shortcut, not the authority** | `ingested.json` lets the UI say "already ingested". `verify_present()` still decides pruning. |
 | **A drawable type list is derived, never hand-written** | `DRAWABLE_NODE_TYPES` and `DRAWABLE_EDGE_TYPES` follow `writer._ENTITY_WRITE_KINDS` filtered by `PRODUCT_ENABLED`. An edge is kept only when **both** endpoints are drawn, so a kind missing from the node list silently erases every edge it has — this happened to `Product` and the canvas showed zero. |
 | **A `MENTIONS` edge hangs off the Message** | `Thread → Entity` is a projection in `_EDGE_QUERIES`, not stored. Re-anchoring it means teaching `link._fold` the new source too — it re-points a loser's edges by pattern, and the wrong pattern matches nothing and then `DETACH DELETE` takes everything left. |
@@ -423,6 +217,8 @@ junk Organization we ever saw. Reported as a warning, never an error.
 | **An unlabelled `MATCH (a {key: …})` scans every node** | Grouping edges by endpoint labels took a 3,183-edge rebuild from 83 s to under a second. |
 | **A WhatsApp chat downloaded both ways is one thread, not two** | `_chat_id()` hashes the chat *title*; `message_key()` truncates to the **minute**. Measured: 46 of 47 keys identical. |
 | **A failed leg restarts, it does not resume** | Continue re-runs the whole ingest without the failed leg. |
+| **A fixed-name export is replaced, not skipped** | `Outlook.pst` and `email_eml/` never change their name, so a re-export collides. Skipping meant the new snapshot never landed and the ingest re-read the old one — the delta then found nothing new, forever, silently. |
+| **The spool scaffold is one definition** | `paths.SPOOL_SCAFFOLD` — `real/<platform>/<artifact>/`, mirroring `sample_writer/out/`. `ensure_layout()` and `delete_spool()` both call `ensure_spool_scaffold()`, so a wipe leaves the scaffold rather than a skeleton of every directory any ingest ever created. |
 | **Truncating the graph always truncates the manifest** | Left behind, the next ingest skips every file it has seen and produces an empty graph that looks successful. |
 | **A redirected store redirects the profile** | `ingest(store=…)` puts the manifest and tz offsets beside that store unless `profile_dir` is given. |
 | **Detection must see inside a container it can parse** | `sms.detect()` reads the decompressed `.xml` member of a `.xml.zip`, not the zip's raw bytes. |
@@ -430,7 +226,7 @@ junk Organization we ever saw. Reported as a warning, never an error.
 | **A recognised directory is one batch, not one per file** | `discover()` offers a folder to `detect_platform()` first and emits it whole if claimed. Messenger and Telegram resolve thread ids from the archive-relative path, so handing them a single `message_1.html` makes each batch parse the *whole* export — measured at 29 batches and 18,330 messages to write 611. |
 | **`detect_platform()` answers for a directory too** | `discover()` needs to know whether to emit a folder or walk into it. Only the adapters that can read a folder are consulted (messenger, linkedin, whatsapp_html, `_detect_whatsapp`). |
 
-## 7. Ingest — the modal and its gates
+## 6. Ingest — the modal and its gates
 
 **Flow:** preview (read-only: size + duplicate per spool file) → decide → ingest. The
 preview deliberately does **not** count messages; that needs the full parse it exists to
@@ -470,9 +266,11 @@ keyword for any platform outside `silent_group_platforms`.
 sent a message"* is **view only**, reversible, still searchable. Ingest *"Exclude groups
 where the Owner never spoke"* is **parse time**, permanent, never stored.
 
-**IMAP credentials** go to `./.env` behind an explicit Save button and the write toggle. No
-provider selector: the host autofills from the domain and `account_from_parts()` covers
-anything unknown. Outlook/O365 killed basic auth — the modal points at the `.pst` route.
+**IMAP is one mailbox, four keys.** `IMAP_EMAIL/PASSWORD/HOST/PORT` in `./.env`. No provider
+table and no host guessing — the host is a field the user fills in. Credentials are written
+**only after the ingest succeeds**, so a wrong password leaves nothing behind. Switching the
+address wipes the `email` rows first (the key carries no mailbox). Outlook/O365 killed basic
+auth — the modal points at the `.pst` route.
 
 **A failed leg** halts with the error named and offers *Exclude and continue* or *Cancel*.
 Cancel does not roll back and does not need to — `MERGE` makes a re-run idempotent.
@@ -492,13 +290,13 @@ at 200k) — **the store scales fine, search latency is the only thing that degr
 since no adapter reads media, a 4 GB zip with videos parses as fast as a 40 MB one: the
 advice for a monster download is "re-export without media", which loses no messages.
 
-## 8. Commands
+## 7. Commands
 
 ```bash
 python -m app                    # http://127.0.0.1:8100
 start.bat                        # Windows: opens browser + server
 
-python -m relate_comms ingest --email hostinger --tz-offset -5
+python -m relate_comms ingest --email email --tz-offset -5      # the .env mailbox
 python -m relate_comms ingest "C:/Users/me/Downloads/chat.zip" --tz-offset -5
 
 python -m sample_writer                  # fake downloads -> sample_writer/out/
@@ -507,11 +305,17 @@ python -m sample_writer add --seed 5     # write alongside out/, no clobber
 python -m sample_writer append           # same world, later END (delta testing)
 python -m sample_writer clean            # wipe out/
 
-python -m pytest tests -q        # 478 passed, 10 skipped, 1 known failure (canon camelCase)
+python -m pytest tests -q        # 587 passed, 10 skipped, 1 known failure (canon camelCase)
 
 npm install && npm run build     # -> app/static/dist/app.js
 npm run watch                    # rebuild on save, no server
 node scripts/vendor.mjs          # re-copy cytoscape + fcose
+python scripts/build_entity_icons.py   # regenerate the kind glyphs
+
+# A full ingest from a shell. `ingest()` uses multiprocessing, which cannot re-import
+# `__main__` from a heredoc on Windows — a real file is the only way.
+python scripts/reingest.py [--delta]
+
 python tools/bench_scale.py --n 20000
 ```
 
@@ -522,7 +326,8 @@ server mid-request; it also watches the whole repo, so `pytest` makes it thrash.
 
 **No version bump, no `localStorage` clearing.** Only the user's *overrides* are stored
 (`relate.graphStyle.overrides`), as a diff against the defaults. A key the user never
-touched is not in storage, so it always follows `theme.js`.
+touched is not in storage, so it always follows `theme.js`. Full checklist:
+[`UIREADME.md`](UIREADME.md) §10.
 
 **Checklist for a visual change:**
 
@@ -542,25 +347,29 @@ diff removes the whole class of bug.
 If a value still does not appear, the user has overridden that key: reset it in the Canvas
 modal, or `localStorage.removeItem("relate.graphStyle.overrides")`.
 
-## 9. Debugging
+## 8. Debugging
 
 | Symptom | Check |
 |---|---|
 | Canvas empty, API fine | `curl /api/graph?limit=5` — if it returns nodes, the failure is in the UI. |
 | Everything renders as squares | A Cytoscape selector matched too broadly. `[key]` tests field **existence**. |
-| Render dies after first paint, or the app goes black | A style value parsed to `null` — `background-image: data(x)` on an empty string, or 8-digit hex. [`UIVISUALS.md`](UIVISUALS.md) §3. |
-| A glow does nothing | `shadow-*` does not exist in 3.35. Use `underlay-*`. [`UIVISUALS.md`](UIVISUALS.md) §1. |
+| Render dies after first paint, or the app goes black | A style value parsed to `null` — `background-image: data(x)` on an empty string, or 8-digit hex. [`UIREADME.md`](UIREADME.md) §3. |
+| A glow does nothing | `shadow-*` does not exist in 3.35. Use `underlay-*`. [`UIREADME.md`](UIREADME.md) §1. |
 | **A theme edit does nothing** | The bundle was not rebuilt — `theme.js` is compiled into `app.js`. Run `npm run build` (or keep `npm run watch` on) and hard-refresh. §8. |
 | **One theme value ignores `theme.js`** | The user has overridden that key; only overrides are persisted. Reset it in the Canvas modal. §8. |
 | Thread shows 0 messages | The tz offset differs from the one the store was written with. |
 | A route 404s after a rename | The Python server is stale — it loads routes once at startup. Restart it. |
 | Blank page, no console clue | A `const` inside a `useMemo` referenced in its dependency array throws `ReferenceError` every render. |
 | Chat answers a different question | Tool result exceeded `MAX_TOOL_CHARS` (4,000). Summarised, not silently cut. |
-| Chat is very slow | `think: false` not applied. Thinking is ~28× slower on this box. |
+| Chat is very slow | `think: false` not applied, or `num_predict` unset. `archive_docs/Ollama.md` §1. |
 | Port 8100 "already in use" | `netstat -ano \| findstr :8100`, then `taskkill /PID <pid> /F`. |
 | Ingest reports 0 messages but exits 0 | `verify_ingest` is the check that matters. |
+| **`storage locked`** | Another surface holds the store. `tools._connect()` retries ~2.75 s; a long ingest is the case it cannot clear. `GET /api/jobs` says whether one is running. |
+| **MCP refuses to start** | No valid key. `store/profile/mcp.json` holds both; pass one as `RELATE_MCP_KEY`. |
+| **MCP badge stays green** | No tool call has happened yet — the heartbeat stamps on a call, not on connect. |
+| **A re-export changed nothing** | The spool replaced the file but the delta found no new messages — check the window, not the file. |
 
-## 10. Relate / Neo4j
+## 9. Relate / Neo4j
 
 - **Relate is embedded.** `relate.connect(path)` takes a **filesystem path**, not a
   `file:` URI. No Bolt, no port, no server.
@@ -589,7 +398,7 @@ Links: [Relate](https://relate.neo4j.com/) · [openCypher](https://opencypher.or
 [fcose](https://github.com/iVis-at-Bilkent/cytoscape.js-fcose) ·
 [Cytoscape.js style](https://js.cytoscape.org/#style)
 
-## 11. Local tools on this machine
+## 10. Local tools on this machine
 
 | Tool | Where | Note |
 |---|---|---|
@@ -600,14 +409,97 @@ Links: [Relate](https://relate.neo4j.com/) · [openCypher](https://opencypher.or
 
 Ports in use: **8000 is taken** by another app — this project uses **8100**.
 
+## 11. MCP — the agent surface
+
+**Local only, stdio.** The IDE launches `python -m app.mcp` and talks over the same pipe it
+uses for output. No port, no network, nothing to expose. A dev who wants web access puts
+their own proxy in front; that is their risk and this server does not arrange it.
+
+### Two keys, in a file we own
+
+`store/profile/mcp.json` — gitignored, beside `identity.json`, generated on first run:
+
+```json
+{ "read_key": "r_…", "write_key": "w_…" }
+```
+
+The owner copies one into their client config, which passes it as `RELATE_MCP_KEY`:
+
+```json
+{ "command": "python", "args": ["-m", "app.mcp"],
+  "env": { "RELATE_MCP_KEY": "r_…" } }
+```
+
+| Key presented | Result |
+|---|---|
+| none | **refuses to start** |
+| `read_key` | 16 tools — read only |
+| `write_key` | 21 tools — read + write |
+
+**Two keys, not a boolean**, because the write key is a separate secret handed over
+deliberately: an agent configured with only the read key cannot write even if it tries.
+
+**This is a handshake, not a wall.** Anyone who can launch the process can read
+`mcp.json` — same user, same permissions. It stops a *different* agent on the machine from
+quietly connecting, and it makes granting write a deliberate act. It does not stop malware
+running as the user. That is acceptable because the real boundary is already "who can
+launch a process on this machine", which for stdio is the whole trust model.
+
+### The one path rule
+
+`ingest(paths_in=[…])` calls `stage()`, which **copies any path on disk** into the spool.
+That is a filesystem read primitive, so it is bounded: **any path inside the repo**, and
+nothing else. It is a boundary, not a safety mechanism — `ingest` copies and never deletes
+the source.
+
+### What MCP may read, and what it must never return
+
+`.env` holds only the four `IMAP_*` keys. MCP may use them: `ingest(email=["email"])` takes
+a **mailbox name**, and the values are used inside the process and never appear in a
+response, a tool argument or the activity trace. An agent that can call `search_fulltext`
+can already read every message, so this grants no new power — it only lets the agent
+refresh what it can already see.
+
+### The two files the two processes share
+
+| File | Written by | Read by |
+|---|---|---|
+| `store/profile/mcp.heartbeat` | every tool call | `/api/health` → `mcp_active` |
+| `store/profile/mcp.activity.jsonl` | every tool call | `/api/activity` — **drained**; `activity()` — **peeked** |
+
+`mcp_active` is true while the heartbeat is under 120 s old. A missing, stale, future-dated
+or unparseable file all read as **false** — the badge never claims a client it cannot prove.
+
+### Three tools that live in the server, not the registry
+
+`job_status`, `job_list`, `activity` describe **this process's** jobs and trace, not the
+store, so they have no business in the library's tool layer.
+
+### `sample_writer` is not exposed
+
+It wipes `out/` on `build`/`clean`, and any clone's IDE agent can already run it directly
+with more power than MCP would grant. MCP's WRITE level is *maintenance of a real store*,
+not *construction of a fake one*.
+
 ## 12. Where the rest of the detail lives
 
-| Topic | File |
+**Five root docs, and they are the app.** If something is not in one of these, it is not
+current.
+
+| Doc | What it is |
 |---|---|
-| **Settled UI and visual facts** — glows, colour parsing, stylesheet order, the merged-node template, bags, and what fcose actually honours | [`UIVISUALS.md`](UIVISUALS.md) |
-| Extraction's closed record — retired stub, kept so old links resolve | [`rework_extraction.md`](rework_extraction.md) |
-| The sample generator — every knob, the pools, the fuzz axes, and the `append` cycle | [`sample_writer/README.md`](sample_writer/README.md) |
-| The test payloads, and how to wire a new export format | [`tests/README.md`](tests/README.md) |
-| The generator spec — every shape the app has a switch for | [`archive_docs/UNDESIRABLES.md`](archive_docs/UNDESIRABLES.md) |
-| Per-platform export shapes and traps | [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) |
-| Ollama on this machine | [`archive_docs/HowToRunOllama.md`](archive_docs/HowToRunOllama.md) |
+| [`TECHREADME.md`](TECHREADME.md) | this file — the pipeline, the modules, the invariants |
+| [`SCHEMA.md`](SCHEMA.md) | the store's data model and the 19-tool registry |
+| [`UIREADME.md`](UIREADME.md) | the UI app, and every renderer trap |
+| [`HANDOVER.md`](HANDOVER.md) | what is next, and what just landed |
+
+**Adjacent, current:** [`sample_writer/README.md`](sample_writer/README.md) (every knob and
+the `append` cycle) · [`tests/README.md`](tests/README.md) (payloads, wiring a new format) ·
+[`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md) (how the
+Owner gets their socials) · [`archive_docs/Ollama.md`](archive_docs/Ollama.md) (models and
+settings).
+
+**Archive — history, not current.** `archive_docs/` holds design records kept so old links
+resolve: `UNDESIRABLES.md` (the generator spec the sample world is coded against),
+`locking_in_node_extraction.md` (how extraction was settled), `detacheable_graph.md` (the
+portable-module study). **Do not treat anything there as describing the app today.**
