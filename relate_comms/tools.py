@@ -233,19 +233,52 @@ def _platform_clause(alias: str, params: dict[str, Any]) -> str:
             f"    WHERE p IN coalesce({alias}.platforms, [{alias}.platform]))")
 
 
+# Relate is **single-writer**, and a reader still takes a lock. Two surfaces touching
+# the store at once therefore collide: the app holds a connection while an MCP ingest
+# tries to open it, and the loser gets `storage locked`. That is not a bug to fix in the
+# engine — it is a fact about the engine — so the tool layer waits it out.
+#
+# Measured: the app's own reads hold the lock for a few milliseconds, so a short retry
+# clears almost every collision. A long ingest is the case that does not, and that is
+# what the message below is for.
+_LOCK_RETRY_SECONDS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.2)
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    return "storage locked" in str(exc).lower()
+
+
 def _connect(*, read_only: bool = True) -> Any:
     path = store_path()
     if not path.exists():
         raise ToolError(
             f"no store at {path}; run `python -m relate_comms ingest` first"
         )
-    try:
-        import relate
-        return relate.connect(str(path), read_only=read_only)
-    except ToolError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - the caller gets a readable failure
-        raise ToolError(f"cannot open store {path}: {type(exc).__name__}: {exc}") from exc
+
+    import time
+
+    import relate
+
+    last: Exception | None = None
+    for delay in (0.0, *_LOCK_RETRY_SECONDS):
+        if delay:
+            time.sleep(delay)
+        try:
+            return relate.connect(str(path), read_only=read_only)
+        except Exception as exc:  # noqa: BLE001 - inspected below
+            if not _is_lock_error(exc):
+                raise ToolError(
+                    f"cannot open store {path}: {type(exc).__name__}: {exc}"
+                ) from exc
+            last = exc
+
+    # Still locked after ~2.75 s. Say what is happening and what to do, because the raw
+    # engine message (`storage locked: \\?\C:\...`) tells a user nothing.
+    raise ToolError(
+        "the store is busy: another surface is writing to it. Relate allows one writer, "
+        "so an ingest and the app cannot both hold it. Wait for the other operation to "
+        "finish and try again — the graph is unchanged."
+    ) from last
 
 
 @contextmanager
@@ -289,7 +322,9 @@ def _scalar(conn: Any, cypher: str, params: dict[str, Any] | None = None) -> Any
 # Never shown to a model: the surface's own toggles, not model-settable arguments.
 # `sources` is here for the same reason as `write_enabled` — it is the UI's state,
 # and a model that could set it would be able to answer from data the user hid.
-_HIDDEN_PARAMS = frozenset({"write_enabled", "platforms"})
+# `extra_results` is a caller-supplied list of already-fetched `IngestResult` objects.
+# A model must never be able to inject rows, so it is hidden like the surface toggles.
+_HIDDEN_PARAMS = frozenset({"write_enabled", "platforms", "extra_results"})
 
 
 def _json_type(annotation: Any) -> dict[str, Any]:
@@ -599,8 +634,11 @@ _EDGE_QUERIES: dict[str, str] = {
     "HAS_ATTACHMENT": "MATCH (m:Message)-[:HAS_ATTACHMENT]->(a:Attachment) "
                       "{where}"
                       "RETURN m.key AS source, a.key AS target",
-    # An extracted entity mentioned in a thread. One entry per kind, because the
-    # target label differs and Cypher cannot parameterise a label.
+    # An extracted entity mentioned in a thread. One entry per kind: the target label
+    # differs, and each entry is a fixed string a reader can check at a glance.
+    #
+    # (Relate *can* parameterise a label — `MATCH (n:$($lbl))` works, verified on
+    # 1.0.1 — so this is a readability choice, not an engine limit.)
     #
     # **Two hops, because the store keeps the fact, not the summary.** `MENTIONS` hangs
     # off the `Message` (the fact: this message named Grafana). "This conversation is
@@ -1894,11 +1932,18 @@ def run_cypher(
     params: dict[str, Any] | None = None,
     *,
     limit: int = 500,
+    write_enabled: bool = False,
 ) -> dict[str, Any]:
-    """Run a read-only Cypher statement and return its rows.
+    """Run a Cypher statement and return its rows.
 
     For the transparency panel and for an agent that needs a shape no other tool
-    covers. Write statements are refused before they reach the engine.
+    covers. **Read-only unless the surface has write access**: a statement the guard
+    reads as a write is refused before it reaches the engine.
+
+    The guard is a pattern match, not a parser — it strips string literals, uppercases,
+    and looks for write keywords word-bounded. A novel write form it does not recognise
+    would pass, which is why the surface's write toggle is the real protection and this
+    is only a speed bump.
 
     Truncation happens after the query runs, so a statement with its own `LIMIT`
     is not rewritten. `truncated: true` means rows were dropped from the response,
@@ -1913,13 +1958,15 @@ def run_cypher(
     # is not mistaken for a write. Word-bounded, so `:Merged` is not read as `MERGE`.
     scrubbed = _STRING_LITERAL.sub("''", text).upper()
     found = _WRITE_PATTERN.search(scrubbed)
-    if found:
+    if found and not write_enabled:
         raise ToolError(
             f"read-only tool: {found.group(0)} is not allowed here; "
             "use ingest or prune_spool for writes"
         )
 
-    with _session() as conn:
+    # A write statement needs a writable connection, or the engine refuses it with
+    # `WriteOnReadOnlyAccessDatabase` — a worse message than the one above.
+    with _session(read_only=not write_enabled) as conn:
         try:
             cur = conn.cursor()
             cur.execute(text, params or {})
@@ -1949,6 +1996,7 @@ def ingest(
     *,
     paths_in: Sequence[str] | None = None,
     email: Sequence[str] | None = None,
+    extra_results: Sequence[Any] | None = None,
     since: str | None = None,
     until: str | None = None,
     tz_offset_hours: float | None = None,
@@ -1969,8 +2017,12 @@ def ingest(
     spool first — the same call the drop zone makes; nothing outside the spool is
     ever parsed or deleted.
 
-    `email` reads live mailboxes over IMAP (`gmail`, `hostinger`). Email is the
-    one platform with no file to drop.
+    `email` reads live mailboxes over IMAP by `.env` slot (`email`, `gmail`). Email is
+    the one platform with no file to drop.
+
+    `extra_results` is for a caller that already fetched a mailbox itself — the HTTP
+    route does, because it needs the credentials to travel with the request rather than
+    be saved first. The results are appended to the spool's batches unchanged.
 
     `exclude_spam_groups` applies to Facebook Messenger only: a group thread whose
     rows are mostly housekeeping (`sent a link`, `added X to the group`) is dropped
@@ -2005,10 +2057,10 @@ def ingest(
         except FileNotFoundError as exc:
             raise ToolError(str(exc)) from exc
 
-    extra_results = []
+    fetched: list[Any] = list(extra_results or [])
     if email:
         from .cli import _fetch_mailboxes
-        extra_results = _fetch_mailboxes(list(email), _iso(since), _iso(until))
+        fetched.extend(_fetch_mailboxes(list(email), _iso(since), _iso(until)))
 
     report = ingest_module.ingest(
         which=str(which),
@@ -2022,7 +2074,7 @@ def ingest(
         prune=bool(prune),
         prune_keep=None if prune_keep is None else int(prune_keep),
         tz_offset_hours=None if tz_offset_hours is None else float(tz_offset_hours),
-        extra_results=extra_results,
+        extra_results=fetched,
         delta=bool(delta),
     )
     payload = report.to_dict()
@@ -2186,18 +2238,30 @@ def delete_spool(*, write_enabled: bool = False, confirm: bool = False) -> dict[
     dedup manifest is left alone: the graph still holds what these files produced, and
     forgetting it would make a later re-ingest of the same export write duplicates.
 
-    `.gitkeep` is preserved so the directory survives and `paths.real_dir()` keeps
-    working without a re-create.
+    **The result is the empty scaffold, not an empty folder.** Everything under
+    `spool/real/` is removed — files *and* directories — and then
+    `paths.ensure_spool_scaffold()` rebuilds `real/<platform>/<artifact>/`. A wipe that
+    only unlinked files left every directory any previous ingest had created, so the
+    spool became a skeleton of empty folders that looked like data.
     """
     require(Access.DESTRUCTIVE, write_enabled=write_enabled, confirmed=confirm)
 
     root = paths.real_dir()
     removed: list[str] = []
     if root.exists():
-        for entry in sorted(root.rglob("*")):
-            if entry.is_file() and entry.name != ".gitkeep":
-                entry.unlink()
-                removed.append(str(entry))
+        for entry in sorted(root.rglob("*"), reverse=True):
+            if entry.name == ".gitkeep":
+                continue
+            try:
+                if entry.is_file() or entry.is_symlink():
+                    entry.unlink()
+                    removed.append(str(entry))
+                elif entry.is_dir():
+                    entry.rmdir()          # only succeeds when empty
+            except OSError:
+                continue
+
+    paths.ensure_spool_scaffold(root)
     return {"removed": removed, "count": len(removed)}
 
 
@@ -2238,6 +2302,9 @@ def _register_all() -> None:
         (message_view, Access.READ),
         (types_present, Access.READ),
         (evidence_counts, Access.READ),
+        # READ, but it takes `write_enabled` so a write statement can be gated by the
+        # surface rather than by the regex alone. The guard is a speed bump; the
+        # surface's write toggle is the protection.
         (run_cypher, Access.READ),
         (ingest, Access.WRITE),
         (preview_ingest, Access.READ),

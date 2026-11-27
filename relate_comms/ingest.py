@@ -1474,6 +1474,77 @@ def _remove_empty_parents(path: Path, root: Path) -> None:
 
 
 
+# **One variant per platform.** `sample_writer/out/` holds several packagings of the
+# same conversations, and ingesting more than one stores every message twice. This table
+# names the one artifact per platform that a batch should take; anything else in the
+# same folder is a variant and is skipped.
+#
+# It is keyed by the artifact FOLDER name, which is what `sample_writer` writes and what
+# a user sees when they look inside `out/`. A path that is not one of these names is
+# staged normally, so this only ever narrows a known-variant tree — it never guesses.
+# `outlook_copy` is deliberately absent. A `.pst` is a paged database that cannot be
+# synthesised, so the sample world ships a byte-for-byte copy of the committed fixture —
+# ingesting it adds 6 demo messages from 2011 to a real store. The `.pst` route stays
+# available by naming the file explicitly; it is just not part of a bulk drop.
+_CANONICAL_ARTIFACTS: dict[str, str] = {
+    "email": "email_eml",
+    "linkedin": "linkedin_zip",
+    "messenger": "messenger_zip",
+    "sms": "sms_xml",
+    "telegram": "Telegram Desktop",
+    "whatsapp": "whatsapp_html",
+}
+
+
+def _canonical_children(folder: Path) -> list[tuple[Path, str]] | None:
+    """The one artifact per platform inside a variant tree, or `None` if not one.
+
+    A tree is recognised as a variant tree when it holds at least two of the known
+    artifact folder names. That test is deliberately narrow: a real download folder
+    holding one export must never be narrowed, and a spool folder holding one export
+    per platform must never be narrowed either.
+
+    Returns `(path, platform)` for each platform found, in a stable order. The platform
+    comes from the table, not from `detect_platform()`: a folder holding a zip is not
+    itself a recognisable export — only the zip inside is — so detection would file
+    every artifact as `unrecognised` and `peel()` would expand `Telegram Desktop` into
+    the whole tree.
+    """
+    if not folder.is_dir():
+        return None
+
+    known = set(_CANONICAL_ARTIFACTS.values())
+    found: dict[str, Path] = {}
+    hits = 0
+    for child in sorted(folder.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name in known:
+            hits += 1
+        for grandchild in sorted(child.iterdir()):
+            if grandchild.is_dir() and grandchild.name in known:
+                found.setdefault(grandchild.name, grandchild)
+
+    # **The spool is never narrowed.** It already holds one export per platform, chosen
+    # by `stage()` on the way in; re-narrowing it would silently skip a real export whose
+    # folder happens to share a name with a sample artifact.
+    try:
+        if folder.resolve() == paths.real_dir().resolve():
+            return None
+    except OSError:
+        return None
+
+    # Two or more known artifacts means this is a variant tree, not a user's download.
+    if hits + len(found) < 2:
+        return None
+
+    return [
+        (found[name], platform)
+        for platform, name in _CANONICAL_ARTIFACTS.items()
+        if name in found
+    ]
+
+
 def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> list[Path]:
     """Copy downloaded exports into the spool and return what landed there.
 
@@ -1499,23 +1570,40 @@ def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> 
         if not given.exists():
             raise FileNotFoundError(f"no such export: {given}")
 
-        # A directory an adapter claims **as a whole** is staged as one thing, exactly
-        # as `discover()` treats it. Staging its files one-by-one filed every `.eml`
-        # under `unrecognised/` (no single file is a mailbox) and lost the folder that
-        # gives Messenger and email their thread ids — the drop zone then reported
-        # success and wrote nothing.
-        whole = given.is_dir() and detect_platform(given) is not None
-        candidates = [given]
-        if given.is_dir() and not whole:
-            candidates = [p for p in sorted(given.rglob("*")) if p.is_file()
-                          and p.suffix.lower() in _CONSIDER_SUFFIXES]
+        # **The variant-tree test comes FIRST, before `detect_platform`.**
+        #
+        # `detect_platform('sample_writer/out')` answers `messenger`, because
+        # `messenger.detect()` finds the nested `messenger_dir/your_facebook_activity`
+        # tree and claims the whole world as one Messenger export. That made `whole`
+        # true, skipped the narrowing, and copied the entire `out/` tree into
+        # `spool/real/messenger/out` — which then ingested as empty directories.
+        #
+        # A tree holding two or more known artifact names is a variant tree, and that
+        # fact outranks any adapter's claim on the parent.
+        canonical = _canonical_children(given) if given.is_dir() else None
 
-        for item in candidates:
+        if canonical is not None:
+            # `(path, platform)` pairs: the platform is known from the table, so it is
+            # not re-derived from a folder that detection cannot recognise.
+            candidates = canonical
+        else:
+            # A directory an adapter claims **as a whole** is staged as one thing,
+            # exactly as `discover()` treats it. Staging its files one-by-one filed
+            # every `.eml` under `unrecognised/` (no single file is a mailbox) and lost
+            # the folder that gives Messenger and email their thread ids.
+            whole = given.is_dir() and detect_platform(given) is not None
+            if given.is_dir() and not whole:
+                candidates = [(p, None) for p in sorted(given.rglob("*"))
+                              if p.is_file() and p.suffix.lower() in _CONSIDER_SUFFIXES]
+            else:
+                candidates = [(given, None)]
+
+        for item, known_platform in candidates:
             if top in item.parents:
                 staged.append(item)
                 continue
 
-            platform = detect_platform(item)
+            platform = known_platform or detect_platform(item)
             if platform is None:
                 # Unrecognised: kept, not filed under a guess. The report names it.
                 platform = "unrecognised"
@@ -1529,17 +1617,21 @@ def stage(paths_in: Iterable[str | Path], *, root: str | Path | None = None) -> 
                 # bulk of a multi-GB export. The attachment metadata is in the export
                 # file, so nothing a message needs is lost.
                 destination = target_root / item.name
-                if not destination.exists():
-                    shutil.copytree(item, destination, ignore=_ignore_media)
+                # **Replace, do not skip.** `email_eml/` never changes its name, so a
+                # re-export collides with the copy already here. Skipping meant the new
+                # snapshot never landed and the ingest re-read the old one — the delta
+                # then found nothing new, forever, with no error.
+                if destination.exists():
+                    shutil.rmtree(destination, ignore_errors=True)
+                shutil.copytree(item, destination, ignore=_ignore_media)
                 staged.append(destination)
                 continue
 
             # Keep one folder level so two chats sharing a filename never collide.
             destination = target_root / item.parent.name / item.name
-            if destination.exists():
-                staged.append(destination)
-                continue
             destination.parent.mkdir(parents=True, exist_ok=True)
+            # Same rule for a fixed filename: `Outlook.pst` is always `Outlook.pst`.
+            # Dated exports never reach this branch twice, so nothing else is affected.
             shutil.copy2(item, destination)
             staged.append(destination)
 

@@ -40,19 +40,31 @@ def real_dir() -> Path:
     return spool_dir() / "real"
 
 
-# One folder per platform. The list is fixed rather than derived from what happens to
-# be present, so the shape of the spool is the same on every clone — including
-# platforms that have no file to drop (email is read over IMAP).
-PLATFORM_FOLDERS = (
-    "telegram",
-    "whatsapp",
-    "messenger",
-    "linkedin",
-    "outlook",
-    "sms",
-    "imap",
-    "gmail",
-)
+# **The spool scaffold mirrors `sample_writer/out/`.**
+#
+# Two levels: platform, then the one artifact folder a real export arrives in. The shape
+# is fixed rather than derived from what happens to be present, so an empty spool looks
+# the same on every clone and after every wipe — and a user can see where a file is
+# supposed to go.
+#
+# `email` is here even though a live mailbox has no file to drop: a saved mailbox (a
+# folder of `.eml`) is a real export shape, and it is the one the sample world writes.
+#
+# `imap` and `gmail` are gone. They were folders nothing ever wrote to — a live mailbox
+# is fetched, not staged — and they made the scaffold claim a shape the app does not use.
+SPOOL_SCAFFOLD: dict[str, tuple[str, ...]] = {
+    "email": ("email_eml",),
+    "linkedin": ("linkedin_zip",),
+    "messenger": ("messenger_zip",),
+    "outlook": ("outlook_copy",),
+    "sms": ("sms_xml",),
+    "telegram": ("Telegram Desktop",),
+    "whatsapp": ("whatsapp_html",),
+}
+
+# Every platform folder, in scaffold order. Kept as a flat tuple for callers that only
+# need the names.
+PLATFORM_FOLDERS: tuple[str, ...] = tuple(SPOOL_SCAFFOLD)
 
 
 def store_dir() -> Path:
@@ -84,6 +96,26 @@ def ensure_layout() -> None:
     `spool/` and `store/` are gitignored; each ship a `.gitkeep` so the shape exists
     after a clone while the contents never reach version control.
     """
-    for platform in PLATFORM_FOLDERS:
-        (real_dir() / platform).mkdir(parents=True, exist_ok=True)
+    ensure_spool_scaffold()
     store_dir().mkdir(parents=True, exist_ok=True)
+
+
+def ensure_spool_scaffold(root: str | Path | None = None) -> list[Path]:
+    """Create the empty spool shape: `real/<platform>/<artifact>/`.
+
+    **The one definition of "an empty spool".** `ensure_layout()` calls it on a fresh
+    clone and `delete_spool()` calls it after a wipe, so the two cannot drift — which is
+    what happened before: a wipe removed files and left behind every directory any
+    previous ingest had created, so the spool became a skeleton of empty folders that
+    looked like data.
+
+    Returns the directories it created or confirmed, deepest last.
+    """
+    top = Path(root) if root else real_dir()
+    made: list[Path] = []
+    for platform, artifacts in SPOOL_SCAFFOLD.items():
+        for artifact in artifacts:
+            folder = top / platform / artifact
+            folder.mkdir(parents=True, exist_ok=True)
+            made.append(folder)
+    return made
