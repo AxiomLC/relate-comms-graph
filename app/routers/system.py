@@ -14,6 +14,8 @@ from pydantic import BaseModel
 
 from relate_comms import tools
 
+from app.mcp import config as mcp_config
+
 router = APIRouter(prefix="/api", tags=["system"])
 
 
@@ -34,12 +36,25 @@ def health() -> dict:
         "store": str(path),
         "store_exists": path.exists(),
         "store_bytes": path.stat().st_size if path.exists() else 0,
-        # **Always False until the MCP surface is built.** `app/mcp/` is a docstring;
-        # there is no server to detect. The flag exists so the title bar's badge has
-        # one honest source, and so building MCP is a change here rather than in the
-        # UI. A hardcoded `true` in the UI would be a lie the moment it shipped.
-        "mcp_active": False,
+        # **A heartbeat, not a flag.** The MCP server is a separate stdio process, so the
+        # only thing it can share with this one is the filesystem: it stamps
+        # `store/profile/mcp.heartbeat` on every tool call, and this reads how old that
+        # stamp is. A missing or stale file reads as False — the badge must never claim
+        # a client is connected when it cannot prove one is.
+        "mcp_active": mcp_config.is_active(),
     }
+
+
+@router.get("/activity")
+def activity() -> dict:
+    """Drain the MCP activity trace.
+
+    **Draining, not tailing.** The MCP server is a separate process, so it appends rows
+    to a file; this reads them and deletes the file. That means the UI never shows the
+    same row twice and the file cannot grow without bound. Search and chat rows are
+    pushed in the browser and never come through here.
+    """
+    return {"rows": mcp_config.drain_activity()}
 
 
 @router.get("/stats")
