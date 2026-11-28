@@ -7,8 +7,12 @@ and `UIREADME.md` (UI). Fixed work gets one line; pending work keeps its detail.
 
 ## Where it stands
 
-`pytest tests -q` → **587 passed, 10 skipped, 1 known failure** (`canon` camelCase split,
-pre-existing). App runs: `start.bat` → `127.0.0.1:8100`.
+`pytest tests -q` → **594 passed, 10 skipped, 0 failures**. App runs: `start.bat` → `127.0.0.1:8100`.
+
+The long-standing `canon` camelCase failure is **fixed** (2026-11-27): a camel boundary
+is a word break only for a `person`, or for an `org`/`product` name the vocabulary
+explicitly ships (see `canon.register_camel`). Blind splitting produced `linked in`,
+`you tube`, `photo generator` — keys no other spelling of the same brand could match.
 
 **No store counts are recorded here on purpose.** The spool is re-ingested constantly, so any
 number written down is stale by the next run. Ask the store instead:
@@ -90,9 +94,12 @@ The 226 real Hostinger messages are the first non-sample corpus. Worth asking:
   message appearing twice, which the real file exhibits.
 - **Entity extraction is English-only in v1.** Silence beats a wrong node, and the seam sits
   above the extractor so a second language is a second model, not a rewrite.
-- **A `Product` may take a span the model called `GPE`/`FAC`/`LOC`/`PERSON`, but never
-  `ORG`.** Asymmetric on purpose: `Grafana Labs` contains `Grafana`, and demoting it would
-  lose the organisation.
+- **A `Product` may take a span the model called `GPE`/`FAC`/`LOC`/`PERSON`, and now
+  `ORG` too — but an `ORG` only on a FULL-SPAN index hit.** `Grafana Labs` stays an
+  Organisation because the index matches only the sub-span `Grafana`; `Snowflake`
+  becomes a Product because the index matches the whole span. Reversed 2026-11-27:
+  the old blanket refusal meant `organization:snowflake`, `organization:claude` and
+  `organization:supabase` could never be corrected, however sure the index was.
 - **`merged_by` has two sources that disagree.** `writer` sets it at write time; `link` can
   only `coalesce` into it. The link-time reason is in `report["merged_by"]` only. Fixing it
   means deciding which is canonical.
@@ -141,18 +148,46 @@ reuse it, the way `identity.json` already persists the Owner.
 
 ---
 
-## Cleanup — LinkedIn "Sponsored" messages
+## Cleanup — LinkedIn "Sponsored" messages — **DONE 2026-11-27**
 
-74 messages across 73 threads contain raw HTML
-(`<p class="spinmail-quill-editor__spin-break">…`), including `%FIRSTNAME%` placeholders.
-32 sit in one thread titled `Sponsored Conversation`.
+Replaced by the sponsored-thread gate (see below). The 74 HTML rows are gone from the graph;
+the HTML strip was deliberately not written, because every HTML body sat in a thread the
+gate drops, so stripping would have been code with no observable effect.
 
-**Fix, in order:** (1) strip HTML in the LinkedIn adapter — reuse the `_text()` pattern from
-`messenger.py`; (2) set `raw_kind = "sponsored"` when the body contains
-`spinmail-quill-editor` or the sender is `LinkedIn Member` / `LinkedIn Talent Solutions`;
-(3) optionally drop them behind a toggle, same shape as `exclude_spam_groups`.
+**What the real export actually taught us (corrects the earlier note):** 74 rows carry
+`spinmail-quill-editor`, but that class is the *editor's* marker — it appears on real InMail
+and ads too, only 32 rows were in the `Sponsored Conversation` thread, and **one HTML row
+had no marker at all** (plain `<p>/<br>/<strong>`). So `spinmail` alone is not "sponsored",
+and any strip must be tag-driven, not class-driven.
 
-Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirely.
+## Done — LinkedIn sponsored-thread gate (2026-11-27)
+
+`_drop_sponsored_threads` in `ingest.py`, exposed as `exclude_sponsored_threads`
+(default **on** in the modal and the router, off in the library function).
+
+**The rule: no owner-sent message AND at least one promotional row.** Promotional is an
+`spinmail-quill-editor` body, or a `LinkedIn Member` / `LinkedIn Talent Solutions` sender.
+Dropped threads leave no orphan messages, Threads or Correspondents; counted in `skipped`.
+
+**Why direction and not silence.** The owner's own 1-message InMails are the *same shape*
+as inbound InMail spam, so silence deletes both. `SPAM_THREAD_MIN_MESSAGES = 10` caught
+nothing here — 100 of the 108 silent threads are a single row.
+
+**Measured on `Downloads/temp socials downloads/Basic_LinkedInDataExport_11-14-2026.zip.zip`**
+(the real archive: 23 files, 292 rows, 205 threads, 2004-12 → 2026-11):
+
+| | threads |
+|---|---|
+| all | 292 rows / 205 |
+| 16-month window | 152 rows / 104 |
+| dropped by the gate | **43** |
+| kept | 109 rows / 61 |
+
+76 owner-sent messages survive, 0 real conversations lost, 0 orphans, idempotent,
+platform-scoped. `--keep-sponsored` on the CLI turns it off.
+
+**Note:** the earlier "real" zip (`Downloads/Basic_LinkedInDataExport_11-14-2026.zip (2).zip`)
+is a 136-row synthetic fixture, not this archive — do not profile against it.
 
 ---
 
@@ -160,7 +195,43 @@ Do 1 and 2. Do 3 only if the Owner wants sponsored mail out of the graph entirel
 
 Only what changed the shape of the app. Older history is `git log`.
 
-- **2026-11-26** — **MCP surface built.** `app/mcp/` — two keys in `store/profile/mcp.json`
+- **2026-11-27** — **Text hygiene before NER.** `fragments()` now splits on real newlines
+  as well as `<br>`, decodes HTML entities, strips tags/URLs/zero-width characters, drops
+  a scrub alias (`EMAIL-9`) and removes a salutation at the start of any line or after
+  `wrote:`. Measured on the live 224-message mailbox: 157 bodies opened with a greeting,
+  186 contained a scrub alias, 8 entities, 11 tags. Junk nodes removed: the whole
+  `Hello X` family (14 orgs), `href="https://help.figma.com`, `Account &amp`,
+  `Marko Srsan <EMAIL-9>`, `EMAIL-1` as a Place. **None of this was a model error** — the
+  span was exactly what the string said, which is why GLiNER would not have helped.
+
+- **2026-11-27** — **IMAP delta had never worked, and there was no record of the
+  mailbox.** `cutoff_by_platform` was built from **file batches only**, so an IMAP fetch —
+  passed as `extra_results` and appended to `parsed` later — contributed no platform;
+  `writer.watermarks()` returned `{}`, `apply_delta(None)` kept everything, and every run
+  rewrote the whole mailbox while reporting "same mailbox". Measured: 224 messages
+  rewritten on an identical second ingest; now `written=0, delta_dropped=224`.
+  Separately, `store/profile/imap.json` now records which mailbox the graph holds
+  (address, host, folders, window, count, timestamp), written only on a verified run and
+  **deleted by `truncate_store`**. `_run_ingest` compares against that record rather than
+  `.env`, which is configuration and can be stale or hand-edited. Verdicts: `first` /
+  `same` / `window` / `different` (wipes email rows) / `stale` (record lost, rows present —
+  refuses rather than guessing).
+
+- **2026-11-27** — **`canon` camelCase fixed; suite fully green.** A camel boundary is a
+  word break for a `person` (`PeteBromill` → `Pete Bromill`), or for an org/product name
+  the vocabulary ships (`register_camel`, keyed on the squashed form so `Coca-Cola`,
+  `Coca-Cola`, `CocaCola` and `coca-cola` all reach `coca cola`). Everything else is left
+  whole: `LinkedIn` used to key as `linked in`, `YouTube` as `you tube`, `PhotoGenerator`
+  as `photo generator` — keys no alternative spelling could ever match. Blast radius was
+  only ever the *key*; `display` was always correct, which is why it went unnoticed.
+  `register_camel` must be called by the vocabulary loader (`products` does, before
+  `INDEX` is built, because `_entry` computes keys through `canonical`).
+
+- **2026-11-27** — **`ORG` may promote to `Product` on a full-span hit, and `Product` is
+  drawn.** Two separate things: `_arbitrate` short-circuited `ORG` before
+  `products.decide()` was ever called, so the index could not rescue a product the
+  model called a company; and `theme.js`'s default `nodeTypes` omitted `Product`, so 22
+  Product nodes sat in the store with no toggle and no way to see them. `app/mcp/` — two keys in `store/profile/mcp.json`
   (`read_key` 16 tools, `write_key` 21), stdio only, repo-root path rule, heartbeat and
   activity trace shared with the app through two files. `python -m app.mcp`. The title bar
   shows a yellow pulsing **MCP being accessed** badge.

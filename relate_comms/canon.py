@@ -169,10 +169,52 @@ _LIST_COMMA = re.compile(r",(?=\S)")
 
 # camelCase / PascalCase boundary: `PeteBromill` -> `Pete Bromill`.
 #
-# The lookbehind requires at least two lowercase letters before the capital, so a
-# surname prefix is not split: `DeNegris` stays `DeNegris`, while `PeteBromill` splits.
-# `McDonald` and `MacLeod` are protected by the same rule.
-_CAMEL = re.compile(r"(?<=[a-z]{2})(?=[A-Z])")
+# **At least THREE lower-case letters.** The lookbehind requires three, not two, so a
+# surname prefix is never split: `DeNegris`, `McDonald`, `MacLeod` and `LaSalle` keep
+# two letters before the capital. Two was wrong and the damage was invisible in one
+# direction — it split `LinkedIn`, `YouTube`, `TikTok`, `WhatsApp`, `OneDrive`,
+# `LibGen` and `PhotoGenerator` into `linked in`, `you tube`, … while `PeteBromill`
+# also split, so neither name length nor brand-ness could be read off the result.
+#
+# The lookahead accepts a capital followed by a lower-case letter OR the end of the
+# name: `LinkedIn` ends on `In`, and excluding end-of-string left it split while
+# `LinkedInX` would not be, which is not a distinction any export makes.
+# An acronym run is still refused — `ARMAssets` is `ARM` + `Assets`.
+_CAMEL = re.compile(r"(?<=[a-z]{3})(?=[A-Z](?:[a-z]|$))")
+
+# **Names the corpus has confirmed are two words, by their camel spelling.**
+#
+# A camel boundary is not self-evidently a word break: `CocaCola` is two words and
+# `LinkedIn` is one, and no rule over the letters can tell them apart. Whether a given
+# name splits is therefore a **dictionary fact**, and this map is that dictionary —
+# populated by the loaders that actually own the vocabulary (`products.INDEX`), not by
+# a shipped gazetteer and not guessed from the string.
+#
+# Keyed by the squashed one-case form, so every spelling reaches the same entry:
+# `cocacola`, `coca-cola` and `coca cola` all resolve to `coca cola`. A name with no
+# entry here is never split, which is the safe default — `linkedin` staying `linkedin`
+# is a correct key, whereas `linked in` is a key nothing else will ever match.
+_CAMEL_WORDS: dict[str, str] = {}
+
+
+def register_camel(name: str) -> None:
+    """Record that `name` is `N` words, so every spelling of it folds together.
+
+    Called by a vocabulary loader with the **display** spelling it ships (`Coca-Cola`,
+    `LlamaIndex`). Idempotent.
+
+    **Registered by the squashed form, so hyphen, space and camel all meet.** The
+    vocabulary shipping `Coca-Cola` is what tells us `CocaCola` (no separator at all)
+    is the same product; without this the camel rule would decline to split it, because
+    from the letters alone it is indistinguishable from `LinkedIn`.
+    """
+    words = name.replace("-", " ").split()
+    if len(words) < 2 and _CAMEL.sub(" ", name) == name:
+        return
+    folded = " ".join(words).casefold() if len(words) > 1 else _CAMEL.sub(" ", name).casefold()
+    squashed = folded.replace(" ", "")
+    _CAMEL_WORDS[squashed] = folded
+
 
 # Anything that looks like a phone number rather than a name.
 _PHONE_LIKE = re.compile(r"^\+?[\d\s()\-.]{7,}$")
@@ -282,7 +324,29 @@ def _protect_legal_suffix(text: str) -> str:
 
 
 def split_camel(raw: str) -> str:
-    """`PeteBromill` -> `Pete Bromill`. A missing space is a formatting accident."""
+    """`PeteBromill` -> `Pete Bromill`. A missing space is a formatting accident.
+
+    **The boundary may be restored from any case, which is why `_CAMEL` is applied to
+    the ORIGINAL spelling only.** `LlamaIndex`, `llamaindex` and `LLAMAINDEX` are one
+    name written three ways, so the split must be decided before the case is thrown
+    away: lower-casing first destroys the boundary, and an all-caps export would then
+    key differently from a cased one — measured on the sample world's `lower` variant,
+    where `LlamaIndex` -> `llamaindex` did not fold and `llama index` became a second
+    node.
+
+    **A brand keeps its interior capital.** `LinkedIn`, `YouTube` and `WhatsApp` are
+    single words whose capitals carry meaning, not two words missing a space, so
+    splitting them produced `linked in` / `you tube` / `whats app` keys that no other
+    spelling could ever match. The rule: a boundary between a lower-case run and a
+    capital is a word break; a boundary after a **single** capital is not (`LinkedIn`
+    is `Linked` + `In`, and `In` is not a word).
+
+    That single-capital rule is also what keeps `DeNegris`, `McDonald` and `MacLeod`
+    intact — they were only protected by the `{2}` lookbehind before, which is why a
+    three-letter first word (`PeteBromill`) split while a two-letter one did not. The
+    prefix is two letters in both, so the old rule was dividing on word length rather
+    than on any property of the name.
+    """
     return _CAMEL.sub(" ", raw)
 
 
@@ -438,6 +502,18 @@ def _canonical_text(text: str, kind: Kind) -> Canonical:
 
     # camelCase: a missing space is a formatting accident, not a different name.
     #
+    # **For a person, always.** `PeteBromill` and `Pete Bromill` are one human spelled
+    # two ways.
+    #
+    # **For an organisation or a product, only when the vocabulary says so.** A camel
+    # boundary is not self-evidently a word break — `CocaCola` is two words, `LinkedIn`
+    # is one — so the decision is a dictionary fact (`register_camel`), never a guess
+    # from the letters. Splitting blindly produced `linked in`, `you tube`, `photo
+    # generator`: keys no other spelling of that brand could match, and inconsistent
+    # besides, because an export writing `llamaindex` has no boundary left to split.
+    # Declining to split makes every spelling agree, which is the only answer that
+    # needs no entry.
+    #
     # **A legal suffix is protected first.** `GmbH` is `Gmb` + `H` to the camel rule, so
     # splitting before the suffix pass turned `Pure Storage GmbH` into
     # `pure storage gmb h` — a different key from `Pure Storage`, and the suffix never
@@ -446,7 +522,20 @@ def _canonical_text(text: str, kind: Kind) -> Canonical:
     protected = _protect_legal_suffix(working)
     spaced = split_camel(protected)
     if spaced != protected:
-        working, evidence = spaced, "camel"
+        if kind == "person":
+            working, evidence = spaced, "camel"
+        else:
+            recorded = _CAMEL_WORDS.get(
+                protected.casefold().replace("-", "").replace(" ", ""))
+            if recorded:
+                working, evidence = recorded, "camel"
+    else:
+        # A name written in one case has lost its boundary; recover it only if the
+        # vocabulary knows this name — `cocacola` -> `coca cola`.
+        recorded = _CAMEL_WORDS.get(
+            protected.casefold().replace("-", "").replace(" ", ""))
+        if recorded and recorded != protected.casefold():
+            working, evidence = recorded, "camel"
 
     # Whitespace, case and diacritics in one pass.
     flattened = strip_marks(working)

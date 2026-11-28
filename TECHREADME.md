@@ -272,6 +272,23 @@ table and no host guessing — the host is a field the user fills in. Credential
 address wipes the `email` rows first (the key carries no mailbox). Outlook/O365 killed basic
 auth — the modal points at the `.pst` route.
 
+**Email is IMAP only.** No mbox reader exists: a Gmail Takeout `.mbox` or a webmail `.eml`
+zip is reported `unrecognised`, because `discover()` looks for the recognised artifact shapes
+and `_EML_SUFFIX = ".eml"`. A folder of `.eml` is the one file shape accepted
+(`email_imap.parse_eml`), on the same `email` platform and key space as IMAP.
+
+**Both mail legs remember their newest stored message and skip everything at or before it.**
+`apply_delta` never rewrites or deletes, so the rule only moves forward: a backdated message,
+or a `.pst` re-exported with older mail added, is skipped as already-stored with no error. To
+pull a mailbox backwards, run `delta=False` against an empty store.
+
+**Switching mailboxes replaces the email leg.** `chat_id` carries no mailbox, so the key
+namespace and the watermark are shared. The graph records which mailbox it holds in
+`store/profile/imap.json` — written only by a verified run, deleted by a truncate — and
+that record, not `.env`, decides whether a run is `first`, `same`, `window`, `different`
+(wipe the `email` rows) or `stale` (record lost with rows present: refuse rather than
+guess). Scoped to `email`; `outlook` and the other platforms are untouched.
+
 **A failed leg** halts with the error named and offers *Exclude and continue* or *Cancel*.
 Cancel does not roll back and does not need to — `MERGE` makes a re-run idempotent.
 
@@ -305,7 +322,7 @@ python -m sample_writer add --seed 5     # write alongside out/, no clobber
 python -m sample_writer append           # same world, later END (delta testing)
 python -m sample_writer clean            # wipe out/
 
-python -m pytest tests -q        # 587 passed, 10 skipped, 1 known failure (canon camelCase)
+python -m pytest tests -q        # 594 passed, 10 skipped, 0 failures
 
 npm install && npm run build     # -> app/static/dist/app.js
 npm run watch                    # rebuild on save, no server

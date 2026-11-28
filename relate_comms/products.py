@@ -65,6 +65,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from . import canon
 from .canon import canonical
 
 # --------------------------------------------------------------------------- entries
@@ -362,6 +363,16 @@ def _build(
             index[entry.key] = entry
     return index
 
+
+# **Register the camel-cased names BEFORE the index is built**, because `_entry` computes
+# each key through `canonical()` — registering afterwards would make the index key
+# `cocacola` while the registry said `coca cola`, and the two would disagree forever.
+#
+# Only the spellings this file actually ships are registered. That is the whole point:
+# `Coca-Cola` is two words and is recorded, `LinkedIn` never appears in the product list
+# so it is never split, and nothing has to be guessed from the shape of the letters.
+for _name in (*_PLAIN, *_CONTEXT_GATED):
+    canon.register_camel(_name)
 
 INDEX: dict[str, ProductEntry] = _build(_PLAIN, _CONTEXT_GATED)
 

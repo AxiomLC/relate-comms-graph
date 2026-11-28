@@ -41,6 +41,7 @@ never reached the browser because `index.html` loads `dist/app.css` separately.
 | Modal | Owns |
 |---|---|
 | **Ingest** | drop zone, IMAP mailbox, window/tz/gates, truncate, spool delete, the log |
+| | **Truncate** empties the graph (and always its `ingested.json`), keeping `identity.json` and the spool. **Spool delete** empties `spool/real/` and keeps the graph. Two buttons, two decisions. |
 | **Canvas** | sort, limit, per-kind visibility radios, hide-silent-threads. Applied on **Re-run layout** |
 | **Gravity** | fcose physics sliders. Same apply model as Canvas |
 | **Utilities** | platform filter (narrows every surface), embed status, Embed now / Delete embeds |

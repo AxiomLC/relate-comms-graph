@@ -448,9 +448,26 @@ def test_fragments_agree_with_the_batch_path():
 def test_the_kind_is_arbitrated_not_inherited_from_the_label():
     """`GPE` used to mean place because of an `if`. Now one function says so."""
     assert extract._arbitrate("Denver", "GPE") == ("place", ("place",))
-    assert extract._arbitrate("Snowflake", "ORG") == ("organization", ("organization",))
     # A label that proposes no kind is rejected rather than defaulted to place.
     assert extract._arbitrate("Dave", "PERSON") == ("", ())
+
+
+def test_an_org_span_promotes_only_on_a_full_span_index_hit():
+    """A product the small model called a company is rescued when the WHOLE span is indexed.
+
+    `Snowflake` and `Supabase` sat as Organizations however catalogue-certain the name
+    was, because an `ORG` span never reached `products.decide()` at all. The objection
+    that justified that — `Grafana Labs` the company contains `Grafana` the product —
+    is about the span, not the label, so it is tested as one: a partial match keeps the
+    organisation.
+    """
+    assert extract._arbitrate("Snowflake", "ORG") == (
+        "product", ("product", "organization"))
+    # The sub-span case the old rule was protecting.
+    assert extract._arbitrate("Grafana Labs", "ORG") == ("organization", ("organization",))
+    # Not in the index: still an organisation, and still not a guess.
+    assert extract._arbitrate("Retool", "ORG") == ("organization", ("organization",))
+    assert extract._arbitrate("Bob Smith", "ORG") == ("organization", ("organization",))
 
 
 def test_spacy_product_label_is_accepted_even_though_sm_never_emits_it():

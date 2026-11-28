@@ -106,6 +106,21 @@ _SILENT_GROUP_PLATFORMS = {telegram.PLATFORM, whatsapp.PLATFORM, messenger.PLATF
 _SPAM_THREAD_PLATFORMS = {email_imap.PLATFORM, outlook_pst.PLATFORM}
 SPAM_THREAD_MIN_MESSAGES = 10
 
+# The LinkedIn outreach gate. **Not a message count, and not the email rule.** On the
+# real export (292 rows / 205 threads) the owner's own outreach is the *same shape* as
+# inbound InMail spam: one message, no reply. Silence therefore cannot separate them —
+# direction does. A thread is dropped only when the owner never sent anything in it AND
+# it is promotional, which is 43 threads on the real export and not one of the 36
+# one-message InMails the owner sent.
+_SPONSORED_PLATFORMS = {linkedin.PLATFORM}
+
+# Senders that are a sales channel rather than a person. Matched case-insensitively.
+_SPONSORED_SENDERS = {"linkedin member", "linkedin talent solutions"}
+
+# The DOM marker of LinkedIn's InMail editor. It leaks into the stored body, so its
+# presence is a fact about the message rather than a guess from sentence shape.
+_SPONSORED_MARKER = "spinmail-quill-editor"
+
 _PARSERS: dict[str, Callable[..., IngestResult]] = {
     telegram.PLATFORM: telegram.parse,
     whatsapp.PLATFORM: whatsapp.parse,
@@ -761,6 +776,8 @@ def ingest(
     silent_group_platforms: Iterable[str] | None = None,
     exclude_spam_threads: bool = False,
     spam_thread_platforms: Iterable[str] | None = None,
+    exclude_sponsored_threads: bool = False,
+    sponsored_thread_platforms: Iterable[str] | None = None,
     prune: bool = False,
     prune_after: timedelta = PRUNE_AFTER,
     prune_keep: int | None = None,
@@ -797,6 +814,11 @@ def ingest(
     rather than to the size of the export. `delta=False` re-processes every message,
     which is the right call after an extractor change and the only way to re-derive
     Places for rows written before extraction existed.
+
+    `exclude_sponsored_threads` is the LinkedIn outreach gate — see
+    `_drop_sponsored_threads`. It is off by default here and on in the UI, the same
+    split as `exclude_silent_groups`: the function does not assume a policy, the modal
+    states one.
     """
     if since is not None and since.tzinfo is None:
         raise ValueError("since must be timezone-aware")
@@ -836,7 +858,6 @@ def ingest(
 
     report = Report(store=str(store_path), workers=workers, profile_dir=str(profile))
     started = time.perf_counter()
-
     # One alias map for the whole run: the same phone must get the same alias across
     # every platform, or the graph splits one person into three.
     aliases = scrub.AliasMap()
@@ -938,9 +959,17 @@ def ingest(
     cutoff_by_platform: dict[str, str] = {}
     if delta:
         try:
-            cutoff_by_platform = writer.watermarks(
-                conn, {b.platform for b in batches if b.platform}
-            )
+            # **Live results are not batches yet, and leaving them out disabled delta
+            # for the whole email leg.** `extra_results` (an IMAP fetch) is appended to
+            # `parsed` further down, so its platform was missing from this set — the
+            # watermarks call came back empty for a mailbox, `apply_delta` got `None`,
+            # and every message was re-written on every run while the report still said
+            # "same mailbox". Measured: 224 messages rewritten on a second identical
+            # ingest. The platforms present are the union of file batches and anything
+            # the caller already parsed.
+            wanted = {b.platform for b in batches if b.platform}
+            wanted |= {getattr(r, "platform", None) for r in extra_results}
+            cutoff_by_platform = writer.watermarks(conn, {p for p in wanted if p})
         except Exception as exc:  # noqa: BLE001 - a delta run must never lose an ingest
             report.delta_note = (
                 f"delta disabled for this run ({type(exc).__name__}: {exc}); "
@@ -964,6 +993,13 @@ def ingest(
         for _batch, result, _error in parsed:
             if result is not None:
                 _drop_spam_threads(result, spam_thread_platforms)
+
+    # Same place, same reason: a post-pass over the whole batch, before the write, so a
+    # dropped thread leaves no orphan Thread or Correspondent behind.
+    if exclude_sponsored_threads:
+        for _batch, result, _error in parsed:
+            if result is not None:
+                _drop_sponsored_threads(result, sponsored_thread_platforms)
 
     try:
         for batch, result, error in parsed:
@@ -1093,25 +1129,31 @@ def ingest(
             # land must not be remembered, or the next run would skip a parse that
             # never actually wrote anything.
             if ok:
-                try:
-                    digest = manifest.fingerprint(batch.path)
-                    # **Record what the FILE holds, not what this run wrote.**
-                    # A delta run writes nothing for a file it has already seen, so
-                    # `written["messages"]` is 0 — recording that erased the only record
-                    # of how many messages the file contributed, and left `preview`
-                    # claiming every file was empty. `outcome.read` is captured before
-                    # the cutoff, so it survives a skip.
-                    manifest.record(
-                        profile, digest,
-                        platform=batch.platform or "unrecognised",
-                        path=str(batch.path),
-                        messages=outcome.read,
-                        threads=len(result.chats),
-                        bytes_=batch.path.stat().st_size,
-                    )
-                    outcome.fingerprint = digest
-                except OSError as exc:
-                    outcome.warnings.append(f"not recorded in the manifest: {exc}")
+                # **A live mailbox is not a file.** `manifest.fingerprint()` stats a path,
+                # and an IMAP batch's path is `imap://host` — not a path at all. It was
+                # raising `WinError 123` on every mailbox run and reporting "not recorded
+                # in the manifest" as if something were broken. IMAP's record is
+                # `imap_state.json`; the manifest is for files in the spool.
+                if not str(batch.path).startswith("imap:"):
+                    try:
+                        digest = manifest.fingerprint(batch.path)
+                        # **Record what the FILE holds, not what this run wrote.**
+                        # A delta run writes nothing for a file it has already seen, so
+                        # `written["messages"]` is 0 — recording that erased the only record
+                        # of how many messages the file contributed, and left `preview`
+                        # claiming every file was empty. `outcome.read` is captured before
+                        # the cutoff, so it survives a skip.
+                        manifest.record(
+                            profile, digest,
+                            platform=batch.platform or "unrecognised",
+                            path=str(batch.path),
+                            messages=outcome.read,
+                            threads=len(result.chats),
+                            bytes_=batch.path.stat().st_size,
+                        )
+                        outcome.fingerprint = digest
+                    except OSError as exc:
+                        outcome.warnings.append(f"not recorded in the manifest: {exc}")
 
             # The age rule is per batch: a file is old or it is not. The "keep the
             # last N" rule is per RUN and is applied below, once every batch has
@@ -1309,6 +1351,54 @@ def _drop_spam_threads(
     result.chats = [c for c in result.chats if c.chat_id not in doomed]
     for _ in doomed:
         result.note_skip("spam thread (long, owner silent)")
+
+
+def _drop_sponsored_threads(
+    result: IngestResult,
+    platforms: Iterable[str] | None = None,
+) -> None:
+    """Drop promotional LinkedIn threads the owner never took part in, in place.
+
+    The rule: **no owner-sent message AND at least one promotional row.** Promotional
+    means a body carrying `_SPONSORED_MARKER` (LinkedIn's InMail editor leaking into the
+    stored text), or a sender in `_SPONSORED_SENDERS` (`LinkedIn Member` is a masked
+    sales account, not a person).
+
+    **Why direction and not silence.** The owner's own outreach is one message with no
+    reply, which is byte-for-byte the shape of inbound InMail spam. On the real export
+    (2026-11-14, 292 rows / 205 threads) `SPAM_THREAD_MIN_MESSAGES` would catch nothing
+    — 100 of the 108 silent threads are a single row — while a silence-only rule would
+    delete all 36 InMails the owner sent. Requiring "the owner never wrote here" as well
+    as "this is promotional" separates them: 43 dropped, 0 real conversations lost.
+
+    A promotional *reply* in a thread the owner is in keeps the thread. The owner
+    answering an ad is a conversation, and this gate must not gut it.
+
+    Runs after parsing and before writing, so a dropped thread leaves no orphan
+    messages, Threads or Correspondents. Counted in `skipped`, never silently lost.
+    """
+    allowed = set(platforms) if platforms is not None else _SPONSORED_PLATFORMS
+    if result.platform not in allowed:
+        return
+
+    spoke: set[str] = set()
+    promo: set[str] = set()
+    for message in result.messages:
+        if message.is_self:
+            spoke.add(message.chat_id)
+        sender = (message.sender_name or "").strip().lower()
+        if sender in _SPONSORED_SENDERS or _SPONSORED_MARKER in (message.body or ""):
+            promo.add(message.chat_id)
+
+    doomed = promo - spoke
+    if not doomed:
+        return
+
+    result.messages = [m for m in result.messages if m.chat_id not in doomed]
+    result.attachments = [a for a in result.attachments if a.chat_id not in doomed]
+    result.chats = [c for c in result.chats if c.chat_id not in doomed]
+    for _ in doomed:
+        result.note_skip("sponsored thread (owner never took part)")
 
 
 def _owner_forms(

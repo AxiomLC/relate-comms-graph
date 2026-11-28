@@ -24,6 +24,11 @@ privacy-scrubbed graph.
 Seven legs, one store. Ingest any subset, in any order, any number of times — every write is
 a `MERGE` on a stable key, so a re-ingest updates rather than duplicates.
 
+**The two mail legs.** Email is **IMAP only** — live, or a folder of saved `.eml`. There is no
+mbox / Takeout / webmail-archive reader; those files are reported `unrecognised`. Outlook is
+**`.pst` only**. Ingesting again only adds mail newer than what is stored. Switching the mailbox
+address replaces the email leg: the modal turns red naming the mailbox it will overwrite.
+
 **WhatsApp and Android SMS have no official bulk export.** Both are handled by well-known
 third-party apps that write the same shapes this reads — the per-chat `.txt`/`.zip` for
 WhatsApp, and *SMS Backup & Restore*'s XML for SMS. [`archive_docs/MssgDownloadInstructs.md`](archive_docs/MssgDownloadInstructs.md)
@@ -183,16 +188,46 @@ download. Enter the address, password, host and port in the Ingest modal; the cr
 written to `.env` **only after the ingest succeeds**, so a wrong password leaves nothing
 behind. Outlook is the exception: Microsoft killed basic auth, so use the `.pst` export.
 
-**3. Re-ingest weekly.** `ingest(delta=True)` is the default: it reads `max(ts_utc)` per
-platform from the store and drops every parsed message at or before it, **before** the write
-and before extraction. Measured on a realistic weekly case — 10,000 stored + 500 new:
+### The two mail legs
+
+**Email is IMAP only.** Enter the address in the modal; nothing is downloaded. Gmail Takeout
+`.mbox` and webmail `.eml` zips are not read and show up as `unrecognised`.
+
+**Outlook is `.pst` only**, and counts as its own platform (`outlook`), not as `email`.
+
+**Ingesting again only adds new mail.** Both legs remember the newest message they stored and
+skip everything at or before it. So the weekly loop is: read, drop, ingest — only the new mail
+is written.
+
+One consequence worth knowing: **it only moves forward.** Mail that arrives with an older date
+than what is already stored — a backdated delivery, or a `.pst` re-exported with older mail
+taken from a fuller backup — is skipped as already-stored, with no error.
+
+**Switching mailboxes overwrites the email leg.** The graph keeps one mailbox's worth of email,
+not two. Type a different address in the modal and it turns **red**, naming the mailbox it will
+replace; on Ingest every stored email message is deleted before the new mailbox is read. Other
+platforms are untouched. The mailbox in `.env` is the one the graph holds.
+
+**Truncate and delete spool are different buttons.** Truncate empties the graph (and its
+`ingested.json`), keeping `identity.json` and the spool. Delete spool empties `spool/real/` and
+keeps the graph. IMAP has no spool at all, so the spool button does nothing to it.
+
+**The sample emulates the IMAP read, not a download.** `sample_writer` writes
+`email_eml/Inbox/<thread>/NNN.eml` and `email_eml/Sent/<thread>/NNN.eml`. The `Sent/` folder
+is not decoration: `folder_is_sent()` is the only structural ownership signal a *saved*
+mailbox carries, the same one a live IMAP server states outright. Without it the sample would
+exercise only the address-matching fallback. `email_imap.detect()` returns False by design —
+there is no download button being imitated.
+
+**3. Ingest again whenever you like.** Only new mail and new messages are written. Measured
+on a realistic weekly case — 10,000 stored + 500 new:
 
 | Run | Time |
 |---|---|
 | full re-process | 25.7 s |
-| delta | 2.6 s |
+| only the new mail | 2.6 s |
 
-So the loop is: export again, drop it in, ingest. Only the new week is parsed.
+So the loop is: export again, drop it in, ingest.
 
 **To try that loop without real exports**, `sample_writer` can extend a world's clock:
 set `END` in [`sample_writer/config.py`](sample_writer/config.py) to a past date, build and
@@ -319,8 +354,7 @@ repo, and it is the reason this one can be demoed without anyone's real history.
 
 ## Status
 
-Working prototype. `pytest tests -q` → **587 passed, 10 skipped, 1 known failure** (a `canon`
-camelCase split, pre-existing).
+Working prototype. `pytest tests -q` → **594 passed, 10 skipped, 0 failures**.
 
 **Built:** seven adapters + live IMAP, parallel parse → resolve → scrub → serialised write →
 verify → prune, body-entity extraction (Place / Organization / Product), delta ingest, BM25 +

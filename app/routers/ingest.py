@@ -12,13 +12,14 @@ touch the user's disk.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, File, UploadFile
 from pydantic import BaseModel, Field
 
-from relate_comms import paths, tools
+from relate_comms import imap_state, paths, tools
 from relate_comms.ingest import MEDIA_SUFFIXES
 
 from .. import jobs
@@ -78,6 +79,17 @@ class IngestRequest(BaseModel):
         default=False,
         description="Facebook Messenger only: drop group threads that are mostly "
                     "link-spam and join-events.",
+    )
+    exclude_sponsored_threads: bool = Field(
+        default=True,
+        description="LinkedIn: drop promotional threads the owner never took part in "
+                    "(InMail markup, or a LinkedIn Member / Talent Solutions sender). "
+                    "One-message InMails the owner sent are kept.",
+    )
+    sponsored_thread_platforms: list[str] | None = Field(
+        default=None,
+        description="Which platforms the sponsored-thread rule applies to. None means "
+                    "every platform that supports it.",
     )
     prune: bool = False
     prune_keep: int | None = Field(
@@ -146,6 +158,22 @@ def _saved_mailbox() -> str:
 
     user_var, _p, _h, _po = email_imap.slot_keys()
     return (email_imap._dotenv().get(user_var) or "").strip()
+
+
+def _store_has_email() -> bool:
+    """Does the graph hold any `email` row?
+
+    Read by `imap_state.compare` to tell "first ingest" from "the record was lost". It
+    never raises: a store that cannot be read is not evidence of an empty mailbox, so a
+    failed read returns `False` and the caller proceeds as a first ingest, which is the
+    less destructive of the two guesses.
+    """
+    try:
+        rows = tools.run_cypher(
+            "MATCH (m:Message {platform: 'email'}) RETURN count(m) AS n")["rows"]
+    except Exception:  # noqa: BLE001 - a missing or locked store is not an answer
+        return False
+    return bool(rows and (rows[0].get("n") or 0) > 0)
 
 
 def _wipe_email_rows() -> dict:
@@ -238,12 +266,35 @@ def _run_ingest(request: IngestRequest, job: jobs.Job) -> dict:
 
         # **The mailbox changed.** Wipe before writing, or the two mailboxes share one
         # namespace and the delta drops the new one's older messages as duplicates.
-        previous = _saved_mailbox()
-        if previous and previous.lower() != imap.email.strip().lower():
+        #
+        # The comparison is against **the graph's own record**, not `.env`. `.env` is
+        # configuration and can be edited by hand or left over from a wiped graph, so
+        # trusting it made "same mailbox" a claim about a text file rather than about
+        # what is actually stored. `imap_state.json` is written only by a verified run
+        # and deleted by `truncate_store`, so it answers the question that matters.
+        verdict = imap_state.compare(
+            imap_state.load(paths.profile_dir()),
+            email=imap.email,
+            since=request.since.isoformat() if request.since else None,
+            until=request.until.isoformat() if request.until else None,
+            store_has_email=_store_has_email(),
+        )
+        job.progress["mailbox_verdict"] = verdict
+
+        if verdict == "different":
+            previous = (imap_state.load(paths.profile_dir()) or {}).get("email") or ""
             job.progress["stage"] = f"replacing {previous}"
             _wipe_email_rows()
             switched_from = previous
             job.progress["switched_from"] = previous
+        elif verdict == "stale":
+            # The record is gone but the store has rows. Guessing either way is wrong —
+            # wiping loses data the user did not ask to lose, and continuing mixes two
+            # mailboxes under one key namespace. Refuse and say what to do.
+            raise tools.ToolError(
+                "the store holds email messages but no mailbox record; "
+                "truncate the graph and ingest again, or delete the email rows first"
+            )
 
         saved_password = password
 
@@ -259,6 +310,8 @@ def _run_ingest(request: IngestRequest, job: jobs.Job) -> dict:
         silent_group_platforms=request.silent_group_platforms,
         exclude_spam_threads=request.exclude_spam_threads,
         spam_thread_platforms=request.spam_thread_platforms,
+        exclude_sponsored_threads=request.exclude_sponsored_threads,
+        sponsored_thread_platforms=request.sponsored_thread_platforms,
         prune=request.prune,
         prune_keep=request.prune_keep,
         write_enabled=True,
@@ -276,6 +329,25 @@ def _run_ingest(request: IngestRequest, job: jobs.Job) -> dict:
             port_var: str(int(imap.port)),
         })
         job.progress["saved_mailbox"] = imap.email.strip()
+
+        # The graph's own record of which mailbox it holds. Written here, after the
+        # verified write, and never on a failed run.
+        folders: list[str] = []
+        for batch in result.get("batches") or []:
+            for w in batch.get("warnings") or []:
+                if w.startswith("folders read: "):
+                    folders = [f.strip() for f in w[len("folders read: "):].split(",")]
+        imap_state.save(
+            paths.profile_dir(),
+            email=imap.email.strip(),
+            host=imap.host.strip(),
+            port=int(imap.port),
+            folders=folders,
+            since=request.since.isoformat() if request.since else None,
+            until=request.until.isoformat() if request.until else None,
+            messages=result.get("written") or 0,
+            ingested_at=datetime.now(timezone.utc).isoformat(),
+        )
 
     job.progress["stage"] = "done"
     job.progress["written"] = result.get("written")
@@ -476,6 +548,7 @@ def env_status() -> dict:
     env.update(os.environ)
 
     user_var, pass_var, host_var, port_var = email_imap.slot_keys()
+    state = imap_state.load(paths.profile_dir())
     return {
         "email": env.get(user_var) or "",
         "host": env.get(host_var) or "",
@@ -484,6 +557,13 @@ def env_status() -> dict:
         "configured": bool(
             env.get(user_var) and env.get(pass_var) and env.get(host_var)
         ),
+        # **What the GRAPH holds**, as opposed to what `.env` says. These two can
+        # disagree — a wiped graph leaves `.env` intact, and a hand-edited `.env`
+        # describes a mailbox the store has never seen — so the modal shows this line
+        # to tell the user which is true.
+        "in_graph": (state or {}).get("email") or "",
+        "graph_messages": (state or {}).get("messages") or 0,
+        "graph_ingested_at": (state or {}).get("ingested_at") or "",
     }
 
 

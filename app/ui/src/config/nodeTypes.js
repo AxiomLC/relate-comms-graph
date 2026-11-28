@@ -31,8 +31,10 @@ export const NODE_TYPES = {
     // The field that weights an edge leaving this node. `WITH` stores no count, so
     // the thread's own size is the only signal the canvas has.
     edgeWeight: "message_count",
-    // Only threads can be "silent" — a correspondent has no is_self of its own.
+    // Only a thread can be "silent" or "broadcast" — a correspondent has no is_self
+    // of its own. Both are computed per thread by `_NODE_QUERIES["Thread"]`.
     hideWhenSilent: true,
+    hideWhenBroadcast: true,
     iconKind: "platform",
   },
   Correspondent: {

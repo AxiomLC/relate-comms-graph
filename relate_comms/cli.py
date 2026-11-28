@@ -55,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument("--no-spam-groups", action="store_true",
                         help="Facebook Messenger only: drop group threads that are "
                              "mostly link-spam and join-events")
+    ingest.add_argument("--keep-sponsored", action="store_true",
+                        help="LinkedIn: keep promotional threads the owner never took "
+                             "part in (default is to drop them)")
     ingest.add_argument("--workers", type=int, help="parse processes (default: half the cores)")
     ingest.add_argument("--self-id", help="pin the owner id instead of inferring it")
     ingest.add_argument("--prune", action="store_true",
@@ -102,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             until=args.until,
             include_service=not args.no_service,
             exclude_spam_groups=args.no_spam_groups,
+            exclude_sponsored_threads=not args.keep_sponsored,
             prune=args.prune,
             workers=args.workers,
             self_id=args.self_id,

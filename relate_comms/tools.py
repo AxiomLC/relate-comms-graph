@@ -485,7 +485,17 @@ _NODE_QUERIES: dict[str, str] = {
         # `is_silent` is a fact the canvas needs to offer "hide threads I never
         # spoke in" as a view toggle. Counted here because the messages are already
         # being walked; a second query per thread would be absurd.
-        "       sum(CASE WHEN m.is_self THEN 1 ELSE 0 END) = 0 AS is_silent "
+        "       sum(CASE WHEN m.is_self THEN 1 ELSE 0 END) = 0 AS is_silent, "
+        # `is_broadcast` is the mirror image: every message in the thread is the
+        # Owner's. A cold-email campaign with no subject and no replies collapses into
+        # one thread key, so 31 unrelated recipients look like one conversation. The
+        # canvas offers hiding these; nothing is deleted and no count moves.
+        #
+        # `count(m) > 1` guards the single-message thread: one message the Owner sent
+        # is an ordinary sent note, not a broadcast, and hiding it would empty a
+        # perfectly good thread.
+        "       count(m) > 1 AND sum(CASE WHEN m.is_self THEN 1 ELSE 0 END) = count(m) "
+        "       AS is_broadcast "
         "ORDER BY {order} "
         "LIMIT $n"
     ),
@@ -2005,6 +2015,8 @@ def ingest(
     silent_group_platforms: Sequence[str] | None = None,
     exclude_spam_threads: bool = False,
     spam_thread_platforms: Sequence[str] | None = None,
+    exclude_sponsored_threads: bool = False,
+    sponsored_thread_platforms: Sequence[str] | None = None,
     prune: bool = False,
     prune_keep: int | None = None,
     write_enabled: bool = False,
@@ -2039,6 +2051,13 @@ def ingest(
     the group gate on purpose — different scope, different threshold.
     `spam_thread_platforms` narrows it the same way.
 
+    `exclude_sponsored_threads` applies to LinkedIn: a thread is dropped when the owner
+    never sent anything in it and at least one row is promotional (LinkedIn's InMail
+    editor markup, or a `LinkedIn Member` / `LinkedIn Talent Solutions` sender). Silence
+    alone is not enough — the owner's own one-message InMails look identical to inbound
+    spam, and 36 of them on the real export survive this rule.
+    `sponsored_thread_platforms` narrows it the same way.
+
     `prune` deletes spool files **only after verification**. It is off by default and
     is not the same thing as `prune_spool`.
 
@@ -2071,6 +2090,8 @@ def ingest(
         silent_group_platforms=silent_group_platforms,
         exclude_spam_threads=bool(exclude_spam_threads),
         spam_thread_platforms=spam_thread_platforms,
+        exclude_sponsored_threads=bool(exclude_sponsored_threads),
+        sponsored_thread_platforms=sponsored_thread_platforms,
         prune=bool(prune),
         prune_keep=None if prune_keep is None else int(prune_keep),
         tz_offset_hours=None if tz_offset_hours is None else float(tz_offset_hours),
@@ -2141,6 +2162,14 @@ def truncate_store(
     if record.exists():
         record.unlink()
         removed.append(str(record))
+
+    # **The mailbox record goes with the graph too.** It is the email leg's only memory
+    # — IMAP leaves no spool file — so leaving it behind would make the next ingest
+    # believe it is continuing a mailbox that no longer has a single row.
+    from . import imap_state
+
+    if imap_state.clear(paths.profile_dir()):
+        removed.append(str(imap_state.path_for(paths.profile_dir())))
 
     identity_file = paths.profile_dir() / "identity.json"
     if also_identity and identity_file.exists():

@@ -15058,7 +15058,11 @@
       // The other three extracted kinds stay off until their extractors land — a ticked
       // kind with zero rows only costs a query. To distrust the extractor, untick
       // `Place` here or in the Canvas modal.
-      nodeTypes: ["Thread", "Correspondent", "Place", "Organization"],
+      //
+      // **`Product` is included: it has been live and writing since `PRODUCT_ENABLED`
+      // went true, and leaving it out meant the canvas never requested the node type —
+      // 22 Product nodes sat in the store with no toggle and no way to draw them.**
+      nodeTypes: ["Thread", "Correspondent", "Place", "Organization", "Product"],
       // One invisible bag per platform, so fcose clusters threads by source instead of
       // letting them float free. Client-side only — a bag is a body for the layout, not
       // data, and it never reaches the server or any count. Off is a real option: with
@@ -15071,6 +15075,10 @@
       platforms: [],
       hideSilent: false,
       // hide threads the owner never sent a message in
+      // The mirror: every message in the thread is the Owner's. A cold-email campaign
+      // with no subject and no reply headers collapses into one thread key, so a
+      // broadcast reads as a 31-message "conversation" it never was. View only.
+      hideBroadcast: false,
       // **One tri-state per kind**, mutually exclusive: `all` | `merged` | `hide`.
       //
       //   all    — draw merged and single-platform nodes alike.
@@ -16144,8 +16152,10 @@
       // The field that weights an edge leaving this node. `WITH` stores no count, so
       // the thread's own size is the only signal the canvas has.
       edgeWeight: "message_count",
-      // Only threads can be "silent" — a correspondent has no is_self of its own.
+      // Only a thread can be "silent" or "broadcast" — a correspondent has no is_self
+      // of its own. Both are computed per thread by `_NODE_QUERIES["Thread"]`.
       hideWhenSilent: true,
+      hideWhenBroadcast: true,
       iconKind: "platform"
     },
     Correspondent: {
@@ -16442,6 +16452,25 @@
   };
   var metaOf = (node) => NODE_TYPES[node.type] || FALLBACK_META;
   var bagId = (platform) => `bag:${platform}`;
+  function cascadePrune(nodes, edges) {
+    const keep = new Set(nodes.filter((n) => n.type === "Bag").map((n) => n.id));
+    let current = nodes.filter((n) => n.type !== "Bag");
+    for (; ; ) {
+      const ids = new Set(current.map((n) => n.id));
+      const linked = /* @__PURE__ */ new Set();
+      for (const edge of edges) {
+        if (ids.has(edge.source) && ids.has(edge.target)) {
+          linked.add(edge.source);
+          linked.add(edge.target);
+        }
+      }
+      const next = current.filter((n) => linked.has(n.id));
+      if (next.length === current.length) break;
+      current = next;
+    }
+    const survivors = new Set(current.map((n) => n.id));
+    return nodes.filter((n) => survivors.has(n.id) || keep.has(n.id));
+  }
   var MERGED_BAG_ID = "bag:merged";
   var FOCUS_ZOOM = 1.15;
   var GraphCanvas = (0, import_react8.forwardRef)(function GraphCanvas2({ data, theme, onNodeClick, onBackgroundClick, onLayoutDone }, ref) {
@@ -16456,6 +16485,7 @@
     const platformKey = (theme.filter.platforms || []).join(",");
     const bagsOn = !!theme.filter.bags;
     const hideSilent = !!theme.filter.hideSilent;
+    const hideBroadcast = !!theme.filter.hideBroadcast;
     const visibility = theme.filter.nodeVisibility || {};
     const visibilityKey = Object.keys(visibility).sort().map((kind) => `${kind}:${visibility[kind]}`).join("|");
     const requestedKey = (theme.filter.nodeTypes || []).join("|");
@@ -16479,12 +16509,21 @@
         if (NODE_TYPES[node.type]?.drawable && !requested.has(node.type)) return false;
         if (hiddenByVisibility(node)) return false;
         if (hideSilent && metaOf(node).hideWhenSilent && node.is_silent) return false;
+        if (hideBroadcast && metaOf(node).hideWhenBroadcast && node.is_broadcast) return false;
         return true;
       });
+      const cascade = hideSilent || hideBroadcast || !!chosen.length;
+      const surviving = cascade ? cascadePrune(
+        allNodes,
+        (data.edges || []).filter((edge) => {
+          const [a, b] = [edge.source, edge.target];
+          return a && b;
+        })
+      ) : allNodes;
       const lettersByType = /* @__PURE__ */ new Map();
       for (const [type, meta] of Object.entries(NODE_TYPES)) {
         if (!meta.drawable || !meta.sizeLadder) continue;
-        const group = allNodes.filter((node) => node.type === type);
+        const group = surviving.filter((node) => node.type === type);
         if (!group.length) continue;
         lettersByType.set(
           type,
@@ -16492,12 +16531,12 @@
         );
       }
       const edgeWeights = new Map(
-        allNodes.map((node) => {
+        surviving.map((node) => {
           const meta = metaOf(node);
           return [node.id, node[meta.edgeWeight || meta.countKey] || 0];
         })
       );
-      const nodes = allNodes.map((node) => {
+      const nodes = surviving.map((node) => {
         const meta = metaOf(node);
         if (node.type === "Bag") {
           return {
@@ -16609,7 +16648,7 @@
         };
       });
       return [...bagNodes, ...nodes, ...edges];
-    }, [data, sizeKey, platformKey, hideSilent, bagsOn, visibilityKey, requestedKey]);
+    }, [data, sizeKey, platformKey, hideSilent, hideBroadcast, bagsOn, visibilityKey, requestedKey]);
     (0, import_react8.useEffect)(() => {
       if (!hostRef.current || cyRef.current) return void 0;
       if (window.cytoscapeFcose && !window.__fcoseRegistered) {
@@ -18609,6 +18648,20 @@
               hint: "View only. A thread you never replied in is often a broadcast or a group you were added to \u2014 hidden here, still searchable.",
               note: "A thread you never replied in is usually a broadcast or a group you were added to."
             }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { className: "section", children: "Threads nobody replied to" }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+            Check,
+            {
+              label: "Hide threads where only the owner sent messages",
+              checked: !!draft.filter.hideBroadcast,
+              onChange: (value) => setDraft((prev) => ({
+                ...prev,
+                filter: { ...prev.filter, hideBroadcast: value }
+              })),
+              hint: "View only. A cold-email campaign with no replies lands in one thread, so 30 recipients can look like a 30-message conversation. Hidden here, still searchable.",
+              note: "A thread where nobody but you spoke is an outbound campaign, not a conversation."
+            }
           )
         ]
       }
@@ -19001,6 +19054,7 @@
     const [spamThreads, setSpamThreads] = (0, import_react13.useState)(true);
     const [spamPlatforms, setSpamPlatforms] = (0, import_react13.useState)({ email: true, outlook: true });
     const [spamGroups, setSpamGroups] = (0, import_react13.useState)(false);
+    const [sponsoredThreads, setSponsoredThreads] = (0, import_react13.useState)(true);
     const [writeEnabled, setWriteEnabled] = (0, import_react13.useState)(false);
     const [busy, setBusy] = (0, import_react13.useState)(false);
     const [report, setReport] = (0, import_react13.useState)(null);
@@ -19136,7 +19190,7 @@
         const started = await api.ingest({
           which: "real",
           paths: pathList(),
-          imap: imapOn && imapEmail.trim() && !skip.has("email") ? {
+          imap: imapEmail.trim() && !skip.has("email") ? {
             email: imapEmail.trim(),
             password: imapPassword,
             host: imapHost.trim(),
@@ -19149,6 +19203,8 @@
           exclude_spam_threads: spamThreads,
           spam_thread_platforms: spamThreads ? ticked(spamPlatforms) : null,
           exclude_spam_groups: spamGroups,
+          exclude_sponsored_threads: sponsoredThreads,
+          sponsored_thread_platforms: sponsoredThreads ? ["linkedin"] : null,
           write_enabled: writeEnabled
         });
         const result = await pollJob(started.job, (job) => {
@@ -19197,9 +19253,11 @@
         } else {
           const total = [...byPlatform.values()].reduce((sum, row) => sum + row.messages, 0);
           const written = result.written ?? 0;
+          const asked = Boolean(imapEmail.trim() || pathList().length);
+          const verdict = progress.mailbox_verdict;
           note(
             "done",
-            written === 0 && total === 0 ? "nothing new \xB7 the store already holds everything in this window" : `all ingested \xB7 ${written} new message(s)`
+            written === 0 && total === 0 ? !asked ? "nothing to ingest \xB7 enter a mailbox address or drop a file" : verdict === "same" ? "nothing new \xB7 the store already holds this window" : "the mailbox returned no messages \u2014 check the window" : `all ingested \xB7 ${written} new message(s)` + (verdict === "window" ? " \xB7 window changed, earlier mail is kept" : "")
           );
         }
       } catch (err) {
@@ -19527,15 +19585,18 @@
                 label: "Save credentials",
                 checked: imapOn,
                 onChange: setImapOn,
-                hint: "Written to ./.env only if the ingest succeeds."
+                hint: "Writes these credentials to ./.env only if the ingest succeeds. Reading the mailbox happens whenever an address is above \u2014 this box does not control that."
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "pager-info", children: saved.configured ? `in env: ${saved.email}` : "no credentials saved yet" })
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { className: "pager-info", children: [
+              saved.configured ? `in env: ${saved.email}` : "no credentials saved yet",
+              saved.in_graph ? ` \xB7 in graph: ${saved.in_graph} (${saved.graph_messages} msgs)` : " \xB7 in graph: none"
+            ] })
           ] }),
-          saved.configured && imapEmail.trim() && !matchesSaved ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 6, color: "var(--orange-text)" }, children: [
-            "A different mailbox replaces ",
+          saved.configured && imapEmail.trim() && !matchesSaved ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "empty", style: { paddingTop: 0, paddingBottom: 6, color: "var(--red-text)", fontWeight: 600 }, children: [
+            "This will overwrite ",
             /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: saved.email }),
-            ": its messages are removed from the graph before this one is read."
+            " \u2014 its email messages are deleted from the graph first. Other platforms are untouched."
           ] }) : null,
           /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
             "hr",
@@ -19618,6 +19679,15 @@
               checked: spamGroups,
               onChange: setSpamGroups,
               hint: "Fcbk Mssgr only. Drops group threads where at least half the rows are housekeeping \u2014 'sent a link', 'added X to the group', 'left the group'. Real group chats sit far below that ratio."
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+            Check,
+            {
+              label: "Exclude LinkedIn mssgs where Owner sent 1 message with no response",
+              checked: sponsoredThreads,
+              onChange: setSponsoredThreads,
+              hint: "LinkedIn only. Drops threads the Owner never took part in that are promotional \u2014 InMail editor markup, or a LinkedIn Member / Talent Solutions sender. The Owner's own 1-message InMails look identical, so they are kept."
             }
           ),
           error && /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "error", style: { marginTop: 12 }, children: error }),

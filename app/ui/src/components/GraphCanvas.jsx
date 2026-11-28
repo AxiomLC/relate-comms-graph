@@ -111,6 +111,41 @@ const isExtractedKind = (type) => NODE_TYPES[type]?.iconKind === "entity";
 const bagId = (platform) => `bag:${platform}`;
 
 /**
+ * Drop every node that has no edge to another node that also survives.
+ *
+ * Hiding a Thread is a filter on ONE node type, but the Correspondent and the body
+ * entities that hung off it are different types and pass every per-kind test. Their
+ * only edges point at threads that are gone, so they would be drawn alone — the
+ * "big Corr and lots of Orgs" left floating when a thread is hidden.
+ *
+ * Bags are kept unconditionally: they are an invisible fcose body, never a node the
+ * user can see, and dropping one would change the layout rather than the drawing.
+ *
+ * Repeats until nothing more is removed, so a chain of dependants (an entity reached
+ * only through another entity) collapses completely rather than one level deep.
+ */
+function cascadePrune(nodes, edges) {
+  const keep = new Set(nodes.filter((n) => n.type === "Bag").map((n) => n.id));
+  let current = nodes.filter((n) => n.type !== "Bag");
+  for (;;) {
+    const ids = new Set(current.map((n) => n.id));
+    const linked = new Set();
+    for (const edge of edges) {
+      if (ids.has(edge.source) && ids.has(edge.target)) {
+        linked.add(edge.source);
+        linked.add(edge.target);
+      }
+    }
+    const next = current.filter((n) => linked.has(n.id));
+    if (next.length === current.length) break;
+    current = next;
+  }
+  const survivors = new Set(current.map((n) => n.id));
+  // Original order is preserved: size ladders and bag placement read this list.
+  return nodes.filter((n) => survivors.has(n.id) || keep.has(n.id));
+}
+
+/**
  * The id of the merged bag — the second tier of the composition.
  *
  * Platform bags sit on the ring; this one sits at the centre. It holds every node
@@ -169,6 +204,7 @@ const GraphCanvas = forwardRef(function GraphCanvas(
   // and referencing it there throws `hideSilent is not defined` on every render —
   // which blanks the whole app.
   const hideSilent = !!theme.filter.hideSilent;
+  const hideBroadcast = !!theme.filter.hideBroadcast;
   // The per-kind tri-state (`all` | `merged` | `hide`), serialised so a theme clone
   // that changed nothing visible does not rebuild the elements.
   const visibility = theme.filter.nodeVisibility || {};
@@ -232,8 +268,38 @@ const GraphCanvas = forwardRef(function GraphCanvas(
       // canvas has, so a thread with no messages is not hidden by this — it is
       // already invisible for other reasons.
       if (hideSilent && metaOf(node).hideWhenSilent && node.is_silent) return false;
+      // The mirror of `is_silent`: every message in the thread is the Owner's, so it
+      // is an outbound campaign rather than a conversation. View only — nothing is
+      // deleted, and the entity counts are unchanged.
+      if (hideBroadcast && metaOf(node).hideWhenBroadcast && node.is_broadcast) return false;
       return true;
     });
+
+    // **Cascading hide: a node with no surviving edge is not drawn.**
+    //
+    // Hiding a Thread removes its own edges, but the Correspondent and the body
+    // entities that hung off it are different node types and the tests above never
+    // look at them — so they stayed, floating with no edge at all. That is the
+    // orphan the canvas showed: a big Correspondent and a pile of Orgs with nothing
+    // attached.
+    //
+    // This runs AFTER the per-kind filter and only when something is actually hidden,
+    // so the unfiltered canvas is untouched (the common case, and it must stay byte
+    // identical to what it was).
+    //
+    // The pass repeats to a fixed point: dropping an entity can strand nothing else
+    // today, but a future chain (Message -> Attachment -> ...) would need it, and a
+    // single pass that silently stopped short would be the same bug again.
+    const cascade = hideSilent || hideBroadcast || !!chosen.length;
+    const surviving = cascade
+      ? cascadePrune(
+          allNodes,
+          (data.edges || []).filter((edge) => {
+            const [a, b] = [edge.source, edge.target];
+            return a && b;
+          }),
+        )
+      : allNodes;
 
     // One ladder per KIND, from the config. Threads are A/C/E and correspondents
     // B/D/F so the two interleave; the entity kinds share D/E/F. Adding a kind is a
@@ -241,7 +307,7 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     const lettersByType = new Map();
     for (const [type, meta] of Object.entries(NODE_TYPES)) {
       if (!meta.drawable || !meta.sizeLadder) continue;
-      const group = allNodes.filter((node) => node.type === type);
+      const group = surviving.filter((node) => node.type === type);
       if (!group.length) continue;
       lettersByType.set(
         type,
@@ -252,13 +318,13 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     // The weight an edge leaving a node is tiered on. `WITH` stores no count, so the
     // source thread's own size is the only signal the canvas has.
     const edgeWeights = new Map(
-      allNodes.map((node) => {
+      surviving.map((node) => {
         const meta = metaOf(node);
         return [node.id, node[meta.edgeWeight || meta.countKey] || 0];
       }),
     );
 
-    const nodes = allNodes.map((node) => {
+    const nodes = surviving.map((node) => {
       const meta = metaOf(node);
       // A bag is a body for fcose, not a node the user can see. It carries no size,
       // no label and no colour, and the stylesheet makes it invisible and inert.
@@ -434,7 +500,8 @@ const GraphCanvas = forwardRef(function GraphCanvas(
 
     // Bags first, so a parent exists before the child that names it is added.
     return [...bagNodes, ...nodes, ...edges];
-    // `platformKey`, `hideSilent` and `bagsOn` are dependencies because hiding a
+    // `platformKey`, `hideSilent`, `hideBroadcast` and `bagsOn` are dependencies
+    // because hiding a
     // cluster, hiding a silent thread or turning bags on must rebuild the elements;
     // the rest of the theme stays out of it so a slider move does not throw away the
     // layout.
@@ -444,7 +511,7 @@ const GraphCanvas = forwardRef(function GraphCanvas(
     // theme is deep-cloned by `cloneTheme` on every edit, so an object dependency
     // re-ran this memo on every keystroke in the modal even when nothing changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, sizeKey, platformKey, hideSilent, bagsOn, visibilityKey, requestedKey]);
+  }, [data, sizeKey, platformKey, hideSilent, hideBroadcast, bagsOn, visibilityKey, requestedKey]);
 
   /* ------------------------------------------------------------------- create */
 

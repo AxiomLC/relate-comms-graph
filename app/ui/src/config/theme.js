@@ -316,7 +316,11 @@ export const THEME = {
     // The other three extracted kinds stay off until their extractors land — a ticked
     // kind with zero rows only costs a query. To distrust the extractor, untick
     // `Place` here or in the Canvas modal.
-    nodeTypes: ["Thread", "Correspondent", "Place", "Organization"],
+    //
+    // **`Product` is included: it has been live and writing since `PRODUCT_ENABLED`
+    // went true, and leaving it out meant the canvas never requested the node type —
+    // 22 Product nodes sat in the store with no toggle and no way to draw them.**
+    nodeTypes: ["Thread", "Correspondent", "Place", "Organization", "Product"],
     // One invisible bag per platform, so fcose clusters threads by source instead of
     // letting them float free. Client-side only — a bag is a body for the layout, not
     // data, and it never reaches the server or any count. Off is a real option: with
@@ -328,6 +332,10 @@ export const THEME = {
     // appears without the user having to tick it.
     platforms: [],
     hideSilent: false, // hide threads the owner never sent a message in
+    // The mirror: every message in the thread is the Owner's. A cold-email campaign
+    // with no subject and no reply headers collapses into one thread key, so a
+    // broadcast reads as a 31-message "conversation" it never was. View only.
+    hideBroadcast: false,
     // **One tri-state per kind**, mutually exclusive: `all` | `merged` | `hide`.
     //
     //   all    — draw merged and single-platform nodes alike.

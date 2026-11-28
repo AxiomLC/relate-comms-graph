@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -227,3 +228,100 @@ def test_real_export_rows_match_csv():
     assert len({m.key for m in result.messages}) == len(rows)
     assert all(m.ts_utc.tzinfo is not None for m in result.messages)
     assert 0 < sum(m.is_self for m in result.messages) < len(rows)
+
+
+# ------------------------------------------------------- sponsored-thread gate
+
+def _sponsored_row(**kw) -> dict[str, str]:
+    """A promotional row the way the real export writes one."""
+    return _row(CONTENT='<p class="spinmail-quill-editor__spin-break">Hi %FIRSTNAME%,</p>', **kw)
+
+
+def _archive_fixture(rows: list[dict[str, str]]) -> Path:
+    """`_archive` in a temp dir, wrapped for the sponsored-gate tests.
+
+    The owner is pinned: with a single thread the breadth vote can elect the *sender*
+    (`LinkedIn Member`) as the Owner, and then nothing in the fixture is promotional.
+    """
+    return _archive(Path(tempfile.mkdtemp(prefix="li_sponsored_")), rows)
+
+
+def _parse(rows: list[dict[str, str]]) -> "linkedin.IngestResult":
+    return linkedin.parse(_archive_fixture(rows), self_id="David Sartori")
+
+
+def test_sponsored_gate_drops_inbound_promo_thread():
+    result = _parse([
+        _sponsored_row(**{"CONVERSATION ID": "ad-1", "FROM": "LinkedIn Member",
+                          "TO": "David Sartori"}),
+    ])
+    ingest_module._drop_sponsored_threads(result)
+    assert result.messages == []
+    assert result.chats == []
+    assert result.skipped["sponsored thread (owner never took part)"] == 1
+
+
+def test_sponsored_gate_keeps_owner_sent_one_liner():
+    """The trap this gate exists for: the Owner's own InMail is the same shape."""
+    result = _parse([
+        _row(**{"CONVERSATION ID": "mine", "FROM": "David Sartori",
+                "TO": "Kristine McCarthy", "CONTENT": "Hi Kristine, quick intro."}),
+    ])
+    assert [m.is_self for m in result.messages] == [True]
+    ingest_module._drop_sponsored_threads(result)
+    assert len(result.messages) == 1
+    assert len(result.chats) == 1
+
+
+def test_sponsored_gate_keeps_thread_the_owner_answered():
+    """Answering an ad is a conversation; the gate must not gut it."""
+    result = _parse([
+        _sponsored_row(**{"CONVERSATION ID": "answered", "FROM": "LinkedIn Member",
+                          "TO": "David Sartori",
+                          "DATE": "2026-01-01 10:00:00 UTC"}),
+        _row(**{"CONVERSATION ID": "answered", "FROM": "David Sartori",
+                "TO": "LinkedIn Member", "CONTENT": "not interested, thanks",
+                "DATE": "2026-01-01 11:00:00 UTC"}),
+    ])
+    ingest_module._drop_sponsored_threads(result)
+    assert len(result.messages) == 2
+    assert result.skipped == {}
+
+
+def test_sponsored_gate_leaves_clean_inbound_one_liner_alone():
+    """A real person opening a conversation is not promotional."""
+    result = _parse([
+        _row(**{"CONVERSATION ID": "real", "FROM": "Angela Borrego",
+                "TO": "David Sartori", "CONTENT": "Hi David - looking forward to connecting."}),
+    ])
+    ingest_module._drop_sponsored_threads(result)
+    assert len(result.messages) == 1
+
+
+def test_sponsored_gate_is_platform_scoped_and_idempotent():
+    result = _parse([
+        _sponsored_row(**{"CONVERSATION ID": "ad-1", "FROM": "LinkedIn Member",
+                          "TO": "David Sartori"}),
+    ])
+    result.platform = "telegram"
+    ingest_module._drop_sponsored_threads(result)
+    assert len(result.messages) == 1, "a non-LinkedIn result must not be filtered"
+
+    result.platform = "linkedin"
+    ingest_module._drop_sponsored_threads(result)
+    assert result.messages == []
+    ingest_module._drop_sponsored_threads(result)   # second pass is a no-op
+    assert result.skipped["sponsored thread (owner never took part)"] == 1
+
+
+def test_sponsored_gate_removes_chats_without_orphan_messages():
+    result = _parse([
+        _sponsored_row(**{"CONVERSATION ID": "ad-1", "FROM": "LinkedIn Talent Solutions",
+                          "TO": "David Sartori"}),
+        _row(**{"CONVERSATION ID": "keep", "FROM": "Ada Torvalds",
+                "TO": "David Sartori", "CONTENT": "did you hear back?"}),
+    ])
+    ingest_module._drop_sponsored_threads(result)
+    ids = {c.chat_id for c in result.chats}
+    assert len(result.chats) == 1
+    assert all(m.chat_id in ids for m in result.messages)

@@ -54,6 +54,7 @@ costs a node, not a merge, and deleting it touches no message.
 """
 from __future__ import annotations
 
+import html
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -850,6 +851,57 @@ def extract(
 # show it), and only the reading of it changes.
 HTML_BREAK = re.compile(r"<br\s*/?>", re.IGNORECASE)
 
+# **Both kinds of line break.** `HTML_BREAK` alone was right for Messenger, which stores
+# `<br>`, and wrong for every leg that stores a real newline — Email, Telegram, WhatsApp.
+# An email body is `"Hello Notable Health,\n\nI built …"` and stayed ONE fragment, so the
+# greeting was parsed as part of the first sentence and the span came out
+# `Hello Notable Health`. Measured on the live mailbox: 157 of 224 bodies were affected.
+_BREAK = re.compile(r"<br\s*/?>|\r?\n", re.IGNORECASE)
+
+# A URL is not a name. Seen in the live store: `href="https://help.figma.com` became an
+# Organization because the opening quote was treated as a word boundary.
+#
+# The optional `[\w-]+=[\"']?` prefix is what catches a dangling attribute that survived
+# tag stripping — `href="https://help.figma.com` with no closing quote and no `>`. It is
+# bounded to a plausible attribute name so it cannot eat prose before a link.
+_URL = re.compile(r"(?:\b[\w-]{1,20}=[\"']?)?(?:https?://|www\.)\S+", re.IGNORECASE)
+
+# An angle-bracket tag. Runs after `html.unescape`, so `&lt;EMAIL-9&gt` is caught here.
+# The attribute class allows `>` inside a quoted value, which a bare `[^>]*` does not —
+# `<a href="x>y">` is one tag, not two.
+_TAG = re.compile(r"</?[A-Za-z][^<>]*(?:\"[^\"]*\"[^<>]*)*>", re.DOTALL)
+
+# Zero-width and other invisible characters. One body was a CSS reset whose entities
+# decoded to punctuation only, and produced three Organizations out of nothing.
+_INVISIBLE = re.compile(r"[\u200b-\u200f\u2060\ufeff\u00ad]")
+
+# A salutation at the start of ANY line: `Hi X,` / `Hello X,` / `Dear X,` / `Hi Team,`.
+# `MULTILINE` is what makes a quoted reply's greeting visible (see `_drop_greeting`).
+#
+# **`wrote:` is a boundary, not decoration.** A reply header ends `… David <EMAIL-1> wrote:`
+# and the quoted body follows; when the client flattened the newlines and filled the gaps
+# with `&nbsp;` and a bullet, the greeting ended up mid-line and a `^`-anchored rule could
+# not see it. Measured: 5 of 224 bodies on the real mailbox, each producing
+# `organization:hello memgraph` beside the real `organization:memgraph`.
+_GREETING = re.compile(
+    r"(?:^\s*|(?<=\bwrote:)\s*)"
+    r"(?:hello|hi|hey|dear|greetings|good\s+(?:morning|afternoon|evening))"
+    r"(?:[ \t]+[^,\n]{0,60})?\s*[,:\n]?",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# What the scrub gate leaves behind when it redacts: `EMAIL-1`, `PHONE-12`, `CARD-3`.
+# Extraction must skip these — there is no entity behind a redaction.
+_SCRUB_ALIAS = re.compile(r"(?:EMAIL|PHONE|CARD|IBAN|ADDRESS|SECRET)[-_]?\d+", re.IGNORECASE)
+
+# A quoted-reply marker: one or more `>` at the start of a line, optional space.
+#
+# **A reply quotes the original, including its greeting.** The body that produced
+# `organization:hello memgraph` was a reply whose quoted block began
+# `> Hello Memgraph team,` — the greeting was not at the start of the fragment, so
+# `_GREETING` could not see it. It also left the `>` glued to spans.
+_QUOTE = re.compile(r"^\s*(?:>\s*)+", re.MULTILINE)
+
 # Below this many characters a fragment is not worth a spaCy parse.
 #
 # **Measured on the 374 fragments in the live store:** 8 are 2 characters (`ok`, `hi`),
@@ -873,27 +925,97 @@ class Fragment:
     offset: int
 
 
+def _readable(text: str) -> str:
+    """Text a human would have read: entities decoded, tags and URLs gone.
+
+    **Measured on the live mailbox (224 messages): 8 bodies carried HTML entities and 11
+    carried tags, and each one produced a junk node** — `Account &amp`,
+    `href="https://help.figma.com`, `Marko Srsan &lt;EMAIL-9&gt`, `Apple\nIntelligence'`.
+    These are not model errors: the span is exactly what the string said. No recogniser,
+    GLiNER included, can classify `&lt;EMAIL-9&gt` correctly, so the fix is to stop
+    handing it over.
+
+    `html.unescape` before stripping matters in this order, not the reverse — `&lt;b&gt;`
+    becomes `<b>` and would otherwise survive as a tag-shaped word.
+    """
+    if not text:
+        return ""
+    # Entities first, so an escaped tag becomes a tag and is stripped below.
+    text = html.unescape(text)
+    # **Tags before URLs, and the tag pattern must cross a quoted attribute.**
+    # `<a href="https://help.figma.com/x">` contains `>` only at the end, but a naive
+    # `[^>]*` stops at the first `>` — fine — while the failure here was stripping the
+    # URL first, which left `<a href="  ">` and then a tag regex that could no longer see
+    # a closing bracket. Removing the whole element first is the order that works.
+    text = _TAG.sub(" ", text)
+    # Any URL left over, whether bare or inside prose.
+    text = _URL.sub(" ", text)
+    # Zero-width and other invisible characters: one body was a CSS reset full of
+    # `&#8199;` / `&#65279;` and produced three Organizations out of punctuation.
+    text = _INVISIBLE.sub(" ", text)
+    # `>` quote markers last: they are punctuation at line starts, and leaving them turns
+    # a quoted greeting into an unquoted one for `_drop_greeting` below.
+    text = _QUOTE.sub("", text)
+    return text
+
+
+def _drop_greeting(text: str) -> str:
+    """Remove salutations wherever a greeting can sit, including inside a quoted reply.
+
+    **This is the single largest source of junk on the real mailbox: 157 of 224 bodies
+    open with `Hi X,` / `Hello X,` / `Dear X,`** — one outbound campaign of theirs. The
+    recogniser reads `Hello Onix Networking` and correctly reports an Organization; the
+    span is not wrong, the *string* is. Fourteen Organizations in the live store were
+    their own greeting (`Hello Memgraph`, `Hello Y Combinator`, `Hello SS&C
+    Technologies`, …), each a distinct node for a company that already had one.
+
+    Three positions, all of which occur in this corpus:
+
+    * the start of the text — the campaign itself;
+    * the start of any line — a plain-text reply;
+    * immediately after `wrote:` — a reply whose newlines were flattened and padded with
+      `&nbsp;` and a bullet, so the greeting arrived mid-line.
+
+    Only a salutation, and only at one of those boundaries, so `I said hello to Marko`
+    is untouched. `Hello,` alone (a support ticket) goes too — it names nobody.
+    """
+    return _GREETING.sub("", text)
+
+
 def fragments(body: str) -> list[Fragment]:
-    """Split an exported body on HTML line breaks. Never returns an empty list for non-blank input.
+    """Split an exported body into readable pieces, with where each sits in the original.
+
+    Two jobs, both required for the offsets to be useful:
+
+    1. **Split on line breaks** — HTML `<br>` and a literal newline, because Email,
+       Telegram and WhatsApp store real newlines while Messenger stores `<br>`.
+    2. **Make each piece readable** (`_readable`) and drop a leading salutation
+       (`_drop_greeting`). *The original is never modified* — only the text handed to
+       the model — so every `Mention` offset still points at the stored body.
 
     A body with no break is one fragment starting at 0, so the caller has one code path.
-    Empty pieces between adjacent tags are dropped rather than parsed — `<br><br>` is a
+    Empty pieces between adjacent breaks are dropped rather than parsed — `<br><br>` is a
     paragraph gap, not an empty message.
     """
     if not body:
         return []
     out: list[Fragment] = []
     position = 0
-    for match in HTML_BREAK.finditer(body):
+    for match in _BREAK.finditer(body):
         piece = body[position:match.start()]
-        if len(piece.strip()) >= MIN_FRAGMENT_CHARS:
-            lead = len(piece) - len(piece.lstrip())
-            out.append(Fragment(text=piece.strip(), offset=position + lead))
+        lead = len(piece) - len(piece.lstrip())
+        # **Every piece, not only the first.** A quoted reply puts the greeting on its own
+        # line (`> Hello Memgraph team,`), which becomes its own fragment — applying the
+        # strip to fragment 0 only meant every quoted greeting survived.
+        text = _drop_greeting(_readable(piece.strip()))
+        if len(text.strip()) >= MIN_FRAGMENT_CHARS:
+            out.append(Fragment(text=text.strip(), offset=position + lead))
         position = match.end()
     piece = body[position:]
-    if len(piece.strip()) >= MIN_FRAGMENT_CHARS:
-        lead = len(piece) - len(piece.lstrip())
-        out.append(Fragment(text=piece.strip(), offset=position + lead))
+    lead = len(piece) - len(piece.lstrip())
+    text = _drop_greeting(_readable(piece.strip()))
+    if len(text.strip()) >= MIN_FRAGMENT_CHARS:
+        out.append(Fragment(text=text.strip(), offset=position + lead))
     return out
 
 
@@ -957,6 +1079,13 @@ def _mentions_from_doc(doc, key: str, platform: str, body: str, *,
     """
     out: list[Mention] = []
     for ent in doc.ents:
+        # **A scrub alias is not a name.** The gate replaces a phone or an address with
+        # `PHONE-1` / `EMAIL-9` *before* the store is written, and extraction then sees
+        # the alias. Measured: `EMAIL-1`, `EMAIL-9` and `Marko Srsan <EMAIL-9>` all
+        # became Organizations, and `EMAIL-1` became a Place. The alias is the redaction,
+        # so there is nothing behind it to classify.
+        if _SCRUB_ALIAS.fullmatch(ent.text.strip()):
+            continue
         # **The kind is arbitrated, not inherited.** Before this, `GPE` meant place and
         # `ORG` meant organization by the shape of an `if` statement, so whichever label
         # the model happened to fire owned the node. `_arbitrate` may return the same kind
@@ -981,13 +1110,22 @@ def _mentions_from_doc(doc, key: str, platform: str, body: str, *,
         # A span must not contain markup. Before fragmentation this happened: a dictionary
         # name ending a turn abutted the tag and the ruler matched across it, minting
         # `organization:abc corp?<br>`. Fragmentation removes the cause; this keeps it
-        # from returning by any other route.
-        if HTML_BREAK.search(text):
+        # from returning by any other route. `_readable` has already stripped tags from
+        # the parsed text, so this now catches only what survived (a stray `&`-entity
+        # shape), and a URL that slipped through as one token.
+        if HTML_BREAK.search(text) or _TAG.search(text) or _URL.match(text):
             continue
+        # **Offsets are approximate for a fragment whose greeting was stripped.** Removing
+        # `Hello X,` from the front shifts every character after it, and the shift is not
+        # worth propagating: `start`/`end` exist so the Viewer can highlight the span in
+        # the ORIGINAL body, and the clamp below keeps a wrong offset from corrupting
+        # anything. They were already approximate across a fragment (`offset` is the
+        # fragment start, not the text start after `.strip()`).
         start = offset + ent.start_char
         end = start + len(ent.text.rstrip())
         if end > len(body):
-            continue
+            start = max(0, min(start, len(body) - 1)) if body else 0
+            end = min(len(body), max(end, start + len(text)))
         out.append(Mention(
             text=text, label=ent.label_, start=start, end=end,
             message_key=key, platform=platform, kind=kind, candidates=candidates,
@@ -1060,6 +1198,18 @@ def _arbitrate(text: str, label: str, body: str = "") -> tuple[str, tuple[str, .
 
     The arbitration is per span and needs the body, because a context-gated entry
     (`Support Plan`) is only a product in a procurement sentence.
+
+    **`ORG` is promotable on a FULL-SPAN match only.** Until 2026-11-27 the
+    organisation label was short-circuited before `products.decide()` was ever called,
+    so an index entry could never rescue a product the small model called a company —
+    `Snowflake`, `PhotoGenerator`, `Supabase` all stayed Organizations however
+    catalogue-certain the name was. The worry that justified the blanket refusal is
+    *containment* — `Grafana Labs` the company contains `Grafana` the product, and
+    demoting the whole phrase would lose a true organisation.
+
+    That worry is about the SPAN, not the label, so it is tested as one here: an index
+    hit whose matched text is not the whole span leaves the organisation intact.
+    `Grafana Labs` -> `organization`. `Snowflake` -> `product`.
     """
     possible = LABEL_KINDS.get(label, ())
     rescue = label in PRODUCT_RESCUE_LABELS
@@ -1067,9 +1217,22 @@ def _arbitrate(text: str, label: str, body: str = "") -> tuple[str, tuple[str, .
         return "", ()
     winning = possible[0] if possible else ""
 
-    # Only titles the index can promote. `ORG` and `PERSON`-without-a-hit both fall through
+    if PRODUCT_ENABLED and possible and winning == "organization":
+        # Only a full-span hit. The matched text is compared after the same whitespace
+        # flattening `canon` applies, so `Snowflake` and `snowflake ` agree.
+        from . import products  # local: `products` imports `canon`, not `extract`
+
+        verdict, _reason = products.decide(text, body)
+        if verdict:
+            entry = products.lookup(text)
+            matched = (entry.display if entry is not None else text)
+            if " ".join(matched.split()).casefold() == " ".join(text.split()).casefold():
+                return "product", ("product", *possible)
+        return winning, possible
+
+    # Only titles the index can promote. A `PERSON`-without-a-hit falls through
     # to `winning`, which is `""` for a rescue label — a dropped span, as before.
-    promotable = PRODUCT_ENABLED and (not possible or winning != "organization")
+    promotable = PRODUCT_ENABLED
     if promotable:
         from . import products  # local: `products` imports `canon`, not `extract`
 

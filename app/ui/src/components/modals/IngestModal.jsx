@@ -172,6 +172,7 @@ export default function IngestModal({ onClose, onIngested }) {
   const [spamThreads, setSpamThreads] = useState(true);
   const [spamPlatforms, setSpamPlatforms] = useState({ email: true, outlook: true });
   const [spamGroups, setSpamGroups] = useState(false);
+  const [sponsoredThreads, setSponsoredThreads] = useState(true);
 
 
   // --- run state -----------------------------------------------------------
@@ -386,7 +387,7 @@ export default function IngestModal({ onClose, onIngested }) {
         which: "real",
         paths: pathList(),
         imap:
-          imapOn && imapEmail.trim() && !skip.has("email")
+          imapEmail.trim() && !skip.has("email")
             ? {
                 email: imapEmail.trim(),
                 password: imapPassword,
@@ -401,6 +402,8 @@ export default function IngestModal({ onClose, onIngested }) {
         exclude_spam_threads: spamThreads,
         spam_thread_platforms: spamThreads ? ticked(spamPlatforms) : null,
         exclude_spam_groups: spamGroups,
+        exclude_sponsored_threads: sponsoredThreads,
+        sponsored_thread_platforms: sponsoredThreads ? ["linkedin"] : null,
         write_enabled: writeEnabled,
       });
 
@@ -466,11 +469,21 @@ export default function IngestModal({ onClose, onIngested }) {
       } else {
         const total = [...byPlatform.values()].reduce((sum, row) => sum + row.messages, 0);
         const written = result.written ?? 0;
+        // Three different situations, three sentences. "Nothing new" used to cover all
+        // of them, so an empty request and a real delta both read as "you already have
+        // everything" — which was reassuring and, in the first case, false.
+        const asked = Boolean(imapEmail.trim() || pathList().length);
+        const verdict = progress.mailbox_verdict;
         note(
           "done",
           written === 0 && total === 0
-            ? "nothing new · the store already holds everything in this window"
-            : `all ingested · ${written} new message(s)`,
+            ? !asked
+              ? "nothing to ingest · enter a mailbox address or drop a file"
+              : verdict === "same"
+                ? "nothing new · the store already holds this window"
+                : "the mailbox returned no messages — check the window"
+            : `all ingested · ${written} new message(s)` +
+                (verdict === "window" ? " · window changed, earlier mail is kept" : ""),
         );
       }
     } catch (err) {
@@ -897,16 +910,19 @@ export default function IngestModal({ onClose, onIngested }) {
           label="Save credentials"
           checked={imapOn}
           onChange={setImapOn}
-          hint="Written to ./.env only if the ingest succeeds."
+          hint="Writes these credentials to ./.env only if the ingest succeeds. Reading the mailbox happens whenever an address is above — this box does not control that."
         />
         <span className="pager-info">
           {saved.configured ? `in env: ${saved.email}` : "no credentials saved yet"}
+          {saved.in_graph
+            ? ` · in graph: ${saved.in_graph} (${saved.graph_messages} msgs)`
+            : " · in graph: none"}
         </span>
       </div>
       {saved.configured && imapEmail.trim() && !matchesSaved ? (
-        <div className="empty" style={{ paddingTop: 0, paddingBottom: 6, color: "var(--orange-text)" }}>
-          A different mailbox replaces <strong>{saved.email}</strong>: its messages are
-          removed from the graph before this one is read.
+        <div className="empty" style={{ paddingTop: 0, paddingBottom: 6, color: "var(--red-text)", fontWeight: 600 }}>
+          This will overwrite <strong>{saved.email}</strong> — its email messages are
+          deleted from the graph first. Other platforms are untouched.
         </div>
       ) : null}
 
@@ -1004,6 +1020,13 @@ export default function IngestModal({ onClose, onIngested }) {
         checked={spamGroups}
         onChange={setSpamGroups}
         hint="Fcbk Mssgr only. Drops group threads where at least half the rows are housekeeping — 'sent a link', 'added X to the group', 'left the group'. Real group chats sit far below that ratio."
+      />
+
+      <Check
+        label="Exclude LinkedIn mssgs where Owner sent 1 message with no response"
+        checked={sponsoredThreads}
+        onChange={setSponsoredThreads}
+        hint="LinkedIn only. Drops threads the Owner never took part in that are promotional — InMail editor markup, or a LinkedIn Member / Talent Solutions sender. The Owner's own 1-message InMails look identical, so they are kept."
       />
 
       {/* ------------------------------------------------------------ report */}

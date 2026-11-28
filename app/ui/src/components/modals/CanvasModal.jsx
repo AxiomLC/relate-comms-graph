@@ -69,7 +69,8 @@ const LIMITS = [500, 1000, 2000, 5000, 10000, 20000];
  * `Correspondent` and `Person` are placeholders: the row exists so the control reads
  * as a complete list, but it is greyed and disabled. Correspondent is the largest drawn
  * population and is deliberately left alone until the other three have been lived with;
- * `Person` has no rows until its extractor lands.
+ * `Person` has no extractor and no rows — it is a placeholder, and `canon`'s `person`
+ * kind is a string fold used by Correspondents, not a graph node type.
  */
 const SHOW_ROWS = [
   { type: "Correspondent", label: "Correspondent", placeholder: true },
@@ -322,6 +323,20 @@ export default function CanvasModal({
         }
         hint="View only. A thread you never replied in is often a broadcast or a group you were added to — hidden here, still searchable."
         note="A thread you never replied in is usually a broadcast or a group you were added to."
+      />
+
+      <h2 className="section">Threads nobody replied to</h2>
+      <Check
+        label="Hide threads where only the owner sent messages"
+        checked={!!draft.filter.hideBroadcast}
+        onChange={(value) =>
+          setDraft((prev) => ({
+            ...prev,
+            filter: { ...prev.filter, hideBroadcast: value },
+          }))
+        }
+        hint="View only. A cold-email campaign with no replies lands in one thread, so 30 recipients can look like a 30-message conversation. Hidden here, still searchable."
+        note="A thread where nobody but you spoke is an outbound campaign, not a conversation."
       />
     </Modal>
   );
